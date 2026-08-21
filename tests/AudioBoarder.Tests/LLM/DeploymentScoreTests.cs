@@ -31,6 +31,22 @@ public class DeploymentScoreTests
         FoundryDiscovery.DeploymentScore("gpt-5.6-luna").Should().BeLessThan(sol);
     }
 
+    [Fact]
+    public void FastSlotPrefersTerraBecauseItMeasuredFastest()
+    {
+        // Tier names are not a latency proxy. Measured on the live Responses API,
+        // three runs each on an identical continuous prompt:
+        //   terra avg 10.0 s, sol avg 10.7 s, luna avg 17.4 s.
+        // The app had been picking luna for mid-meeting updates — the slowest of
+        // the three — purely because its name reads as the light tier.
+        var terra = FoundryDiscovery.FastChatScoreForTests("gpt-5.6-terra");
+        var luna = FoundryDiscovery.FastChatScoreForTests("gpt-5.6-luna");
+        var sol = FoundryDiscovery.FastChatScoreForTests("gpt-5.6-sol");
+
+        terra.Should().BeGreaterThan(luna, "terra measured ~7s faster per continuous pass");
+        terra.Should().BeGreaterThan(sol, "the top reasoning tier is not a fast-path model");
+    }
+
     [Theory]
     [InlineData("gpt-5-6-sol", 5, 6)]   // Azure deployment names use dashes
     [InlineData("gpt-5.6-sol", 5, 6)]   // model names use dots

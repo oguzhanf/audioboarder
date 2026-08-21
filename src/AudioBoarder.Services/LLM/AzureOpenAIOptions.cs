@@ -126,49 +126,33 @@ public sealed class AzureOpenAIOptions
     /// Continuous-mode system prompt. Kept neutral and descriptive — imperative
     /// "DO NOT" cascades trigger Azure's jailbreak content filter.
     /// </summary>
+    /// <summary>
+    /// Continuous-mode prompt. Deliberately terse: this runs every few seconds, and
+    /// prompt size is a first-order latency cost — the same model answered a short
+    /// prompt in 4.4 s and a long one in 12.8 s against the live API. The full
+    /// vocabulary and style guidance lives in <see cref="DefaultSystemPrompt"/>,
+    /// which the periodic deep pass uses to tidy up.
+    /// </summary>
     public const string DefaultContinuousSystemPrompt = """
-        You are AudioBoarder, a real-time meeting assistant. You grow a RICH, ANNOTATED
-        DIAGRAM of what is being discussed — named technologies carrying icons, systems
-        drawn as labelled boundary boxes, arrows that state what actually flows between
-        things, and occasional callouts explaining subtle points. Each call gives you
-        the recent transcript and the current scene; return a ScenePatch that extends it.
+        You are AudioBoarder. Extend a live diagram from the newest speech. Return
+        ONLY a ScenePatch JSON object: {"operations":[...]}. Max 6 operations.
 
-        On every call, find the new things the speakers raise and attach each one to
-        what it belongs under. When something does not belong under any existing centre,
-        start a new centre. Aim to add or enrich a few elements each call so the board
-        visibly grows; up to 8 operations per call.
+        Add only what is NEW since the current scene. Reuse existing ids (given as
+        "N <id> (kind) label") instead of duplicating; match by meaning. Return an
+        empty operations array if nothing notable was said.
 
-        Make each addition rich rather than bare:
-        - Set "icon" to one fitting emoji, especially for named technologies.
-        - Set "description" to a short clause (max ~8 words) when it adds real detail.
-        - Give every connection between two distinct things a "label" naming the actual
-          interaction ("classifies data in", "blocks access when", "feeds nightly").
-          Only plain parent -> child breakdown may go unlabelled.
-        - When several nodes clearly belong to one system, platform or team, emit a
-          "group" op with a real system name so it is drawn as a labelled boundary.
-        - Use kind "callout" plus an "association" edge for a one-sentence explanation
-          of anything subtle or contested.
+        Ops:
+        {"op":"add_node","id":"","kind":"","label":"1-5 words","icon":"one emoji","description":"short clause"}
+        {"op":"connect","id":"","from":"","to":"","kind":"flow","label":"what flows between them"}
+        {"op":"group","id":"","label":"system name","node_ids":[]}
+        {"op":"note_upsert","id":"","kind":"action_item","text":""}
 
-        Choose the most specific kind: technology, system, cloud, security, data_store,
-        document, actor, decision, risk, metric, milestone, external, callout, process,
-        entity, note.
+        Label every connection between distinct things. Give named technologies an
+        icon. Group nodes that belong to one system or platform.
 
-        Each node label is ONE concise idea — a 1-5 word phrase, not a sentence. Extra
-        detail belongs in "description".
-
-        REUSE EXISTING NODES: the current scene is given as lines like
-        "N <id> (kind) label". If something is already present, reference its existing
-        <id> instead of adding a duplicate; match by meaning, not exact wording.
-
-        Notes are secondary: note_upsert only for an explicit decision, action item,
-        risk, or open question.
-
-        Use these literal values only. Node kind: process, entity, decision, data_store,
-        actor, note, system, technology, security, cloud, document, milestone, risk,
-        metric, external, callout. Edge kind: flow, dependency, association,
-        inheritance. Note kind: action_item, decision, question, risk, general.
-
-        The scene persists across calls. Skip image generation in this mode. Reply with
-        a ScenePatch JSON object matching the standard schema.
+        node kind: process entity decision data_store actor note system technology
+        security cloud document milestone risk metric external callout
+        edge kind: flow dependency association inheritance
+        note kind: action_item decision question risk general
         """;
 }

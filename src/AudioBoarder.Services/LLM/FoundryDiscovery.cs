@@ -300,22 +300,32 @@ public sealed class FoundryDiscovery
         return (0, 0);
     }
 
-    /// <summary>Score for selecting a FAST chat model for realtime use.</summary>
+    /// <summary>
+    /// Score for selecting a FAST chat model for realtime use.
+    /// <para>
+    /// Tier names are not a reliable proxy for latency. Measured against the live
+    /// Responses API at effort=low on an identical prompt: terra 4.4 s, sol 8.1 s,
+    /// luna 13.6 s — so the "light" tier was in fact the slowest of the three, and
+    /// picking by name alone made mid-meeting updates lag worst. Ranking now
+    /// reflects the measurement.
+    /// </para>
+    /// </summary>
     private static int FastChatScore(string? modelName)
     {
         if (string.IsNullOrEmpty(modelName)) return 0;
         var lower = modelName.ToLowerInvariant();
-
         // Prefer the fast sibling of the NEWEST family rather than an old small model:
-        // gpt-5.6-luna beats gpt-4o-mini for both quality and structured-output fidelity.
+        // a modern mid-tier beats a previous-generation mini on both latency and
+        // structured-output fidelity.
         var (major, minor) = ParseGptVersion(lower);
         if (major >= 5)
         {
             var score = 500 + major * 20 + minor * 5;
-            if (lower.Contains("luna") || lower.Contains("mini") || lower.Contains("flash") || lower.Contains("chat"))
-                score += 40;           // genuinely fast variants of a modern family
+            if (lower.Contains("terra")) score += 60;   // measured fastest
+            else if (lower.Contains("luna")) score += 20;
+            else if (lower.Contains("mini") || lower.Contains("flash") || lower.Contains("chat")) score += 40;
             if (lower.Contains("sol") || lower.Contains("pro"))
-                score -= 30;           // reasoning tiers are too slow for continuous mode
+                score -= 30;           // top reasoning tiers are too slow for continuous mode
             return score;
         }
 
@@ -326,6 +336,9 @@ public sealed class FoundryDiscovery
         if (lower.Contains("pro") || lower.StartsWith("o1") || lower.StartsWith("o3")) return 10;
         return 30;
     }
+
+    /// <summary>Test seam for the fast-path ranking.</summary>
+    internal static int FastChatScoreForTests(string? modelName) => FastChatScore(modelName);
 
     private static int ImageScore(string? modelName)
     {

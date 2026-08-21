@@ -38,6 +38,31 @@ public sealed class TranscriptBuffer
         }
     }
 
+    /// <summary>
+    /// The most recent <paramref name="window"/> of segments, always keeping at
+    /// least <paramref name="minSegments"/> so a pass is never handed nothing.
+    /// <para>
+    /// Continuous passes only need what was just said — the current scene already
+    /// carries everything said earlier. Re-sending the full rolling window on every
+    /// tick made the prompt grow for the whole meeting: measured against the live
+    /// Responses API, the same model answered a short prompt in 4.4 s and the full
+    /// app prompt in 12.8 s, so this input is a first-order latency cost.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<TranscriptSegment> SnapshotRecent(TimeSpan window, int minSegments = 3)
+    {
+        if (window <= TimeSpan.Zero) return Snapshot();
+        lock (_gate)
+        {
+            Evict();
+            var cutoff = _clock() - window;
+            var recent = _segments.Where(s => s.End >= cutoff).ToArray();
+            if (recent.Length >= minSegments) return recent;
+            // Too few in the window (a long pause): fall back to the last N overall.
+            return _segments.Reverse().Take(minSegments).Reverse().ToArray();
+        }
+    }
+
     public void Clear()
     {
         lock (_gate) _segments.Clear();

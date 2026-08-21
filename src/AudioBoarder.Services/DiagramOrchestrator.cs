@@ -29,6 +29,12 @@ public sealed class DiagramOrchestrator
 
     public SceneGraph Scene { get; }
 
+    /// <summary>
+    /// How much recent transcript a continuous pass sees. Long enough to carry a
+    /// complete thought, short enough that the prompt does not grow with the meeting.
+    /// </summary>
+    public static readonly TimeSpan ContinuousTranscriptWindow = TimeSpan.FromSeconds(75);
+
     public event EventHandler<DiagramGenerationStarted>? GenerationStarted;
     public event EventHandler<DiagramGenerationCompleted>? GenerationCompleted;
     public event EventHandler<DiagramGenerationFailed>? GenerationFailed;
@@ -66,7 +72,13 @@ public sealed class DiagramOrchestrator
 
             var request = new ScenePatchRequest(
                 CurrentScene: Scene.Clone(),
-                TranscriptWindow: _buffer.Snapshot(),
+                // Continuous passes get only what was just said. The scene already
+                // encodes everything earlier, so re-sending the whole rolling window
+                // every few seconds only inflates the prompt (and the latency) as the
+                // meeting goes on. Deep passes still see the full window.
+                TranscriptWindow: isContinuous
+                    ? _buffer.SnapshotRecent(ContinuousTranscriptWindow)
+                    : _buffer.Snapshot(),
                 UserInstruction: userInstruction,
                 IsContinuous: isContinuous);
 

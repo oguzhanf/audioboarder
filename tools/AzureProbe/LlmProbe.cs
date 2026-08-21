@@ -9,7 +9,8 @@ namespace AzureProbe;
 
 public static class LlmProbe
 {
-    public static async Task<int> RunAsync(string endpoint, string deployment, string? tenantId, string transcript)
+    public static async Task<int> RunAsync(string endpoint, string deployment, string? tenantId, string transcript,
+        bool continuous = false)
     {
         using var lf = LoggerFactory.Create(b => b.AddSimpleConsole().SetMinimumLevel(LogLevel.Information));
         var opts = new AzureOpenAIOptions
@@ -41,8 +42,8 @@ public static class LlmProbe
                 line.Trim(), DateTimeOffset.UtcNow.AddSeconds(-30 + i), DateTimeOffset.UtcNow.AddSeconds(-29 + i)))
             .ToList();
 
-        var req = new ScenePatchRequest(new SceneGraph(), fakeTranscript);
-        Console.WriteLine($"[llm] Calling Smart({endpoint} / {deployment})…");
+        var req = new ScenePatchRequest(new SceneGraph(), fakeTranscript, IsContinuous: continuous);
+        Console.WriteLine($"[llm] Calling Smart({endpoint} / {deployment}) continuous={continuous}…");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {

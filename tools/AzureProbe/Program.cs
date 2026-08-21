@@ -12,7 +12,10 @@ if (args.Length > 0 && args[0] == "llm")
     var transcript = args.Length > 4 && File.Exists(args[4])
         ? await File.ReadAllTextAsync(args[4])
         : "Walk me through the order pipeline.\nThe client app talks to an API which writes to the database.\nWhat about retries?\nThere's a queue between them.";
-    return await LlmProbe.RunAsync(ep, dep, tid, transcript);
+    // 6th arg: "continuous" exercises the fast mid-meeting path (low reasoning
+    // effort, incremental prompt) rather than the deep pass.
+    var continuous = args.Length > 5 && string.Equals(args[5], "continuous", StringComparison.OrdinalIgnoreCase);
+    return await LlmProbe.RunAsync(ep, dep, tid, transcript, continuous);
 }
 
 if (args.Length > 0 && args[0] == "asr")
