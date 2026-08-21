@@ -30,5 +30,7 @@
 *.ttf   binary
 *.otf   binary
 
-# The vendored Excalidraw bundle is generated output; keep it out of diffs.
-src/AudioBoarder.App/Assets/web/assets/** linguist-vendored
+# The vendored Excalidraw bundle is generated output: keep it out of diffs and
+# out of EOL conversion (rewriting LF to CRLF would churn every byte of it).
+src/AudioBoarder.App/Assets/web/** linguist-vendored
+src/AudioBoarder.App/Assets/web/** -text
