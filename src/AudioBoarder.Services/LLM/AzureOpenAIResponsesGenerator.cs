@@ -109,7 +109,11 @@ public sealed class AzureOpenAIResponsesGenerator : IScenePatchGenerator
 
         var raw = ExtractTextFromResponse(bodyText);
         var jsonOnly = ExtractJson(raw);
-        var patch = ScenePatchJson.Deserialize(jsonOnly);
+        var patch = ScenePatchJson.Deserialize(jsonOnly, out var parseInfo);
+        if (parseInfo.NeededRepair)
+            _logger.LogInformation(
+                "ScenePatch op names repaired: {Rewritten} corrected, {Dropped} dropped (model={Model})",
+                parseInfo.RewrittenOps, parseInfo.DroppedOps, deploymentName);
         sw.Stop();
         var label = $"AzureOpenAI.Responses/{deploymentName}" + (request.IsContinuous ? " (continuous)" : "");
         return new ScenePatchResponse(patch, label, sw.Elapsed, jsonOnly);
