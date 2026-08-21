@@ -1,0 +1,309 @@
+using System.Threading.Channels;
+using AudioBoarder.Core.Audio;
+using AudioBoarder.Core.Transcript;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace AudioBoarder.Services.Audio;
+
+/// <summary>
+/// Wires one or more capture sources to a transcription service and writes
+/// finalised segments to the supplied <see cref="TranscriptBuffer"/>.
+///
+/// Capture events are unbounded; we drop the oldest pending chunks if the
+/// transcription consumer falls behind. Transcription is SERIALIZED through
+/// a single consumer task so non-thread-safe transcribers (Whisper.net) are
+/// safe and so chunks are processed in capture order.
+/// </summary>
+public sealed class AudioPipeline : IAsyncDisposable
+{
+    private readonly IReadOnlyList<IAudioCaptureSource> _sources;
+    private readonly Func<ITranscriptionService> _transcriptionFactory;
+    private readonly IVoiceActivityDetector _vad;
+    private readonly TranscriptBuffer _buffer;
+    private readonly ILogger<AudioPipeline> _logger;
+    private CancellationTokenSource? _cts;
+    private Channel<AudioChunk>? _channel;
+    private Task? _consumer;
+    private Task? _flusher;
+    private ITranscriptionService? _activeTranscription;
+    private bool _started;
+    private readonly TimeSpan _flushInterval = TimeSpan.FromMilliseconds(250);
+    private long _chunksReceived;
+    private long _chunksTranscribed;
+    private long _segmentsEmitted;
+    private DateTimeOffset _firstChunkAt;
+    private IStreamingTranscriptionService? _streamingService;
+
+    public event EventHandler<TranscriptSegment>? SegmentEmitted;
+    public event EventHandler<TranscriptSegment>? InterimEmitted;
+    public event EventHandler<AudioCaptureError>? CaptureFailed;
+
+    public AudioPipeline(
+        IEnumerable<IAudioCaptureSource> sources,
+        Func<ITranscriptionService> transcriptionFactory,
+        IVoiceActivityDetector vad,
+        TranscriptBuffer buffer,
+        ILogger<AudioPipeline>? logger = null)
+    {
+        _sources = sources?.ToList() ?? throw new ArgumentNullException(nameof(sources));
+        _transcriptionFactory = transcriptionFactory ?? throw new ArgumentNullException(nameof(transcriptionFactory));
+        _vad = vad ?? throw new ArgumentNullException(nameof(vad));
+        _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+        _logger = logger ?? NullLogger<AudioPipeline>.Instance;
+    }
+
+    /// <summary>Backwards-compatible overload that captures the service eagerly.</summary>
+    public AudioPipeline(
+        IEnumerable<IAudioCaptureSource> sources,
+        ITranscriptionService transcription,
+        IVoiceActivityDetector vad,
+        TranscriptBuffer buffer,
+        ILogger<AudioPipeline>? logger = null)
+        : this(sources, () => transcription, vad, buffer, logger)
+    {
+    }
+
+    public bool IsRunning => _started;
+    public long ChunksReceived => Interlocked.Read(ref _chunksReceived);
+    public long ChunksTranscribed => Interlocked.Read(ref _chunksTranscribed);
+    public long SegmentsEmitted => Interlocked.Read(ref _segmentsEmitted);
+
+    /// <summary>
+    /// Leaky-peak amplitude (0..1) of recently captured audio. Stays ~0 when the
+    /// mic is muted/silent, letting the UI tell a "no signal" mic apart from one
+    /// that simply hasn't produced a transcript yet.
+    /// </summary>
+    public double RecentPeakAmplitude { get { lock (_peakGate) return _recentPeak; } }
+    private double _recentPeak;
+    private readonly object _peakGate = new();
+
+    public async Task StartAsync(CancellationToken ct)
+    {
+        if (_started) return;
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Interlocked.Exchange(ref _chunksReceived, 0);
+        Interlocked.Exchange(ref _chunksTranscribed, 0);
+        Interlocked.Exchange(ref _segmentsEmitted, 0);
+        _firstChunkAt = default;
+        lock (_peakGate) _recentPeak = 0;
+
+        _channel = Channel.CreateBounded<AudioChunk>(new BoundedChannelOptions(capacity: 256)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false,
+        });
+
+        var transcription = _transcriptionFactory();
+        _activeTranscription = transcription;
+        if (!transcription.IsReady)
+            await transcription.InitializeAsync(_cts.Token).ConfigureAwait(false);
+        _logger.LogInformation("Audio pipeline starting; transcription={Name} vad={Vad}",
+            transcription.Name, _vad.GetType().Name);
+
+        // If the transcription service streams segments asynchronously (Azure Speech),
+        // subscribe to its event so we can forward them as captions.
+        if (transcription is IStreamingTranscriptionService streaming)
+        {
+            streaming.SegmentReady += OnStreamingSegmentReady;
+            streaming.InterimReady += OnStreamingInterim;
+            _streamingService = streaming;
+        }
+
+        _consumer = Task.Run(() => ConsumeAsync(transcription, _channel.Reader, _cts.Token), _cts.Token);
+        _flusher = Task.Run(() => FlushLoopAsync(transcription, _cts.Token), _cts.Token);
+
+        foreach (var src in _sources)
+        {
+            src.CaptureFailed += OnSourceFailed;
+            src.ChunkCaptured += OnChunkCaptured;
+            await src.StartAsync(_cts.Token).ConfigureAwait(false);
+        }
+        _started = true;
+    }
+
+    public async Task StopAsync(CancellationToken ct)
+    {
+        if (!_started) return;
+        foreach (var src in _sources)
+        {
+            try { await src.StopAsync(ct).ConfigureAwait(false); } catch { /* swallow */ }
+            src.ChunkCaptured -= OnChunkCaptured;
+            src.CaptureFailed -= OnSourceFailed;
+        }
+        if (_streamingService is not null)
+        {
+            _streamingService.SegmentReady -= OnStreamingSegmentReady;
+            _streamingService.InterimReady -= OnStreamingInterim;
+            _streamingService = null;
+        }
+        _channel?.Writer.TryComplete();
+
+        // Final force-flush BEFORE cancelling so the last spoken utterance (which
+        // is still sitting in the transcriber's buffer waiting for the silence
+        // window) is transcribed and emitted instead of being discarded.
+        if (_activeTranscription is not null)
+        {
+            try
+            {
+                var finalSegs = await _activeTranscription.FlushAsync(CancellationToken.None, force: true)
+                    .ConfigureAwait(false);
+                EmitSegments(finalSegs);
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Final flush on stop failed"); }
+        }
+
+        _cts?.Cancel();
+        try
+        {
+            if (_consumer is not null) await _consumer.WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+            if (_flusher is not null) await _flusher.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        }
+        catch { /* swallow */ }
+        _activeTranscription = null;
+        _started = false;
+    }
+
+    private void OnStreamingSegmentReady(object? sender, TranscriptSegment segment)
+    {
+        Interlocked.Increment(ref _chunksTranscribed);
+        _buffer.Append(segment);
+        Interlocked.Increment(ref _segmentsEmitted);
+        SegmentEmitted?.Invoke(this, segment);
+    }
+
+    // Interim/partial hypotheses are NOT committed to the transcript buffer —
+    // they are provisional and superseded by the final SegmentReady. They only
+    // drive the live "typing as you speak" display.
+    private void OnStreamingInterim(object? sender, TranscriptSegment interim)
+        => InterimEmitted?.Invoke(this, interim);
+
+    private void OnSourceFailed(object? sender, AudioCaptureError err)
+        => CaptureFailed?.Invoke(this, err);
+
+    private void OnChunkCaptured(object? sender, AudioChunk chunk)
+    {
+        if (_channel is null) return;
+        if (Interlocked.Increment(ref _chunksReceived) == 1)
+        {
+            _firstChunkAt = DateTimeOffset.UtcNow;
+            _logger.LogInformation("First audio chunk received; role={Role} bytes={Bytes}",
+                chunk.Role, chunk.Samples.Length);
+        }
+        UpdatePeak(chunk);
+        // Drop-oldest channel: TryWrite never blocks even when full.
+        _channel.Writer.TryWrite(chunk);
+    }
+
+    private void UpdatePeak(AudioChunk chunk)
+    {
+        var span = chunk.Samples.Span;
+        if (chunk.Format.BitsPerSample != 16 || span.Length < 2) return;
+        short max = 0;
+        for (var i = 0; i + 1 < span.Length; i += 2)
+        {
+            var s = (short)(span[i] | (span[i + 1] << 8));
+            var a = (short)(s == short.MinValue ? short.MaxValue : Math.Abs(s));
+            if (a > max) max = a;
+        }
+        var peak = max / 32768.0;
+        lock (_peakGate) _recentPeak = Math.Max(peak, _recentPeak * 0.85);
+    }
+
+    private async Task ConsumeAsync(ITranscriptionService transcription, ChannelReader<AudioChunk> reader, CancellationToken ct)
+    {
+        // Streaming backends (Azure Speech) run their own server-side VAD and need
+        // a continuous, gapless audio feed, so we must NOT drop chunks for them.
+        // Windowed backends (gpt-4o-transcribe, Whisper) rely on us to keep silence
+        // out so the model only ever sees real speech.
+        var isStreaming = transcription is IStreamingTranscriptionService;
+        long received = 0, vadPassed = 0;
+        var lastStat = DateTimeOffset.UtcNow;
+        try
+        {
+            await foreach (var chunk in reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                ct.ThrowIfCancellationRequested();
+                received++;
+                var isSpeech = isStreaming || _vad.IsSpeech(chunk);
+
+                // Periodic diagnostic so we can see — in the live app — whether
+                // audio is arriving and whether the VAD is passing it.
+                var now = DateTimeOffset.UtcNow;
+                if ((now - lastStat).TotalSeconds >= 2)
+                {
+                    double peak; lock (_peakGate) peak = _recentPeak;
+                    _logger.LogInformation(
+                        "Pipeline stats: received={Received} vadPassed={VadPassed} recentPeak={Peak:F3} vad={Vad}",
+                        received, vadPassed, peak, _vad.GetType().Name);
+                    lastStat = now;
+                }
+
+                if (!isSpeech) continue;
+                vadPassed++;
+                try
+                {
+                    var segments = await transcription.TranscribeAsync(chunk, ct).ConfigureAwait(false);
+                    Interlocked.Increment(ref _chunksTranscribed);
+                    EmitSegments(segments);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Transcribe failed for chunk; continuing");
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* expected */ }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Transcription consumer crashed");
+        }
+    }
+
+    private async Task FlushLoopAsync(ITranscriptionService transcription, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Poll frequently: FlushAsync only emits when the speaker has paused,
+                // so a short interval gives end-of-utterance latency near the pause
+                // length itself rather than a fixed multi-second window.
+                try { await Task.Delay(_flushInterval, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+
+                try
+                {
+                    var segments = await transcription.FlushAsync(ct).ConfigureAwait(false);
+                    EmitSegments(segments);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Flush failed");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Flush loop crashed");
+        }
+    }
+
+    private void EmitSegments(IReadOnlyList<TranscriptSegment> segments)
+    {
+        foreach (var s in segments)
+        {
+            _buffer.Append(s);
+            Interlocked.Increment(ref _segmentsEmitted);
+            SegmentEmitted?.Invoke(this, s);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
+        foreach (var src in _sources) await src.DisposeAsync().ConfigureAwait(false);
+        _cts?.Dispose();
+    }
+}

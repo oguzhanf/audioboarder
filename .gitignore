@@ -1,0 +1,47 @@
+## bin/obj
+**/bin/
+**/obj/
+**/[Bb]in/
+**/[Oo]bj/
+
+## VS / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Build output
+*.dll
+*.pdb
+*.exe
+
+## NuGet
+*.nupkg
+packages/
+
+## Tests
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+## Smoke / runtime artefacts
+smoke-output/
+
+## Misc
+*.log
+*.swp
+
+## Local models / caches
+models/
+*.onnx
+ggml-*.bin
+
+## Personal configuration — never commit real tenant/subscription identifiers
+appsettings.Local.json
+**/appsettings.Local.json
+*.local.json
+.env
+

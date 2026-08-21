@@ -1,0 +1,368 @@
+<ui:FluentWindow x:Class="AudioBoarder.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:vm="clr-namespace:AudioBoarder.App.ViewModels"
+        xmlns:ctrl="clr-namespace:AudioBoarder.App.Controls"
+        mc:Ignorable="d"
+        Title="AudioBoarder"
+        Height="760" Width="1240"
+        WindowStartupLocation="CenterScreen"
+        WindowBackdropType="Mica"
+        ExtendsContentIntoTitleBar="True"
+        d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}">
+
+    <ui:FluentWindow.Resources>
+        <ctrl:HealthStatusBrushConverter x:Key="HealthBrush" />
+        <ctrl:BoolVisibilityConverter x:Key="BoolVis" />
+        <ctrl:BoolToStringConverter x:Key="BoolToString" />
+
+        <!-- Accent gradients (tuned to the DiagramTheme accent palette) -->
+        <LinearGradientBrush x:Key="TranscriptHeaderBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#6366F1" Offset="0" />
+            <GradientStop Color="#4F46E5" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="NotesHeaderBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#0EA5E9" Offset="0" />
+            <GradientStop Color="#14B8A6" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="CanvasFrameBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#C7D2FE" Offset="0" />
+            <GradientStop Color="#99F6E4" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="RevisionChipBrush" StartPoint="0,0" EndPoint="1,0">
+            <GradientStop Color="#6366F1" Offset="0" />
+            <GradientStop Color="#14B8A6" Offset="1" />
+        </LinearGradientBrush>
+
+        <!-- Soft Fluent elevation shadows -->
+        <DropShadowEffect x:Key="CardShadow" Color="#1E293B" Opacity="0.20"
+                          BlurRadius="22" ShadowDepth="3" Direction="270" />
+        <DropShadowEffect x:Key="ToolbarShadow" Color="#1E293B" Opacity="0.14"
+                          BlurRadius="14" ShadowDepth="2" Direction="270" />
+    </ui:FluentWindow.Resources>
+
+    <Grid Background="{DynamicResource ApplicationBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar with Mica chrome -->
+        <ui:TitleBar Grid.Row="0" Title="AudioBoarder" />
+
+        <!-- Fluent command toolbar -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource ApplicationBackgroundBrush}"
+                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="12,6"
+                Effect="{StaticResource ToolbarShadow}">
+            <DockPanel LastChildFill="False">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+
+                <ui:Button Command="{Binding ToggleListenCommand}"
+                           Content="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Listen|Stop'}"
+                           Appearance="Primary"
+                           Margin="0,0,6,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="Mic24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <Border Width="1" Margin="4,4"
+                        Background="{DynamicResource ControlElevationBorderBrush}" />
+
+                <ui:Button Command="{Binding RefineDiagramCommand}"
+                           Content="Deep Refine"
+                           ToolTip="Force a full pass through the deep model (gpt-5.4-pro). Slow but thorough — use sparingly."
+                           Margin="4,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="Sparkle24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <ui:TextBox Width="220" Margin="4,0"
+                            VerticalAlignment="Center"
+                            Text="{Binding RefinementInstruction, UpdateSourceTrigger=PropertyChanged}"
+                            PlaceholderText="Refinement instruction…"
+                            ToolTip="Optional instruction for deep refine, e.g. 'group the database operations'" />
+
+                <Border Width="1" Margin="4,4"
+                        Background="{DynamicResource ControlElevationBorderBrush}" />
+
+                <ui:Button Command="{Binding ExportPngCommand}"
+                           Content="Export PNG"
+                           Margin="4,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="Save24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <ui:Button Command="{Binding ExportExcalidrawCommand}"
+                           Content="Export Excalidraw"
+                           ToolTip="Save a hand-drawn .excalidraw file you can share with the customer and keep editing in Excalidraw."
+                           Margin="4,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="DrawShape24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <ui:Button Command="{Binding ClearSceneCommand}"
+                           Content="Clear"
+                           Margin="4,0,0,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="Delete24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <Border Width="1" Margin="8,4"
+                        Background="{DynamicResource ControlElevationBorderBrush}" />
+
+                <ui:ToggleSwitch Content="Whiteboard"
+                                 IsChecked="{Binding ShowWhiteboard, Mode=TwoWay}"
+                                 VerticalAlignment="Center"
+                                 ToolTip="Toggle between the hand-drawn Excalidraw whiteboard and the classic renderer." />
+
+            </StackPanel>
+
+            <!-- Microphone picker + live input meter -->
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <ui:SymbolIcon Symbol="Mic24" Margin="0,0,6,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <ProgressBar Width="70" Height="6" Margin="0,0,8,0"
+                             Minimum="0" Maximum="100"
+                             Value="{Binding MicLevel, Mode=OneWay}"
+                             Foreground="{DynamicResource SystemAccentBrush}"
+                             VerticalAlignment="Center"
+                             ToolTip="Live microphone input level. If this stays flat while you talk, pick another device." />
+                <ComboBox Width="190"
+                          ItemsSource="{Binding InputDevices}"
+                          SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
+                          DisplayMemberPath="Name"
+                          VerticalAlignment="Center"
+                          ToolTip="Choose which microphone to capture. Shared mode — Teams keeps using it too." />
+                <ui:Button Command="{Binding RefreshInputDevicesCommand}"
+                           Appearance="Transparent"
+                           ToolTip="Rescan microphones"
+                           Padding="8,4" Margin="4,0,0,0">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="ArrowSync24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+            </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Health panel (dismissible) -->
+        <Border Grid.Row="2"
+                Visibility="{Binding IsHealthPanelVisible, Converter={StaticResource BoolVis}}"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="12,6">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ui:Button Command="{Binding SignInToAzureCommand}"
+                               Content="Sign In"
+                               ToolTip="Sign in to your Azure tenant (opens a browser)."
+                               Margin="4,0">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="PersonKey24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding RetryHealthCommand}"
+                               Content="Retry"
+                               Margin="4,0">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="ArrowSync24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding DismissHealthPanelCommand}"
+                               Appearance="Transparent"
+                               ToolTip="Dismiss"
+                               Padding="8,4" Margin="4,0">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="Dismiss20" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                </StackPanel>
+
+                <ItemsControl ItemsSource="{Binding HealthStates}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="6"
+                                    Padding="10,5" Margin="0,2,8,2">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="10" Height="10" Margin="0,0,6,0"
+                                             VerticalAlignment="Center"
+                                             Fill="{Binding Status, Converter={StaticResource HealthBrush}}" />
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Title}"
+                                                   FontWeight="SemiBold" FontSize="13"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock Text="{Binding Detail}" FontSize="11"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                   TextTrimming="CharacterEllipsis" MaxWidth="300" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </DockPanel>
+        </Border>
+
+        <!-- Three-region body -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="320" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Captions card panel -->
+            <Border Grid.Column="0"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Margin="8,8,4,8"
+                    Effect="{StaticResource CardShadow}">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top"
+                            Background="{StaticResource TranscriptHeaderBrush}"
+                            Padding="12,8"
+                            CornerRadius="8,8,0,0">
+                        <TextBlock Text="Live transcript"
+                                   FontWeight="SemiBold" FontSize="14"
+                                   Foreground="White" />
+                    </Border>
+                    <TextBox x:Name="TranscriptBox"
+                             Text="{Binding TranscriptDisplay, Mode=OneWay}"
+                             IsReadOnly="True"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             FontSize="14"
+                             Padding="12,8"
+                             IsTabStop="False" />
+                </DockPanel>
+            </Border>
+
+            <!-- Central diagram canvas -->
+            <Border Grid.Column="1"
+                    Background="{DynamicResource ApplicationBackgroundBrush}"
+                    BorderBrush="{StaticResource CanvasFrameBrush}"
+                    BorderThickness="1.5"
+                    CornerRadius="10"
+                    Margin="0,8">
+                <Grid>
+                    <ctrl:ExcalidrawCanvas x:Name="Whiteboard"
+                                           Visibility="{Binding ShowWhiteboard, Converter={StaticResource BoolVis}}" />
+                    <ctrl:SceneCanvas x:Name="Canvas"
+                                      Visibility="{Binding ShowClassicView, Converter={StaticResource BoolVis}}" />
+                </Grid>
+            </Border>
+
+            <!-- Notes card panel -->
+            <Border Grid.Column="2"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Margin="4,8,8,8"
+                    Effect="{StaticResource CardShadow}">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top"
+                            Background="{StaticResource NotesHeaderBrush}"
+                            Padding="12,8"
+                            CornerRadius="8,8,0,0">
+                        <TextBlock Text="Notes"
+                                   FontWeight="SemiBold" FontSize="14"
+                                   Foreground="White" />
+                    </Border>
+                    <ListBox ItemsSource="{Binding Notes}"
+                             BorderThickness="0"
+                             Background="Transparent"
+                             Padding="4">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Padding" Value="4,2" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Background" Value="Transparent" />
+                                <Setter Property="BorderThickness" Value="0" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="0,0,0,1"
+                                        Padding="4,6">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Kind}"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource SystemFillColorSuccessBrush}" />
+                                            <TextBlock Text="{Binding Time}" Margin="6,0,0,0"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       FontSize="11" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                        <TextBlock Text="{Binding Owner}" FontStyle="Italic"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                   FontSize="11" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Status bar -->
+        <Border Grid.Row="4"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="12,5">
+            <DockPanel LastChildFill="True">
+                <TextBlock Text="{Binding StatusMessage}"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <ui:ProgressRing
+                        Visibility="{Binding IsGenerating, Converter={StaticResource BoolVis}}"
+                        IsIndeterminate="True"
+                        Width="16" Height="16"
+                        Margin="0,0,8,0" />
+                    <Border Background="{StaticResource RevisionChipBrush}"
+                            CornerRadius="9" Padding="9,2">
+                        <TextBlock Text="{Binding SceneRevision, StringFormat='rev {0}'}"
+                                   FontWeight="SemiBold"
+                                   Foreground="White" />
+                    </Border>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+    </Grid>
+</ui:FluentWindow>
+

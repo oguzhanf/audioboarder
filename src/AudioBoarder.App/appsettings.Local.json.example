@@ -1,0 +1,50 @@
+// ---------------------------------------------------------------------------
+// Copy this file to `appsettings.Local.json` (next to the built executable, or
+// in src/AudioBoarder.App/ and set Copy-to-output) and fill in your own values.
+//
+// `appsettings.Local.json` is git-ignored, so your tenant and subscription IDs
+// never end up in source control. Every key here is OPTIONAL — with an empty
+// config AudioBoarder signs you in interactively and auto-discovers the best
+// deployment in your subscription.
+//
+// JSON does not allow comments, so delete these lines when you copy the file.
+// ---------------------------------------------------------------------------
+{
+  "AudioBoarder": {
+    "AzureOpenAI": {
+      // Leave blank to use whatever tenant/subscription your Azure login defaults to.
+      "TenantId": "00000000-0000-0000-0000-000000000000",
+      "SubscriptionId": "00000000-0000-0000-0000-000000000000",
+
+      // Leave blank to auto-discover. Set to pin a specific deployment; the
+      // endpoint then follows whichever account hosts it.
+      "DeploymentName": "",
+
+      // Prefer accounts in this region when two deployments rank equally.
+      "PreferredRegion": "eastus",
+
+      // Prefer Entra ID (managed identity / interactive login) over an API key.
+      "UseManagedIdentity": true,
+      "ApiKey": ""
+    },
+
+    "Audio": {
+      // Loopback captures the far side of a meeting. Turn it off for mic-only.
+      "CaptureMicrophone": true,
+      "CaptureLoopback": true
+    },
+
+    // Optional: Azure Speech gives the lowest-latency streaming transcription.
+    // Leave Region blank to fall back to gpt-4o-transcribe or local Whisper.
+    "AzureSpeech": {
+      "Region": "",
+      "ResourceId": "",
+      "ApiKey": ""
+    },
+
+    "Diagnostics": {
+      // KEEP FALSE unless debugging: true writes transcripts and prompts to disk.
+      "VerbosePayloadLogging": false
+    }
+  }
+}
