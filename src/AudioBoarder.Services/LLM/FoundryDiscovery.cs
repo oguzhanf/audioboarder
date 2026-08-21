@@ -212,7 +212,24 @@ public sealed class FoundryDiscovery
     {
         if (string.IsNullOrEmpty(name)) return false;
         var lower = name.ToLowerInvariant();
-        return lower.Contains("transcribe") || lower.Contains("whisper");
+        if (!lower.Contains("transcribe") && !lower.Contains("whisper")) return false;
+
+        // Realtime-only models expose a websocket transcription session and do NOT
+        // implement /audio/transcriptions, which is what OpenAITranscribeService posts
+        // windowed chunks to. Selecting one would leave transcription permanently
+        // broken, so exclude them until a realtime backend exists.
+        return !IsRealtimeOnlyTranscribeModel(lower);
+    }
+
+    /// <summary>
+    /// True for models whose only transcription surface is the realtime websocket API
+    /// (Foundry capability <c>realtimeTranscription</c> without <c>audioTranscriptions</c>).
+    /// </summary>
+    internal static bool IsRealtimeOnlyTranscribeModel(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return false;
+        var lower = name.ToLowerInvariant();
+        return lower.Contains("live-transcribe") || lower.Contains("realtime-whisper");
     }
 
     private static bool IsMaiModel(string? name) =>
@@ -323,14 +340,28 @@ public sealed class FoundryDiscovery
         return 10;
     }
 
-    private static int TranscribeScore(string? modelName)
+    /// <summary>
+    /// Ranks a transcription deployment. Newer generations first.
+    /// <c>gpt-transcribe</c> (2026) supersedes the gpt-4o-transcribe family; the old
+    /// rule matched only the explicit gpt-4o names, so a newer plain "gpt-transcribe"
+    /// deployment fell through to the catch-all and scored BELOW whisper.
+    /// </summary>
+    internal static int TranscribeScore(string? modelName)
     {
         if (string.IsNullOrEmpty(modelName)) return 0;
         var lower = modelName.ToLowerInvariant();
-        if (lower.Contains("mai-transcribe")) return 100;
-        if (lower.Contains("gpt-4o-transcribe-diarize")) return 95;
+
+        // Never rank a model the windowed /audio/transcriptions path cannot call.
+        if (IsRealtimeOnlyTranscribeModel(lower)) return 0;
+
+        if (lower.Contains("mai-transcribe")) return 120;
+        // Plain "gpt-transcribe" is the current generation. Check it only after the
+        // gpt-4o-* names so a substring can't steal their match.
+        if (lower.Contains("gpt-4o-transcribe-diarize")) return 100;
+        if (lower.Contains("gpt-4o-mini-transcribe")) return 80;
         if (lower.Contains("gpt-4o-transcribe")) return 90;
-        if (lower.Contains("gpt-4o-mini-transcribe")) return 85;
+        if (lower.Contains("gpt-transcribe")) return 130;
+        if (lower.Contains("transcribe")) return 60;
         if (lower.Contains("whisper")) return 50;
         return 10;
     }

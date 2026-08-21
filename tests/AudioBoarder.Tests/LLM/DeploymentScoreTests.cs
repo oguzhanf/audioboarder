@@ -49,4 +49,46 @@ public class DeploymentScoreTests
         FoundryDiscovery.DeploymentScore("gpt-5-6-sol")
             .Should().Be(FoundryDiscovery.DeploymentScore("gpt-5.6-sol"));
     }
+
+    [Theory]
+    [InlineData("gpt-transcribe", "gpt-4o-transcribe")]
+    [InlineData("gpt-transcribe", "gpt-4o-transcribe-diarize")]
+    [InlineData("gpt-transcribe", "whisper")]
+    [InlineData("gpt-4o-transcribe", "gpt-4o-mini-transcribe")]
+    [InlineData("gpt-4o-transcribe-diarize", "gpt-4o-transcribe")]
+    [InlineData("gpt-4o-transcribe", "whisper")]
+    public void NewerTranscriptionModelOutranksOlder(string better, string worse)
+    {
+        FoundryDiscovery.TranscribeScore(better)
+            .Should().BeGreaterThan(FoundryDiscovery.TranscribeScore(worse),
+                $"{better} should outrank {worse}");
+    }
+
+    [Fact]
+    public void PlainGptTranscribeIsNotMistakenForTheGpt4oFamily()
+    {
+        // "gpt-transcribe" previously fell through every gpt-4o-* check to the
+        // catch-all and scored 10 — below whisper — so a newer deployment was ignored.
+        FoundryDiscovery.TranscribeScore("gpt-transcribe")
+            .Should().BeGreaterThan(FoundryDiscovery.TranscribeScore("whisper"));
+    }
+
+    [Theory]
+    [InlineData("gpt-live-transcribe")]
+    [InlineData("gpt-realtime-whisper")]
+    public void RealtimeOnlyModelsAreNeverSelected(string model)
+    {
+        // These expose only a websocket transcription session, not
+        // /audio/transcriptions, which is what the windowed pipeline posts to.
+        FoundryDiscovery.IsRealtimeOnlyTranscribeModel(model).Should().BeTrue();
+        FoundryDiscovery.TranscribeScore(model).Should().Be(0);
+    }
+
+    [Fact]
+    public void BatchCapableModelsAreNotFlaggedRealtimeOnly()
+    {
+        FoundryDiscovery.IsRealtimeOnlyTranscribeModel("gpt-transcribe").Should().BeFalse();
+        FoundryDiscovery.IsRealtimeOnlyTranscribeModel("gpt-4o-transcribe").Should().BeFalse();
+        FoundryDiscovery.IsRealtimeOnlyTranscribeModel("whisper").Should().BeFalse();
+    }
 }

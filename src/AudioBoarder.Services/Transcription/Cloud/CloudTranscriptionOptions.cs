@@ -23,9 +23,31 @@ public sealed class CloudTranscriptionOptions
     /// utterance and triggers a flush. Lower = snappier, higher = fewer cuts.</summary>
     public int SilenceFlushMs { get; set; } = 380;
 
-    /// <summary>Optional domain prompt biasing recognition toward expected vocabulary.
-    /// Sent as the transcriptions API "prompt" field.</summary>
-    public string? Prompt { get; set; }
+    /// <summary>
+    /// Domain prompt biasing recognition toward expected vocabulary, sent as the
+    /// transcriptions API "prompt" field.
+    /// <para>
+    /// This is not cosmetic. Measured against a synthesised sample, an empty prompt
+    /// left <c>gpt-transcribe</c> hearing "per-view" for "Purview" (6/7 domain terms),
+    /// and left both models lower-casing product names. With the prompt below both
+    /// scored 7/7 with correct casing. Meetings are full of product nouns, so this
+    /// ships switched on.
+    /// </para>
+    /// </summary>
+    public string? Prompt { get; set; } = DefaultVocabularyPrompt;
+
+    /// <summary>
+    /// Seed vocabulary for technical/business meetings. Override via
+    /// <c>CloudTranscription.Prompt</c> to bias toward your own domain, or set it to
+    /// an empty string to disable biasing entirely.
+    /// </summary>
+    public const string DefaultVocabularyPrompt =
+        "Technical meeting audio. Expect product and technology names such as: " +
+        "Microsoft Purview, Microsoft Fabric, Power BI, Copilot, Entra, Defender, " +
+        "Sentinel, Intune, OneLake, Synapse, Databricks, Azure, SharePoint, Teams, " +
+        "Outlook, Kubernetes, Terraform, Postgres, Cosmos DB, Data Catalog, " +
+        "and acronyms such as DLP, RBAC, SSO, MFA, API, SLA, KPI, PII, CI/CD, LLM, RAG. " +
+        "Preserve the capitalisation of product names.";
 
     /// <summary>Sampling temperature for the transcription model. 0 = most literal,
     /// least prone to inventing words on noisy audio.</summary>

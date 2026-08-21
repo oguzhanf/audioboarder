@@ -198,7 +198,11 @@ public partial class App : Application
             opts.WindowSeconds = ct.WindowSeconds;
             opts.Backend = ct.Backend;
             opts.SilenceFlushMs = ct.SilenceFlushMs;
-            opts.Prompt = ct.Prompt;
+            // Only override the built-in vocabulary prompt when the user actually
+            // supplied one. A blank value in appsettings must not silently disable
+            // domain biasing — that is what made product names come back wrong.
+            if (ct.Prompt is not null)
+                opts.Prompt = ct.Prompt;
             opts.Temperature = ct.Temperature;
         });
 
