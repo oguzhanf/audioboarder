@@ -211,7 +211,7 @@ public class SceneToExcalidrawConverterTests
     }
 
     [Fact]
-    public void GroupBecomesTintedBoundaryWithLabel()
+    public void GroupBecomesFrameThatOwnsItsMembers()
     {
         var graph = BuildScene();
         _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
@@ -220,17 +220,21 @@ public class SceneToExcalidrawConverterTests
         }));
 
         var doc = _converter.Convert(graph);
-        var region = Find(doc, "g1_region")!;
-        region.Type.Should().Be("rectangle");
-        // A system boundary is tinted (not transparent) so it reads as a container.
-        region.BackgroundColor.Should().NotBe("transparent");
-        region.StrokeStyle.Should().Be("dashed");
-        Find(doc, "g1_label")!.Text.Should().EndWith("Backend");
+        var frame = Find(doc, "g1_frame")!;
+        // A frame owns its children, so dragging the boundary moves the contents.
+        // A plain background rectangle just slid out from under them.
+        frame.Type.Should().Be("frame");
+        frame.Name.Should().Be("Backend");
 
-        // The region is drawn behind the nodes it contains.
-        var regionIdx = doc.Elements.FindIndex(e => e.Id == "g1_region");
+        Find(doc, "b")!.FrameId.Should().Be("g1_frame");
+        Find(doc, "c")!.FrameId.Should().Be("g1_frame");
+        // A node outside the group must not be captured by the frame.
+        Find(doc, "a")!.FrameId.Should().BeNull();
+
+        // The frame is drawn behind the nodes it contains.
+        var frameIdx = doc.Elements.FindIndex(e => e.Id == "g1_frame");
         var nodeIdx = doc.Elements.FindIndex(e => e.Id == "b");
-        regionIdx.Should().BeLessThan(nodeIdx);
+        frameIdx.Should().BeLessThan(nodeIdx);
     }
 
     [Fact]

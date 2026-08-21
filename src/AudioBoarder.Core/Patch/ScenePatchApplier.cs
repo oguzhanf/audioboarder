@@ -23,6 +23,7 @@ public sealed class ScenePatchApplier
         var ctx = new ApplyContext(graph);
         var ops = patch.Operations;
         var applied = 0;
+        var skipped = 0;
         for (var i = 0; i < ops.Count; i++)
         {
             try
@@ -32,10 +33,20 @@ public sealed class ScenePatchApplier
             }
             catch (ScenePatchException)
             {
-                // Skip this op, keep applying the rest.
+                skipped++;   // invalid but anticipated — skip this op, keep the rest
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // Anything else means the model produced a shape we didn't anticipate
+                // (e.g. a "connect" with no "from", which used to surface as
+                // ArgumentNullException from a null dictionary key). Previously only
+                // ScenePatchException was caught, so one such op aborted the ENTIRE
+                // patch and the diagram silently stopped updating — exactly the
+                // failure this class's "best-effort" contract exists to prevent.
+                skipped++;
             }
         }
-        return new ScenePatchResult(applied, graph.Revision);
+        return new ScenePatchResult(applied, graph.Revision, skipped);
     }
 
     private static void ApplyOne(SceneGraph graph, ScenePatchOperation op, int index, ApplyContext ctx)
@@ -125,6 +136,8 @@ public sealed class ScenePatchApplier
             case Connect conn:
             {
                 Validate.NonEmpty(index, "connect.id", conn.Id);
+                Validate.NonEmpty(index, "connect.from", conn.From);
+                Validate.NonEmpty(index, "connect.to", conn.To);
                 var from = ctx.Resolve(conn.From);
                 var to = ctx.Resolve(conn.To);
                 if (!graph.ContainsNode(from))
@@ -177,8 +190,9 @@ public sealed class ScenePatchApplier
                 Validate.NonEmpty(index, "group.id", g.Id);
                 if (graph.ContainsGroup(g.Id)) break;
                 graph.AddGroup(new SceneGroup { Id = g.Id, Label = CleanLabel(g.Label) });
-                foreach (var nid in g.NodeIds)
+                foreach (var nid in g.NodeIds ?? Array.Empty<string>())
                 {
+                    if (string.IsNullOrEmpty(nid)) continue;
                     var rid = ctx.Resolve(nid);
                     if (graph.ContainsNode(rid)) graph.Nodes[rid].GroupId = g.Id;
                 }
@@ -273,12 +287,23 @@ public sealed class ScenePatchApplier
         }
 
         public void Reset() { _labelToId.Clear(); _noteTextToId.Clear(); _alias.Clear(); }
-        public string Resolve(string id) => _alias.TryGetValue(id, out var real) ? real : id;
-        public void MapAlias(string from, string to) => _alias[from] = to;
-        public void IndexLabel(string key, string id) { if (key.Length > 0) _labelToId[key] = id; }
-        public bool TryResolveLabel(string key, out string? id) => _labelToId.TryGetValue(key, out id);
-        public void IndexNote(string key, string id) { if (key.Length > 0) _noteTextToId[key] = id; }
-        public bool TryResolveNote(string key, out string? id) => _noteTextToId.TryGetValue(key, out id);
+        // Null-safe: the model sometimes omits a required id entirely, and a null
+        // dictionary key throws ArgumentNullException rather than returning false.
+        public string Resolve(string? id) =>
+            id is null ? string.Empty : _alias.TryGetValue(id, out var real) ? real : id;
+        public void MapAlias(string? from, string to) { if (!string.IsNullOrEmpty(from)) _alias[from] = to; }
+        public void IndexLabel(string? key, string id) { if (!string.IsNullOrEmpty(key)) _labelToId[key] = id; }
+        public bool TryResolveLabel(string? key, out string? id)
+        {
+            if (string.IsNullOrEmpty(key)) { id = null; return false; }
+            return _labelToId.TryGetValue(key, out id);
+        }
+        public void IndexNote(string? key, string id) { if (!string.IsNullOrEmpty(key)) _noteTextToId[key] = id; }
+        public bool TryResolveNote(string? key, out string? id)
+        {
+            if (string.IsNullOrEmpty(key)) { id = null; return false; }
+            return _noteTextToId.TryGetValue(key, out id);
+        }
     }
 
     /// <summary>Normalised key for fuzzy label/text identity: lower-cased,
@@ -325,4 +350,4 @@ public sealed class ScenePatchApplier
     }
 }
 
-public sealed record ScenePatchResult(int OperationsApplied, int Revision);
+public sealed record ScenePatchResult(int OperationsApplied, int Revision, int OperationsSkipped = 0);

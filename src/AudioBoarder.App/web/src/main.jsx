@@ -70,6 +70,42 @@ try {
   /* ignore */
 }
 
+// Excalidraw's default is wheel = pan, ctrl+wheel = zoom. On a whiteboard that
+// updates itself while you talk, zoom is the gesture you reach for constantly,
+// so invert it: plain wheel zooms at the cursor, and panning stays available on
+// shift+wheel, space-drag, middle-drag and the hand tool.
+//
+// Rather than driving appState.zoom ourselves (which would also require
+// recomputing scrollX/scrollY to keep the point under the cursor fixed), we
+// re-dispatch the event with ctrlKey set and let Excalidraw do its own
+// zoom-at-cursor maths. The synthetic event carries ctrlKey, so the guard below
+// short-circuits it and there is no recursion.
+function installWheelZoom(container) {
+  if (!container) return;
+  container.addEventListener(
+    "wheel",
+    (e) => {
+      if (e.ctrlKey || e.metaKey) return; // already a zoom gesture
+      if (e.shiftKey) return;             // keep shift+wheel as horizontal pan
+      e.preventDefault();
+      e.stopPropagation();
+      e.target.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaX: 0,
+          deltaY: e.deltaY,
+          deltaMode: e.deltaMode,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    },
+    { capture: true, passive: false }
+  );
+}
+
 function App() {
   return React.createElement(Excalidraw, {
     excalidrawAPI: (api) => {
@@ -91,4 +127,6 @@ function App() {
   });
 }
 
-createRoot(document.getElementById("root")).render(React.createElement(App));
+const container = document.getElementById("root");
+createRoot(container).render(React.createElement(App));
+installWheelZoom(container);

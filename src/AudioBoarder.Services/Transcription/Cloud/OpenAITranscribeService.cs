@@ -153,8 +153,18 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             }
             using var doc = JsonDocument.Parse(body);
             if (!doc.RootElement.TryGetProperty("text", out var t)) return Array.Empty<TranscriptSegment>();
-            var text = (t.GetString() ?? string.Empty).Trim();
+            var raw = (t.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<TranscriptSegment>();
+
+            // Multilingual ASR fills ambiguous audio with tokens from whatever script
+            // it drifts into. Observed live with language=en: every sentence ended in
+            // a CJK ideograph plus a fullwidth stop. Strip those before they reach the
+            // caption pane, node labels and the LLM prompt.
+            var text = TranscriptTextCleaner.Clean(raw, _options.Language);
             if (string.IsNullOrWhiteSpace(text)) return Array.Empty<TranscriptSegment>();
+            if (!string.Equals(text, raw, StringComparison.Ordinal))
+                _logger.LogInformation("Cleaned foreign-script artefacts from transcript");
+
             if (IsLikelyHallucination(text))
             {
                 _logger.LogInformation("Dropped likely-hallucinated transcript: \"{Text}\"", Truncate(text, 80));

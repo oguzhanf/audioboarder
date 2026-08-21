@@ -84,11 +84,22 @@ public sealed class AzureOpenAIResponsesGenerator : IScenePatchGenerator
             ? $"Respond ONLY with a ScenePatch JSON object. Keep it incremental and minimal. Max 5 operations. If nothing notable happened, return an empty operations array."
             : $"Respond ONLY with the ScenePatch JSON object — no prose, no markdown, no explanations. Max {request.MaxNodes} nodes total.");
 
+        // Reasoning effort dominates latency on the gpt-5.x family. Left unset the
+        // service picks a middle setting and a continuous pass took ~29 s (luna) and
+        // ~39 s (sol) — longer than the 6 s interval it fires on, so the pipeline was
+        // permanently saturated and the board always lagged the conversation.
+        //
+        // A continuous pass only has to notice what changed in the last few seconds,
+        // which needs very little deliberation; the deep pass is where restructuring
+        // is worth paying for.
+        var effort = request.IsContinuous ? "low" : "medium";
+
         var payload = new
         {
             model = deploymentName,
             input = input.ToString(),
             text = new { format = new { type = "json_object" } },
+            reasoning = new { effort },
         };
 
         using var content = new StringContent(

@@ -75,11 +75,27 @@ public sealed class SceneToExcalidrawConverter
                 Register(boundByNode, edge.ToNodeId, arrow.Id);
             }
 
-            // Node shapes + bound labels.
+            // Node shapes + bound labels. Frames are computed first so each member
+            // shape can carry its frameId: an Excalidraw frame moves its children,
+            // whereas the plain background rectangle we used to emit was just a
+            // sibling shape that slid out from under the nodes when dragged.
+            var frameByNode = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var group in graph.Groups.Values)
+            {
+                var memberIds = graph.Nodes.Values
+                    .Where(n => n.GroupId == group.Id && geom.ContainsKey(n.Id))
+                    .Select(n => n.Id)
+                    .ToList();
+                if (memberIds.Count == 0) continue;
+                foreach (var id in memberIds) frameByNode[id] = group.Id + "_frame";
+                back.Add(BuildGroupFrame(group, memberIds.Select(id => geom[id]).ToList(), options, now));
+            }
+
             foreach (var node in graph.Nodes.Values)
             {
                 var box = geom[node.Id];
                 var shape = BuildNodeShape(node, box, options, now);
+                if (frameByNode.TryGetValue(node.Id, out var frameId)) shape.FrameId = frameId;
 
                 var bound = boundByNode.TryGetValue(node.Id, out var arrows)
                     ? new List<ExcalidrawBoundElement>(arrows)
@@ -88,6 +104,7 @@ public sealed class SceneToExcalidrawConverter
                 if (!string.IsNullOrWhiteSpace(node.Label))
                 {
                     var text = BuildBoundLabel(node, box, options, now);
+                    if (frameByNode.TryGetValue(node.Id, out var lblFrame)) text.FrameId = lblFrame;
                     bound.Add(new ExcalidrawBoundElement { Id = text.Id, Type = "text" });
                     front.Add(shape);
                     front.Add(text);
@@ -98,17 +115,6 @@ public sealed class SceneToExcalidrawConverter
                 }
 
                 if (bound.Count > 0) shape.BoundElements = bound;
-            }
-
-            // Group regions (drawn behind nodes) with a corner label.
-            foreach (var group in graph.Groups.Values)
-            {
-                var members = graph.Nodes.Values
-                    .Where(n => n.GroupId == group.Id && geom.ContainsKey(n.Id))
-                    .Select(n => geom[n.Id])
-                    .ToList();
-                if (members.Count == 0) continue;
-                back.AddRange(BuildGroupRegion(group, members, options, now));
             }
 
             if (options.IncludeNotes && graph.Notes.Count > 0)
@@ -358,62 +364,44 @@ public sealed class SceneToExcalidrawConverter
 
     // ---- groups -------------------------------------------------------------
 
-    private IEnumerable<ExcalidrawElement> BuildGroupRegion(SceneGroup group, List<NodeBox> members,
+    /// <summary>
+    /// Builds a real Excalidraw <c>frame</c> for a system boundary.
+    /// <para>
+    /// Frames own their children: dragging one moves everything inside it, and the
+    /// frame renders its own name. The previous implementation emitted a plain
+    /// background rectangle plus a floating text label, which merely sat behind the
+    /// nodes — dragging the boundary slid the box out from under its own contents.
+    /// </para>
+    /// </summary>
+    private ExcalidrawElement BuildGroupFrame(SceneGroup group, List<NodeBox> members,
         ExcalidrawExportOptions o, long now)
     {
-        const double pad = 28;
+        const double pad = 34;
         var minX = members.Min(m => m.Left) - pad;
         var minY = members.Min(m => m.Top) - pad;
         var maxX = members.Max(m => m.Left + m.W) + pad;
         var maxY = members.Max(m => m.Top + m.H) + pad;
 
-        var rect = new ExcalidrawElement
+        return new ExcalidrawElement
         {
-            Id = group.Id + "_region",
-            Type = "rectangle",
+            Id = group.Id + "_frame",
+            Type = "frame",
+            Name = string.IsNullOrWhiteSpace(group.Label) ? "Group" : group.Label,
             X = minX,
             Y = minY,
             Width = maxX - minX,
             Height = maxY - minY,
             StrokeColor = "#5c7cfa",
-            // A faint tint (rather than fully transparent) makes a system read as a
-            // real boundary you can point at, the way a Visio container does.
-            BackgroundColor = "#edf2ff",
+            BackgroundColor = "transparent",
             FillStyle = "solid",
             StrokeWidth = 2,
-            StrokeStyle = "dashed",
-            Roughness = o.Roughness,
-            Roundness = new ExcalidrawRoundness { Type = 3 },
+            StrokeStyle = "solid",
+            // Frames are chrome, not sketch: roughness 0 keeps the boundary crisp
+            // against the hand-drawn shapes inside it.
+            Roughness = 0,
+            Roundness = null,
             Seed = Seed(group.Id),
             VersionNonce = Seed(group.Id, 1),
-            Updated = now,
-        };
-        yield return rect;
-
-        if (string.IsNullOrWhiteSpace(group.Label)) yield break;
-        yield return new ExcalidrawElement
-        {
-            Id = group.Id + "_label",
-            Type = "text",
-            X = minX + 12,
-            Y = minY + 8,
-            Width = Math.Max(20, group.Label.Length * GroupFontSize * 0.6),
-            Height = GroupFontSize * 1.6,
-            StrokeColor = "#3b5bdb",
-            BackgroundColor = "transparent",
-            FillStyle = o.FillStyle,
-            StrokeWidth = 1,
-            Roughness = o.Roughness,
-            Text = "\u2b1a  " + group.Label,
-            OriginalText = group.Label,
-            FontSize = GroupFontSize,
-            FontFamily = o.FontFamily,
-            TextAlign = "left",
-            VerticalAlign = "top",
-            LineHeight = LineHeight,
-            AutoResize = true,
-            Seed = Seed(group.Id, 2),
-            VersionNonce = Seed(group.Id, 3),
             Updated = now,
         };
     }
