@@ -8,6 +8,6 @@
     <NeutralLanguage>en-US</NeutralLanguage>
     <Copyright>Copyright © 2026</Copyright>
     <Product>AudioBoarder</Product>
-    <Version>0.1.0</Version>
+    <Version>0.5.0</Version>
   </PropertyGroup>
 </Project>

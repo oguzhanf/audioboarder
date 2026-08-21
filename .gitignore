@@ -29,6 +29,8 @@ coverage/
 
 ## Smoke / runtime artefacts
 smoke-output/
+artifacts/
+publish/
 
 ## Misc
 *.log
