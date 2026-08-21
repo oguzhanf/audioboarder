@@ -15,6 +15,17 @@ if (args.Length > 0 && args[0] == "llm")
     return await LlmProbe.RunAsync(ep, dep, tid, transcript);
 }
 
+if (args.Length > 0 && args[0] == "asr")
+{
+    // asr <endpoint> <deployment> <wavPath> [vadThreshold] [chunkMs]
+    var aEp = args[1];
+    var aDep = args[2];
+    var aWav = args[3];
+    var aThr = args.Length > 4 && double.TryParse(args[4], out var t) ? t : 0.012;
+    var aChunk = args.Length > 5 && int.TryParse(args[5], out var c) ? c : 30;
+    return await AsrProbe.RunAsync(aEp, aDep, aWav, aThr, aChunk, null);
+}
+
 if (args.Length > 0 && args[0] == "speech")
 {
     // speech <region> <resourceId> <tenant> <wavPath>

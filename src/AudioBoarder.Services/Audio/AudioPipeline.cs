@@ -215,49 +215,108 @@ public sealed class AudioPipeline : IAsyncDisposable
     {
         // Streaming backends (Azure Speech) run their own server-side VAD and need
         // a continuous, gapless audio feed, so we must NOT drop chunks for them.
-        // Windowed backends (gpt-4o-transcribe, Whisper) rely on us to keep silence
-        // out so the model only ever sees real speech.
+        //
+        // Windowed backends used to have every sub-threshold 30 ms chunk removed
+        // before buffering, which spliced the surviving fragments together. That
+        // destroys transcription: inter-word pauses, quiet fricatives and word
+        // onsets all fall under a fixed RMS threshold. Measured on a 7.5 s sample,
+        // a quiet microphone lost 63% of its audio and the model returned
+        // "we're going [unclear]. We're going the model and model." for
+        // "we're going to talk about Azure AI Foundry ... models and model
+        // deployments", which the same audio transcribed perfectly when sent
+        // continuously.
+        //
+        // So the VAD no longer decides WHICH audio is kept — only WHEN an
+        // utterance starts and ends. Inside an utterance every chunk is buffered,
+        // gaps included, exactly as a meeting client would send it.
         var isStreaming = transcription is IStreamingTranscriptionService;
-        long received = 0, vadPassed = 0;
+        long received = 0, buffered = 0, speechChunks = 0;
         var lastStat = DateTimeOffset.UtcNow;
+
+        // Speech detected this recently keeps the utterance open, so natural pauses
+        // stay in the audio instead of being cut out of the middle of a sentence.
+        var holdover = TimeSpan.FromMilliseconds(700);
+        var lastSpeechAt = DateTimeOffset.MinValue;
+
+        // Small pre-roll so the attack of the first word isn't clipped: the VAD only
+        // trips once a sound is already underway.
+        const int preRollChunks = 6; // ~180 ms at 30 ms/chunk
+        var preRoll = new Queue<AudioChunk>(preRollChunks + 1);
+        var inUtterance = false;
+
         try
         {
             await foreach (var chunk in reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
                 ct.ThrowIfCancellationRequested();
                 received++;
-                var isSpeech = isStreaming || _vad.IsSpeech(chunk);
-
-                // Periodic diagnostic so we can see — in the live app — whether
-                // audio is arriving and whether the VAD is passing it.
                 var now = DateTimeOffset.UtcNow;
+                var isSpeech = isStreaming || _vad.IsSpeech(chunk);
+                if (isSpeech) { lastSpeechAt = now; speechChunks++; }
+
                 if ((now - lastStat).TotalSeconds >= 2)
                 {
                     double peak; lock (_peakGate) peak = _recentPeak;
                     _logger.LogInformation(
-                        "Pipeline stats: received={Received} vadPassed={VadPassed} recentPeak={Peak:F3} vad={Vad}",
-                        received, vadPassed, peak, _vad.GetType().Name);
+                        "Pipeline stats: received={Received} buffered={Buffered} speech={Speech} recentPeak={Peak:F3} vad={Vad}",
+                        received, buffered, speechChunks, peak, _vad.GetType().Name);
                     lastStat = now;
                 }
 
-                if (!isSpeech) continue;
-                vadPassed++;
-                try
+                if (isStreaming)
                 {
-                    var segments = await transcription.TranscribeAsync(chunk, ct).ConfigureAwait(false);
-                    Interlocked.Increment(ref _chunksTranscribed);
-                    EmitSegments(segments);
+                    await ForwardAsync(transcription, chunk, ct).ConfigureAwait(false);
+                    buffered++;
+                    continue;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+
+                var utteranceOpen = lastSpeechAt != DateTimeOffset.MinValue && (now - lastSpeechAt) <= holdover;
+                if (!utteranceOpen)
                 {
-                    _logger.LogWarning(ex, "Transcribe failed for chunk; continuing");
+                    // Silence between utterances: hold the newest chunks as pre-roll
+                    // rather than discarding them outright.
+                    inUtterance = false;
+                    preRoll.Enqueue(chunk);
+                    while (preRoll.Count > preRollChunks) preRoll.Dequeue();
+                    continue;
                 }
+
+                if (!inUtterance)
+                {
+                    inUtterance = true;
+                    while (preRoll.Count > 0)
+                    {
+                        await ForwardAsync(transcription, preRoll.Dequeue(), ct).ConfigureAwait(false);
+                        buffered++;
+                    }
+                }
+
+                await ForwardAsync(transcription, chunk, ct).ConfigureAwait(false);
+                buffered++;
             }
         }
         catch (OperationCanceledException) { /* expected */ }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Transcription consumer crashed");
+        }
+    }
+
+    /// <summary>
+    /// Hands one chunk to the transcription service. Windowed services buffer it and
+    /// return nothing; streaming services may emit segments immediately.
+    /// </summary>
+    private async Task ForwardAsync(ITranscriptionService transcription, AudioChunk chunk, CancellationToken ct)
+    {
+        try
+        {
+            var segments = await transcription.TranscribeAsync(chunk, ct).ConfigureAwait(false);
+            Interlocked.Increment(ref _chunksTranscribed);
+            EmitSegments(segments);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Transcribe failed for chunk; continuing");
         }
     }
 

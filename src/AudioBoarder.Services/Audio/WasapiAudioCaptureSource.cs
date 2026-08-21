@@ -90,6 +90,23 @@ public sealed class WasapiAudioCaptureSource : IAudioCaptureSource
 
             _capture.StartRecording();
             IsRunning = true;
+
+            // Surface a Windows-level endpoint mute immediately. Capture "succeeds"
+            // on a muted endpoint and then delivers pure silence forever with no
+            // error, which is indistinguishable from nobody speaking. Teams and
+            // headset vendor software sync their mute button to this flag.
+            if (!_loopback)
+            {
+                try
+                {
+                    if (_device.AudioEndpointVolume.Mute)
+                        _logger?.LogWarning(
+                            "Capture endpoint \"{Device}\" is MUTED in Windows — all captured audio will be silent " +
+                            "until it is unmuted (Teams and headset mute buttons set this flag)",
+                            _device.FriendlyName);
+                }
+                catch { /* endpoint may not expose volume */ }
+            }
             _logger.LogInformation("WASAPI capture started role={Role} device={Device} format={Format}",
                 _role, _device?.FriendlyName, _capture.WaveFormat);
             return Task.CompletedTask;

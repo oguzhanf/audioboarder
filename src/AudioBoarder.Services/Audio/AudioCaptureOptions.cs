@@ -20,10 +20,15 @@ public sealed class AudioCaptureOptions
     /// is explicitly opted in via AUDIOBOARDER_VAD=silero.</summary>
     public float VadThreshold { get; set; } = 0.45f;
 
-    /// <summary>Energy-VAD RMS threshold (0..1). The reliable default gate: audio
-    /// above this is treated as speech, below as silence. Tuned so normal speech
-    /// passes while room silence does not.</summary>
-    public float EnergyVadThresholdRms { get; set; } = 0.012f;
+    /// <summary>
+    /// Energy-VAD RMS threshold (0..1) used to decide when an utterance STARTS and
+    /// ENDS. It no longer decides which audio is kept, so the trade-off has inverted:
+    /// over-triggering merely buffers a little extra audio (which helps the model),
+    /// while under-triggering loses speech entirely. The old 0.012 default was tuned
+    /// for the previous filter-everything behaviour and silently ate quiet
+    /// microphones, so this is deliberately conservative.
+    /// </summary>
+    public float EnergyVadThresholdRms { get; set; } = 0.006f;
 
     /// <summary>Apply automatic gain control. OFF by default: AGC was found to
     /// over-amplify room noise to clipping, which defeats the energy VAD (every

@@ -239,8 +239,7 @@ public partial class MainViewModel : ObservableObject
         // a real peak, we stop nagging entirely.
         if (listeningFor > TimeSpan.FromSeconds(3) && chunks == 0)
         {
-            StatusMessage = "⚠ No microphone signal. The mic may be muted (headset boom/mute button) " +
-                            "or selected as a different default device. Captions need your mic.";
+            StatusMessage = $"⚠ No microphone signal. {DescribeSilentMic()}";
             return;
         }
 
@@ -250,8 +249,7 @@ public partial class MainViewModel : ObservableObject
             if (_maxPeakObserved >= 0.006)
                 StatusMessage = $"Listening · {lvl} · transcribing…";
             else if (listeningFor > TimeSpan.FromSeconds(6))
-                StatusMessage = $"Listening · {lvl} · no speech heard yet — just start talking. " +
-                                "If the level stays at 0% your mic may be muted.";
+                StatusMessage = $"Listening · {lvl} · {DescribeSilentMic()}";
             else
                 StatusMessage = $"Listening · {lvl} · warming up…";
         }
@@ -265,6 +263,26 @@ public partial class MainViewModel : ObservableObject
         RefineDiagramCommand.NotifyCanExecuteChanged();
         ExportPngCommand.NotifyCanExecuteChanged();
         ExportExcalidrawCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Explains a flat-zero mic level. Checks the WINDOWS endpoint mute flag and
+    /// names the offending device instead of guessing "your mic may be muted".
+    /// Teams and headset vendor software (e.g. Poly) sync their mute button to this
+    /// flag, so a user who is certain they never muted anything can still be
+    /// capturing pure silence with no error anywhere.
+    /// </summary>
+    private string DescribeSilentMic()
+    {
+        try
+        {
+            var (muted, name) = _devices.GetCaptureMuteState();
+            if (muted)
+                return $"⚠ \"{name}\" is MUTED in Windows — Teams or your headset's mute button sets this. " +
+                       "Unmute it in Sound settings › Input, or choose another device above.";
+        }
+        catch { /* fall through to the generic hint */ }
+        return "no speech heard yet — just start talking. If the level stays at 0%, check the mic isn't muted.";
     }
 
     [RelayCommand]
