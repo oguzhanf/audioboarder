@@ -210,6 +210,7 @@ public partial class MainViewModel : ObservableObject
                 InterimText = "";
                 StatusMessage = $"Stopped. {Captions.Count} captions · {ContinuousUpdates} auto-updates.";
             }
+
             else
             {
                 StatusMessage = "Starting capture…";
@@ -233,6 +234,22 @@ public partial class MainViewModel : ObservableObject
             StatusMessage = $"Listen failed: {ex.Message}";
             IsListening = false;
         }
+    }
+
+    public async Task PrepareForUpdateAsync()
+    {
+        if (IsListening)
+            await ToggleListenAsync();
+
+        var pendingSave = Interlocked.Exchange(ref _userEditSaveCts, null);
+        if (pendingSave is not null)
+        {
+            try { pendingSave.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+
+        if (_autoSave)
+            await _sessions.SaveAsync(Scene.Clone());
     }
 
     private void RefreshListenStatus()

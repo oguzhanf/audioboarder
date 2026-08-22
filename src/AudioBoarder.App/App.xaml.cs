@@ -1,10 +1,12 @@
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Threading;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.HealthCheck;
 using AudioBoarder.App.Sessions;
+using AudioBoarder.App.Updates;
 using AudioBoarder.App.ViewModels;
 using AudioBoarder.Core.Rendering;
 using AudioBoarder.Core.Scene;
@@ -59,7 +61,59 @@ public partial class App : Application
 
         MainWindow = window;
         window.Show();
-        _ = RunStartupTasksAsync(Host.Services);
+        HandleUpdateResult(e.Args, Host.Services);
+        _ = RunStartupSequenceAsync(window, Host.Services);
+    }
+
+    private static async Task RunStartupSequenceAsync(Window owner, IServiceProvider services)
+    {
+        await RunStartupTasksAsync(services);
+        await CheckForUpdatesAsync(owner, services);
+    }
+
+    private static async Task CheckForUpdatesAsync(Window owner, IServiceProvider services)
+    {
+        try
+        {
+            var updateService = services.GetRequiredService<GitHubUpdateService>();
+            var release = await updateService.CheckAsync();
+            if (release is null || !owner.IsVisible)
+                return;
+
+            await owner.Dispatcher.InvokeAsync(() =>
+            {
+                var viewModel = services.GetRequiredService<MainViewModel>();
+                var updateWindow = new UpdateWindow(updateService, release, viewModel) { Owner = owner };
+                updateWindow.Show();
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "GitHub update check failed");
+        }
+    }
+
+    private static void HandleUpdateResult(string[] args, IServiceProvider services)
+    {
+        var failure = args.FirstOrDefault(arg =>
+            arg.StartsWith("--update-failed=", StringComparison.OrdinalIgnoreCase));
+        if (failure is null)
+            return;
+
+        var tag = args.FirstOrDefault(arg =>
+            arg.StartsWith("--update-tag=", StringComparison.OrdinalIgnoreCase))?
+            .Split('=', 2)[1] ?? "unknown";
+        var code = failure.Split('=', 2)[1];
+        services.GetRequiredService<GitHubUpdateService>().RecordFailure(tag);
+        var logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AudioBoarder", "updates", tag, "install.log");
+        MessageBox.Show(
+            $"The {tag} update could not be installed (Windows Installer code {code}). " +
+            $"AudioBoarder has reopened and will retry after 24 hours.\n\nInstaller log: {logPath}",
+            "AudioBoarder update",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private static async Task RunStartupTasksAsync(IServiceProvider services)
@@ -242,6 +296,9 @@ public partial class App : Application
         builder.Services.AddSingleton<Export.ExcalidrawExporter>();
         builder.Services.AddSingleton<StartupHealthService>();
         builder.Services.AddSingleton<Continuous.ContinuousDiagrammer>();
+        builder.Services.AddSingleton(sp => new GitHubUpdateService(
+            new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
+            sp.GetRequiredService<ILogger<GitHubUpdateService>>()));
 
         builder.Services.AddSingleton<MainViewModel>();
         builder.Services.AddSingleton<MainWindow>();

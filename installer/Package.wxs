@@ -48,6 +48,16 @@
                      Type="integer"
                      Value="1"
                      KeyPath="yes" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\AudioBoarder"
+                     Name="InstallPath"
+                     Type="string"
+                     Value="[INSTALLFOLDER]" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\AudioBoarder"
+                     Name="Version"
+                     Type="string"
+                     Value="$(var.Version)" />
     </Component>
   </Fragment>
 </Wix>

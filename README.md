@@ -44,6 +44,12 @@ software installation is restricted. Extract the complete folder before running
 Release binaries are currently unsigned, so Windows SmartScreen may ask you to confirm
 the download before installation. SHA-256 checksums are published with every release.
 
+MSI installations check the repository's latest GitHub release when AudioBoarder starts.
+When a newer version is available, the app shows its release notes, downloads and verifies
+the installer using GitHub's SHA-256 digest, installs the update, and restarts automatically.
+Windows may request administrator approval because the MSI installs for all users. Portable
+installations remain manually updated so the app never replaces files in an extracted folder.
+
 On first launch, an in-app guide explains Azure sign-in, microphone selection, privacy,
 live capture, editing, and export. Reopen it later with the **Help** button.
 

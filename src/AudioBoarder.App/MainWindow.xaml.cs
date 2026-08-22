@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Collections.Specialized;
+using System.ComponentModel;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
 using AudioBoarder.Services.Rendering;
@@ -18,6 +19,7 @@ public partial class MainWindow : FluentWindow
     private readonly MainViewModel _viewModel;
     private bool _isTranscriptPaneVisible = true;
     private bool _isNotesPaneVisible = true;
+    private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
 
     public MainWindow(MainViewModel viewModel, SceneRenderer renderer)
@@ -27,7 +29,7 @@ public partial class MainWindow : FluentWindow
         DataContext = viewModel;
         ApplicationThemeManager.Apply(GetApplicationThemeFromSystemTheme(), WindowBackdropType.Mica, true);
         Loaded += OnLoaded;
-        Closed += OnClosed;
+        Closing += OnClosing;
 
         Canvas.Scene = viewModel.Scene;
         Canvas.Renderer = renderer;
@@ -55,11 +57,17 @@ public partial class MainWindow : FluentWindow
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         SystemThemeWatcher.Watch(this, WindowBackdropType.Mica, true);
+        _isThemeWatcherActive = true;
     }
 
-    private void OnClosed(object? sender, EventArgs e)
+    private void OnClosing(object? sender, CancelEventArgs e)
     {
-        SystemThemeWatcher.UnWatch(this);
+        if (_isThemeWatcherActive)
+        {
+            SystemThemeWatcher.UnWatch(this);
+            _isThemeWatcherActive = false;
+        }
+
         Whiteboard.UserSceneChanged -= OnWhiteboardUserSceneChanged;
         _viewModel.Notes.CollectionChanged -= OnNotesChanged;
     }

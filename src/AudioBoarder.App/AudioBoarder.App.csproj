@@ -53,9 +53,10 @@
     <None Update="Assets\silero_vad.onnx">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Assets\AudioBoarder.ico">
+    <Resource Include="Assets\AudioBoarder.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Resource>
     <!-- Vendored, self-contained Excalidraw whiteboard bundle (offline). -->
     <None Update="Assets\web\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
