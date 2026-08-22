@@ -46,6 +46,21 @@ public sealed class SceneGraph
         Revision++;
     }
 
+    internal void ReplaceWith(SceneGraph source)
+    {
+        _nodes.Clear();
+        _edges.Clear();
+        _groups.Clear();
+        _notes.Clear();
+        _images.Clear();
+        foreach (var n in source._nodes.Values) _nodes[n.Id] = n;
+        foreach (var e in source._edges.Values) _edges[e.Id] = e;
+        foreach (var g in source._groups.Values) _groups[g.Id] = g;
+        foreach (var n in source._notes.Values) _notes[n.Id] = n;
+        foreach (var image in source._images.Values) _images[image.Id] = image;
+        Revision = source.Revision;
+    }
+
     internal void AddEdge(SceneEdge edge) { _edges[edge.Id] = edge; Revision++; }
     internal void RemoveEdge(string id) { if (_edges.Remove(id)) Revision++; }
     internal void AddGroup(SceneGroup g) { _groups[g.Id] = g; Revision++; }
@@ -62,7 +77,13 @@ public sealed class SceneGraph
     internal void AddImage(SceneImage img) { _images[img.Id] = img; Revision++; }
     internal void RemoveImage(string id) { if (_images.Remove(id)) Revision++; }
     /// <summary>Public to allow async image-generation tasks to update a previously-added placeholder.</summary>
-    public void NotifyImageUpdated(string id) { if (_images.ContainsKey(id)) Revision++; }
+    public void NotifyImageUpdated(string id)
+    {
+        lock (SyncRoot)
+        {
+            if (_images.ContainsKey(id)) Revision++;
+        }
+    }
 
     internal void Clear()
     {
@@ -79,6 +100,27 @@ public sealed class SceneGraph
     public bool ContainsGroup(string id) => _groups.ContainsKey(id);
     public bool ContainsNote(string id) => _notes.ContainsKey(id);
     public bool ContainsImage(string id) => _images.ContainsKey(id);
+
+    public bool TryUpdateNodeGeometry(
+        string id, double x, double y, double width, double height, bool locked)
+    {
+        if (!double.IsFinite(x) || !double.IsFinite(y) ||
+            !double.IsFinite(width) || !double.IsFinite(height) ||
+            width <= 0 || height <= 0)
+            return false;
+
+        lock (SyncRoot)
+        {
+            if (!_nodes.TryGetValue(id, out var node)) return false;
+            node.X = x;
+            node.Y = y;
+            node.Width = width;
+            node.Height = height;
+            node.Locked = locked;
+            Revision++;
+            return true;
+        }
+    }
 
     public SceneGraph Clone()
     {

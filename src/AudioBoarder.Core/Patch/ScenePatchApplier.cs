@@ -20,33 +20,32 @@ public sealed class ScenePatchApplier
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(patch);
 
-        var ctx = new ApplyContext(graph);
-        var ops = patch.Operations;
-        var applied = 0;
-        var skipped = 0;
-        for (var i = 0; i < ops.Count; i++)
+        lock (graph.SyncRoot)
         {
-            try
+            var working = graph.Clone();
+            var ctx = new ApplyContext(working);
+            var ops = patch.Operations;
+            var applied = 0;
+            var skipped = 0;
+            for (var i = 0; i < ops.Count; i++)
             {
-                ApplyOne(graph, ops[i], i, ctx);
-                applied++;
+                try
+                {
+                    ApplyOne(working, ops[i], i, ctx);
+                    applied++;
+                }
+                catch (ScenePatchException)
+                {
+                    skipped++;
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    skipped++;
+                }
             }
-            catch (ScenePatchException)
-            {
-                skipped++;   // invalid but anticipated — skip this op, keep the rest
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
-            {
-                // Anything else means the model produced a shape we didn't anticipate
-                // (e.g. a "connect" with no "from", which used to surface as
-                // ArgumentNullException from a null dictionary key). Previously only
-                // ScenePatchException was caught, so one such op aborted the ENTIRE
-                // patch and the diagram silently stopped updating — exactly the
-                // failure this class's "best-effort" contract exists to prevent.
-                skipped++;
-            }
+            graph.ReplaceWith(working);
+            return new ScenePatchResult(applied, graph.Revision, skipped);
         }
-        return new ScenePatchResult(applied, graph.Revision, skipped);
     }
 
     private static void ApplyOne(SceneGraph graph, ScenePatchOperation op, int index, ApplyContext ctx)

@@ -1,0 +1,53 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="AudioBoarder"
+           Manufacturer="Oguzhan Filizlibay"
+           Version="$(var.Version)"
+           UpgradeCode="9F67C607-0E72-4EA2-8F36-26EB4251CA78"
+           Scope="perMachine">
+    <SummaryInformation Description="AudioBoarder realtime meeting whiteboard" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AudioBoarder is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Icon Id="AudioBoarderIcon" SourceFile="..\src\AudioBoarder.App\Assets\AudioBoarder.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AudioBoarderIcon" />
+
+    <Feature Id="MainFeature" Title="AudioBoarder" Level="1">
+      <ComponentGroupRef Id="PublishedFiles" />
+      <ComponentRef Id="ApplicationShortcuts" />
+    </Feature>
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="AudioBoarder" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="AudioBoarder" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="PublishedFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+
+    <Component Id="ApplicationShortcuts" Directory="ApplicationProgramsFolder" Guid="*">
+      <Shortcut Id="StartMenuShortcut"
+                Name="AudioBoarder"
+                Description="Turn live meetings into an editable whiteboard"
+                Target="[INSTALLFOLDER]AudioBoarder.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AudioBoarderIcon" />
+      <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\AudioBoarder"
+                     Name="Installed"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>

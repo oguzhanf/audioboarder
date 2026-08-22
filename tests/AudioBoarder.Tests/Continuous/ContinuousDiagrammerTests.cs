@@ -87,6 +87,26 @@ public class ContinuousDiagrammerTests
     }
 
     [Fact]
+    public async Task PendingSegmentsWakeWhenIntervalExpiresWithoutMoreSpeech()
+    {
+        var (diag, pipeline, _, _, _) = Build(interval: 0.25, minSegs: 1);
+        diag.Start();
+
+        RaiseSegment(pipeline, "first");
+        await WaitForAsync(() => diag.TotalGenerations >= 1, TimeSpan.FromSeconds(2));
+
+        RaiseSegment(pipeline, "second");
+        await Task.Delay(100);
+        diag.TotalGenerations.Should().Be(1, "the cooldown is still active");
+
+        await WaitForAsync(() => diag.TotalGenerations >= 2, TimeSpan.FromSeconds(2));
+        diag.TotalGenerations.Should().Be(2,
+            "pending speech must schedule its own wake-up instead of waiting for another segment");
+
+        await diag.DisposeAsync();
+    }
+
+    [Fact]
     public async Task QueuesFollowupWhenSegmentsArriveDuringGeneration()
     {
         // Use a slow generator so the first generation is genuinely "in flight" while
@@ -157,10 +177,46 @@ public class ContinuousDiagrammerTests
         await diag.DisposeAsync();
     }
 
+    [Fact]
+    public async Task ContinuousGenerationRejectsDestructiveOperations()
+    {
+        var scene = new SceneGraph();
+        new ScenePatchApplier().Apply(scene, new ScenePatch(new ScenePatchOperation[]
+        {
+            new AddNode("existing", NodeKind.Process, "Keep me"),
+        }));
+        var generator = new DestructiveGenerator();
+        var orchestrator = new DiagramOrchestrator(
+            generator,
+            new LayeredLayoutEngine(),
+            new TranscriptBuffer(TimeSpan.FromMinutes(1)),
+            scene);
+
+        await orchestrator.GenerateAsync(null, isContinuous: true);
+
+        scene.Nodes.Should().ContainKey("existing");
+        scene.Nodes.Should().ContainKey("safe");
+    }
+
     private static async Task WaitForAsync(Func<bool> predicate, TimeSpan timeout)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (!predicate() && sw.Elapsed < timeout)
             await Task.Delay(20);
+    }
+
+    private sealed class DestructiveGenerator : IScenePatchGenerator
+    {
+        public string Name => "destructive-test";
+        public Task<ScenePatchResponse> GenerateAsync(ScenePatchRequest request, CancellationToken ct)
+        {
+            var patch = new ScenePatch(new ScenePatchOperation[]
+            {
+                new ClearScene(),
+                new DeleteNode("existing"),
+                new AddNode("safe", NodeKind.Process, "Safe update"),
+            });
+            return Task.FromResult(new ScenePatchResponse(patch, Name, TimeSpan.Zero));
+        }
     }
 }

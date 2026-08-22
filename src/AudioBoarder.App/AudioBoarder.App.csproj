@@ -7,6 +7,7 @@
     <RootNamespace>AudioBoarder.App</RootNamespace>
     <AssemblyName>AudioBoarder</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AudioBoarder.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
     <!-- web/ is the Vite SOURCE for the Excalidraw bundle (incl. node_modules);
          never let MSBuild glob it. The BUILT bundle lives in Assets/web. -->
@@ -50,6 +51,9 @@
       <DependentUpon>appsettings.json</DependentUpon>
     </None>
     <None Update="Assets\silero_vad.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\AudioBoarder.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- Vendored, self-contained Excalidraw whiteboard bundle (offline). -->

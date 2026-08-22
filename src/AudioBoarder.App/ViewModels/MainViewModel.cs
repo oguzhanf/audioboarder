@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows.Threading;
+using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Continuous;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.Sessions;
@@ -10,6 +11,7 @@ using AudioBoarder.Services.Audio;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AudioBoarder.App.ViewModels;
 
@@ -26,9 +28,12 @@ public partial class MainViewModel : ObservableObject
     private readonly Auth.AzureCredentialProvider _credentials;
     private readonly AudioDeviceService _devices;
     private readonly ILogger<MainViewModel> _logger;
+    private readonly bool _autoSave;
     private DispatcherTimer? _captureTimer;
     private DateTimeOffset _listenStartedAt;
     private double _maxPeakObserved;
+    private long _lastInterimUpdateAt;
+    private CancellationTokenSource? _userEditSaveCts;
 
     public ObservableCollection<CaptionViewModel> Captions { get; } = new();
     public ObservableCollection<NoteViewModel> Notes { get; } = new();
@@ -79,6 +84,7 @@ public partial class MainViewModel : ObservableObject
         ContinuousDiagrammer continuous,
         Auth.AzureCredentialProvider credentials,
         AudioDeviceService devices,
+        IOptions<AudioBoarderSettings> settings,
         ILogger<MainViewModel> logger)
     {
         _orchestrator = orchestrator;
@@ -91,11 +97,12 @@ public partial class MainViewModel : ObservableObject
         _continuous = continuous;
         _credentials = credentials;
         _devices = devices;
+        _autoSave = settings.Value.Sessions.AutoSave;
         _logger = logger;
 
         RefreshInputDevices();
         _pipeline.SegmentEmitted += (_, seg) => UiInvoke(() => OnSegment(seg));
-        _pipeline.InterimEmitted += (_, seg) => UiInvoke(() => InterimText = seg.Text?.Trim() ?? "");
+        _pipeline.InterimEmitted += (_, seg) => OnInterim(seg);
         _pipeline.CaptureFailed += (_, err) => UiInvoke(() => StatusMessage = $"Capture error ({err.Role}): {err.Message}");
 
         _orchestrator.GenerationStarted += (_, e) => UiInvoke(() =>
@@ -105,28 +112,41 @@ public partial class MainViewModel : ObservableObject
             ToggleListenCommand.NotifyCanExecuteChanged();
             RefineDiagramCommand.NotifyCanExecuteChanged();
         });
-        _orchestrator.GenerationCompleted += (_, e) => UiInvoke(async () =>
+        _orchestrator.GenerationCompleted += (_, e) => UiInvoke(() =>
         {
             IsGenerating = false;
-            StatusMessage = $"Updated: {e.Result.ApplyResult.OperationsApplied} ops in {e.Result.Response.Elapsed.TotalMilliseconds:F0} ms.";
+            var skipped = e.Result.ApplyResult.OperationsSkipped;
+            StatusMessage = skipped == 0
+                ? $"Updated: {e.Result.ApplyResult.OperationsApplied} ops in {e.Result.Response.Elapsed.TotalMilliseconds:F0} ms."
+                : $"Updated with warnings: {e.Result.ApplyResult.OperationsApplied} ops, {skipped} rejected.";
             RefreshNotes();
             SceneRevision = Scene.Revision;
             SceneInvalidated?.Invoke(this, EventArgs.Empty);
             // Snapshot on the UI thread (Clone locks SyncRoot) then save off-thread,
             // so the serializer never enumerates the live graph while a background
             // patch mutates it.
-            var snapshot = Scene.Clone();
-            _ = Task.Run(() => _sessions.SaveAsync(snapshot));
+            if (_autoSave)
+            {
+                var snapshot = Scene.Clone();
+                _ = _sessions.SaveAsync(snapshot);
+            }
             RefineDiagramCommand.NotifyCanExecuteChanged();
             ExportPngCommand.NotifyCanExecuteChanged();
             ExportExcalidrawCommand.NotifyCanExecuteChanged();
-            await Task.CompletedTask;
         });
         _orchestrator.GenerationFailed += (_, e) => UiInvoke(() =>
         {
             IsGenerating = false;
-            StatusMessage = $"Update failed: {e.Error.Message}";
+            StatusMessage = e.Error is OperationCanceledException
+                ? "Diagram update cancelled."
+                : $"Update failed: {e.Error.Message}";
+            ToggleListenCommand.NotifyCanExecuteChanged();
             RefineDiagramCommand.NotifyCanExecuteChanged();
+        });
+        _orchestrator.ImageUpdated += (_, _) => UiInvoke(() =>
+        {
+            SceneRevision = Scene.Revision;
+            SceneInvalidated?.Invoke(this, EventArgs.Empty);
         });
 
         _continuous.GenerationTriggered += (_, e) => UiInvoke(() =>
@@ -172,7 +192,7 @@ public partial class MainViewModel : ObservableObject
         RefineDiagramCommand.NotifyCanExecuteChanged();
     }
 
-    public bool CanListen => !IsGenerating && IsAudioReady && IsTranscriptionReady;
+    public bool CanListen => IsListening || (!IsGenerating && IsAudioReady && IsTranscriptionReady);
     public bool CanRefine => !IsGenerating && IsAzureReady && Scene.Nodes.Count > 0;
     public bool CanExport => Scene.Nodes.Count > 0;
 
@@ -221,6 +241,7 @@ public partial class MainViewModel : ObservableObject
         var chunks = _pipeline.ChunksReceived;
         var transcribed = _pipeline.ChunksTranscribed;
         var segments = _pipeline.SegmentsEmitted;
+        var dropped = _pipeline.ChunksDropped;
         var pending = _continuous.PendingNewSegments;
         var totalUpdates = _continuous.TotalGenerations;
         var nextEligible = _continuous.TimeUntilNextEligible;
@@ -232,6 +253,12 @@ public partial class MainViewModel : ObservableObject
 
         if (IsGenerating)
             return; // GenerationStarted set the status
+
+        if (dropped > 0)
+        {
+            StatusMessage = $"Listening · degraded: {dropped} audio chunk(s) dropped because transcription fell behind.";
+            return;
+        }
 
         // No-signal detection. Only the "no chunks at all" case is a hard error
         // (mic muted or grabbed by another app). A quiet mic that simply hasn't
@@ -351,7 +378,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    public void ClearScene()
+    public async Task ClearSceneAsync()
     {
         _orchestrator.Clear();
         Notes.Clear();
@@ -361,10 +388,53 @@ public partial class MainViewModel : ObservableObject
         SceneRevision = Scene.Revision;
         SceneInvalidated?.Invoke(this, EventArgs.Empty);
         StatusMessage = "Scene cleared.";
-        _sessions.Clear();
+        await _sessions.ClearAsync();
         ExportPngCommand.NotifyCanExecuteChanged();
         ExportExcalidrawCommand.NotifyCanExecuteChanged();
         RefineDiagramCommand.NotifyCanExecuteChanged();
+    }
+
+    public void RestoreSession(SessionPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        _sessions.Apply(Scene, payload);
+        RefreshNotes();
+        SceneRevision = Scene.Revision;
+        SceneInvalidated?.Invoke(this, EventArgs.Empty);
+        ExportPngCommand.NotifyCanExecuteChanged();
+        ExportExcalidrawCommand.NotifyCanExecuteChanged();
+        RefineDiagramCommand.NotifyCanExecuteChanged();
+        StatusMessage = $"Restored session from {payload.SavedAt.LocalDateTime:g}.";
+    }
+
+    public void NotifyUserSceneEdited()
+    {
+        SceneRevision = Scene.Revision;
+        if (!_autoSave) return;
+
+        var next = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _userEditSaveCts, next);
+        if (previous is not null)
+        {
+            try { previous.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+        _ = SaveUserEditAfterDelayAsync(next);
+    }
+
+    private async Task SaveUserEditAfterDelayAsync(CancellationTokenSource delayCts)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350), delayCts.Token);
+            await _sessions.SaveAsync(Scene.Clone(), delayCts.Token);
+        }
+        catch (OperationCanceledException) when (delayCts.IsCancellationRequested) { }
+        finally
+        {
+            Interlocked.CompareExchange(ref _userEditSaveCts, null, delayCts);
+            delayCts.Dispose();
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanExport))]
@@ -464,6 +534,16 @@ public partial class MainViewModel : ObservableObject
 
         Captions.Add(new CaptionViewModel(segment));
         while (Captions.Count > 200) Captions.RemoveAt(0);
+    }
+
+    private void OnInterim(TranscriptSegment segment)
+    {
+        var now = Environment.TickCount64;
+        var previous = Interlocked.Read(ref _lastInterimUpdateAt);
+        if (now - previous < 100 ||
+            Interlocked.CompareExchange(ref _lastInterimUpdateAt, now, previous) != previous)
+            return;
+        UiInvoke(() => InterimText = segment.Text?.Trim() ?? "");
     }
 
     private void RefreshNotes()

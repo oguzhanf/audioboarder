@@ -30,6 +30,25 @@ You do **not** need to hardcode any credentials. AudioBoarder signs in with
 
 ## Quick start
 
+### Recommended: Windows installer
+
+Download the latest `AudioBoarder-v*-win-x64.msi` from
+[GitHub Releases](https://github.com/oguzhanf/audioboarder/releases). The MSI includes
+the .NET runtime, native audio/AI dependencies, and the offline whiteboard bundle; it
+installs everything together and adds AudioBoarder to the Start menu.
+
+The portable ZIP contains the same self-contained application for environments where
+software installation is restricted. Extract the complete folder before running
+`AudioBoarder.exe`—the executable depends on the adjacent `Assets` and runtime files.
+
+Release binaries are currently unsigned, so Windows SmartScreen may ask you to confirm
+the download before installation. SHA-256 checksums are published with every release.
+
+On first launch, an in-app guide explains Azure sign-in, microphone selection, privacy,
+live capture, editing, and export. Reopen it later with the **Help** button.
+
+### Build from source
+
 ```powershell
 git clone https://github.com/oguzhanf/audioboarder.git
 cd audioboarder
@@ -258,6 +277,20 @@ dotnet build                                   # build
 dotnet test                                    # 158 tests
 cd src\AudioBoarder.App\web; npm ci; npm run build   # rebuild the Excalidraw bundle
 ```
+
+### Build the Windows installer
+
+```powershell
+dotnet publish src\AudioBoarder.App\AudioBoarder.App.csproj `
+  -c Release -r win-x64 --self-contained true -o artifacts\publish\win-x64
+
+$publishDir = (Resolve-Path artifacts\publish\win-x64).Path
+dotnet build installer\AudioBoarder.Installer.wixproj -c Release `
+  -p:PublishDir="$publishDir"
+```
+
+For a GitHub release, publish the MSI, portable ZIP, and `SHA256SUMS.txt` together
+under the matching version tag.
 
 ### Known follow-ups
 

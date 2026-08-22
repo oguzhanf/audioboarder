@@ -27,6 +27,9 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
     private int _newSegmentsSinceLast;
     private bool _generationInFlight;
     private bool _pendingFollowup;
+    private bool _wakeScheduled;
+    private Task? _generationTask;
+    private Task? _wakeTask;
     private long _totalGenerations;
     private bool _started;
 
@@ -70,7 +73,15 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
             return;
         }
         if (_started) return;
+        _cts?.Dispose();
         _cts = new CancellationTokenSource();
+        Interlocked.Exchange(ref _newSegmentsSinceLast, 0);
+        lock (_gate)
+        {
+            _generationInFlight = false;
+            _pendingFollowup = false;
+            _wakeScheduled = false;
+        }
         _lastDeepPassAt = DateTimeOffset.UtcNow; // first deep pass fires after the interval
         _pipeline.SegmentEmitted += OnSegment;
         _started = true;
@@ -82,9 +93,18 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
     {
         if (!_started) return;
         _pipeline.SegmentEmitted -= OnSegment;
-        _cts?.Cancel();
         _started = false;
-        try { await Task.Delay(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false); } catch { }
+        _cts?.Cancel();
+        Task[] pending;
+        lock (_gate)
+        {
+            pending = new[] { _generationTask, _wakeTask }
+                .Where(t => t is not null)
+                .Cast<Task>()
+                .ToArray();
+        }
+        try { await Task.WhenAll(pending).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
         _logger.LogInformation("Continuous diagrammer stopped");
     }
 
@@ -105,13 +125,40 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
             }
             if (Volatile.Read(ref _newSegmentsSinceLast) < _settings.MinNewSegments) return;
             var nextEligible = _lastGenerationAt + TimeSpan.FromSeconds(_settings.MinIntervalSeconds);
-            if (DateTimeOffset.UtcNow < nextEligible) return;
+            var delay = nextEligible - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero)
+            {
+                if (!_wakeScheduled)
+                {
+                    _wakeScheduled = true;
+                    var ct = _cts?.Token ?? CancellationToken.None;
+                    _wakeTask = WakeWhenEligibleAsync(delay, ct);
+                }
+                return;
+            }
             _generationInFlight = true;
             _pendingFollowup = false;
+            var runToken = _cts?.Token ?? CancellationToken.None;
+            _generationTask = Task.Run(() => RunOneAsync(runToken), CancellationToken.None);
+        }
+    }
+
+    private async Task WakeWhenEligibleAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            lock (_gate) _wakeScheduled = false;
         }
 
-        var ct = _cts?.Token ?? CancellationToken.None;
-        _ = Task.Run(() => RunOneAsync(ct), ct);
+        if (_started) MaybeTrigger();
     }
 
     private async Task RunOneAsync(CancellationToken ct)
@@ -121,7 +168,6 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
         // schedule a follow-up; resetting prematurely would lose that signal.
         var segmentsConsumed = Volatile.Read(ref _newSegmentsSinceLast);
         var evt = new ContinuousGenerationEvent(segmentsConsumed, DateTimeOffset.UtcNow);
-        var succeeded = false;
 
         // Periodically run a DEEP pass (smart model: groups + clean structure,
         // like Deep Refine) instead of a quick fast-model update — so the diagram
@@ -138,11 +184,11 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
                 userInstruction: null,
                 layoutOptions: null,
                 isContinuous: !deep,
+                isAutomatic: true,
                 ct: ct).ConfigureAwait(false);
             if (deep) _lastDeepPassAt = DateTimeOffset.UtcNow;
             Interlocked.Increment(ref _totalGenerations);
             GenerationCompleted?.Invoke(this, evt);
-            succeeded = true;
         }
         catch (OperationCanceledException) { /* expected on stop */ }
         catch (Exception ex)
@@ -152,12 +198,10 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
         }
         finally
         {
-            if (succeeded)
-            {
-                // Subtract what we processed; any segments that arrived during the
-                // call remain counted so the follow-up trigger has a reason to fire.
-                Interlocked.Add(ref _newSegmentsSinceLast, -segmentsConsumed);
-            }
+            // Do not retry a failed batch forever. Its transcript remains in the
+            // rolling buffer and will be considered again when fresh speech arrives.
+            // Subtract only the snapshotted count so segments received in-flight stay pending.
+            Interlocked.Add(ref _newSegmentsSinceLast, -segmentsConsumed);
             _lastGenerationAt = DateTimeOffset.UtcNow;
             bool runAgain;
             lock (_gate)
@@ -169,7 +213,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
                            || Volatile.Read(ref _newSegmentsSinceLast) >= _settings.MinNewSegments;
                 _pendingFollowup = false;
             }
-            if (runAgain) MaybeTrigger();
+            if (runAgain && _started) MaybeTrigger();
         }
     }
 

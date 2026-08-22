@@ -116,8 +116,7 @@ public sealed class AzureOpenAIOptions
             { "op": "note_upsert", "id": "<string>", "kind": "action_item|decision|question|risk|general", "text": "<string>", "owner": "<optional>" },
             { "op": "note_delete", "id": "<string>" },
             { "op": "generate_image", "id": "<string>", "prompt": "<vivid visual description>", "attach_to_node_id": "<optional>" },
-            { "op": "delete_image", "id": "<string>" },
-            { "op": "clear_scene" }
+            { "op": "delete_image", "id": "<string>" }
           ]
         }
         """;

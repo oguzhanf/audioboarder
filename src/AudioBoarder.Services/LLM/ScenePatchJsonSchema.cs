@@ -23,7 +23,7 @@ internal static class ScenePatchJsonSchema
               "op": {
                 "type": "string",
                 "enum": [
-                  "clear_scene", "add_node", "update_node", "delete_node",
+                  "add_node", "update_node", "delete_node",
                   "connect", "disconnect", "relabel", "group", "ungroup",
                   "note_upsert", "note_delete",
                   "generate_image", "delete_image"

@@ -1,7 +1,6 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
-using Wpf.Ui.Appearance;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.HealthCheck;
@@ -21,6 +20,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
 using Serilog.Events;
+using Wpf.Ui.Appearance;
 
 namespace AudioBoarder.App;
 
@@ -35,8 +35,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        ApplicationThemeManager.Apply(ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
-
+        ApplySystemTheme();
         ConfigureSerilog();
         WireCrashHandlers();
 
@@ -55,9 +54,11 @@ public partial class App : Application
         await Host.StartAsync();
 
         var window = Host.Services.GetRequiredService<MainWindow>();
+        if (!Onboarding.FirstRunExperience.IsComplete)
+            Onboarding.FirstRunExperience.Show(owner: null, markComplete: true);
+
         MainWindow = window;
         window.Show();
-
         _ = RunStartupTasksAsync(Host.Services);
     }
 
@@ -66,7 +67,6 @@ public partial class App : Application
         var health = services.GetRequiredService<StartupHealthService>();
         var sessions = services.GetRequiredService<SessionStore>();
         var settings = services.GetRequiredService<IOptions<AudioBoarderSettings>>().Value;
-        var scene = services.GetRequiredService<SceneGraph>();
         var vm = services.GetRequiredService<MainViewModel>();
         var creds = services.GetRequiredService<Auth.AzureCredentialProvider>();
 
@@ -110,14 +110,11 @@ public partial class App : Application
                         "AudioBoarder", MessageBoxButton.YesNo, MessageBoxImage.Question);
                     if (result == MessageBoxResult.Yes)
                     {
-                        sessions.Apply(scene, prior);
-                        vm.GetType().GetMethod("RefreshNotes",
-                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                            ?.Invoke(vm, null);
+                        vm.RestoreSession(prior);
                     }
                     else
                     {
-                        sessions.Clear();
+                        await sessions.ClearAsync();
                     }
                 }
             }
@@ -295,5 +292,17 @@ public partial class App : Application
             Log.Warning(e.Exception, "Unobserved task exception");
             e.SetObserved();
         };
+    }
+
+    private static void ApplySystemTheme()
+    {
+        var theme = SystemThemeManager.GetCachedSystemTheme() switch
+        {
+            SystemTheme.Dark => ApplicationTheme.Dark,
+            SystemTheme.HCWhite or SystemTheme.HCBlack or SystemTheme.HC1 or SystemTheme.HC2
+                => ApplicationTheme.HighContrast,
+            _ => ApplicationTheme.Light,
+        };
+        ApplicationThemeManager.Apply(theme, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
     }
 }

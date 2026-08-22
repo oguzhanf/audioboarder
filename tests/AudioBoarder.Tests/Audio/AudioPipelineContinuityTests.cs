@@ -56,17 +56,24 @@ public class AudioPipelineContinuityTests
     /// <summary>Records every chunk handed to it, like the windowed cloud services do.</summary>
     private sealed class RecordingTranscription : ITranscriptionService
     {
+        private readonly TimeSpan _delay;
         public readonly List<AudioChunk> Received = new();
+        public int ForceFlushObservedCount { get; private set; }
+        public RecordingTranscription(TimeSpan? delay = null) => _delay = delay ?? TimeSpan.Zero;
         public string Name => "recording";
         public bool IsReady => true;
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
+        public async Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
         {
+            if (_delay > TimeSpan.Zero) await Task.Delay(_delay, ct);
             lock (Received) Received.Add(chunk);
-            return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+            return Array.Empty<TranscriptSegment>();
         }
         public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
-            => Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        {
+            if (force) ForceFlushObservedCount = Count;
+            return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public int Count { get { lock (Received) return Received.Count; } }
     }
@@ -138,5 +145,25 @@ public class AudioPipelineContinuityTests
 
         sink.Count.Should().BeGreaterThan(1,
             "pre-roll must replay the chunks just before the VAD tripped");
+    }
+
+    [Fact]
+    public async Task StopDrainsQueuedAudioBeforeFinalFlush()
+    {
+        var sink = new RecordingTranscription(TimeSpan.FromMilliseconds(8));
+        var src = new FakeSource();
+        await using var pipe = new AudioPipeline(
+            new[] { src },
+            () => sink,
+            new PassThroughVoiceActivityDetector(),
+            new TranscriptBuffer(TimeSpan.FromMinutes(5)));
+        await pipe.StartAsync(CancellationToken.None);
+
+        for (var i = 0; i < 20; i++) src.Emit(Chunk(0.3));
+        await pipe.StopAsync(CancellationToken.None);
+
+        sink.Count.Should().Be(20);
+        sink.ForceFlushObservedCount.Should().Be(20,
+            "the final flush must run only after all queued chunks reach the transcriber");
     }
 }

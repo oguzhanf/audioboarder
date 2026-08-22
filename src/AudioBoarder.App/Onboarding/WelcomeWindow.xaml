@@ -1,0 +1,112 @@
+<ui:FluentWindow x:Class="AudioBoarder.App.Onboarding.WelcomeWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="Welcome to AudioBoarder"
+                 Icon="../Assets/AudioBoarder.ico"
+                 Width="760"
+                 Height="620"
+                 MinWidth="680"
+                 MinHeight="560"
+                 WindowStartupLocation="CenterOwner"
+                 ResizeMode="CanResize"
+                 WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True"
+                 ShowInTaskbar="False">
+    <Grid Background="{DynamicResource ApplicationBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Welcome to AudioBoarder" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="36,24,36,20">
+                <Border Width="56" Height="56" HorizontalAlignment="Left"
+                        Background="{DynamicResource SystemAccentBrush}" CornerRadius="16">
+                    <ui:SymbolIcon Symbol="Whiteboard24" Foreground="White"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <TextBlock Margin="0,18,0,6" Text="Turn live conversation into a working whiteboard"
+                           FontSize="28" FontWeight="SemiBold" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                <TextBlock Text="AudioBoarder listens to your meeting, builds an editable diagram, and captures decisions, actions, risks, and questions as they happen."
+                           FontSize="15" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                <UniformGrid Columns="2" Margin="0,24,0,0">
+                    <Border Margin="0,0,8,8" Padding="16" CornerRadius="12"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <ui:SymbolIcon Symbol="PersonKey24" HorizontalAlignment="Left"
+                                           Foreground="{DynamicResource SystemAccentBrush}" />
+                            <TextBlock Margin="0,10,0,3" Text="1. Connect Azure" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Text="Use Sign In in the health panel. AudioBoarder discovers compatible AI deployments in your subscription; credentials are not stored in the app."
+                                       TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Margin="8,0,0,8" Padding="16" CornerRadius="12"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <ui:SymbolIcon Symbol="Mic24" HorizontalAlignment="Left"
+                                           Foreground="{DynamicResource SystemAccentBrush}" />
+                            <TextBlock Margin="0,10,0,3" Text="2. Check your microphone" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Text="Choose the correct input device and watch the level meter. System audio is captured too, so both sides of a call can be represented."
+                                       TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Margin="0,8,8,0" Padding="16" CornerRadius="12"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <ui:SymbolIcon Symbol="Record24" HorizontalAlignment="Left"
+                                           Foreground="{DynamicResource SystemAccentBrush}" />
+                            <TextBlock Margin="0,10,0,3" Text="3. Start listening" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Text="Select Listen. Captions appear first; the board updates automatically when enough new context is available. Stop always remains available."
+                                       TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Margin="8,8,0,0" Padding="16" CornerRadius="12"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <StackPanel>
+                            <ui:SymbolIcon Symbol="DrawShape24" HorizontalAlignment="Left"
+                                           Foreground="{DynamicResource SystemAccentBrush}" />
+                            <TextBlock Margin="0,10,0,3" Text="4. Shape and share" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Text="Drag nodes to lock their position, use Deep Refine for a thorough cleanup, then export PNG or an editable Excalidraw file."
+                                       TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                </UniformGrid>
+
+                <Border Margin="0,24,0,0" Padding="14" CornerRadius="10"
+                        Background="{DynamicResource ControlFillColorSecondaryBrush}">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="ShieldLock24" Margin="0,1,10,0"
+                                       Foreground="{DynamicResource SystemAccentBrush}" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                            <Run FontWeight="SemiBold" Text="Privacy: " />
+                            <Run Text="transcripts and prompts are not written to disk by default. Audio is sent only to your configured Azure resources. Always follow meeting-consent rules in your location." />
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" Padding="24,14"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource ControlElevationBorderBrush}" BorderThickness="0,1,0,0">
+            <DockPanel>
+                <TextBlock VerticalAlignment="Center" Text="You can reopen this guide from Help."
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <ui:Button DockPanel.Dock="Right" Content="Get started" Appearance="Primary"
+                           MinWidth="128" MinHeight="38" Click="OnGetStarted"
+                           AutomationProperties.Name="Finish welcome guide" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</ui:FluentWindow>

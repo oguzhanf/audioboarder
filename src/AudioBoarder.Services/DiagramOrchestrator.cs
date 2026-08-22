@@ -17,7 +17,7 @@ namespace AudioBoarder.Services;
 /// any <see cref="GenerateImage"/> ops the LLM emits as parallel
 /// background image-generation tasks.
 /// </summary>
-public sealed class DiagramOrchestrator
+public sealed class DiagramOrchestrator : IAsyncDisposable
 {
     private readonly IScenePatchGenerator _generator;
     private readonly ScenePatchApplier _applier;
@@ -26,6 +26,10 @@ public sealed class DiagramOrchestrator
     private readonly IImageGenerator? _imageGenerator;
     private readonly ILogger<DiagramOrchestrator> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _imageConcurrency = new(2, 2);
+    private readonly object _imageTaskGate = new();
+    private readonly HashSet<Task> _imageTasks = new();
+    private CancellationTokenSource _imageCts = new();
 
     public SceneGraph Scene { get; }
 
@@ -63,6 +67,7 @@ public sealed class DiagramOrchestrator
         string? userInstruction,
         LayoutOptions? layoutOptions = null,
         bool isContinuous = false,
+        bool isAutomatic = false,
         CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -82,21 +87,11 @@ public sealed class DiagramOrchestrator
                 UserInstruction: userInstruction,
                 IsContinuous: isContinuous);
 
-            ScenePatchResponse response;
-            try
+            var response = await _generator.GenerateAsync(request, ct).ConfigureAwait(false);
+            response = response with
             {
-                response = await _generator.GenerateAsync(request, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw; // Stop pressed mid-generation — expected, not a failure.
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "LLM ScenePatch generation failed");
-                GenerationFailed?.Invoke(this, new DiagramGenerationFailed(ex));
-                throw;
-            }
+                Patch = FilterGeneratedPatch(response.Patch, rejectDestructive: isContinuous || isAutomatic),
+            };
 
             // Apply the patch and run layout as ONE critical section against the
             // same lock the renderer uses, so the UI thread never paints a
@@ -116,10 +111,19 @@ public sealed class DiagramOrchestrator
 
             // Fire image generations in the background — never block the diagram flow on image latency.
             foreach (var op in imageOps)
-            {
-                _ = Task.Run(() => GenerateImageAsync(op, CancellationToken.None), CancellationToken.None);
-            }
+                QueueImageGeneration(op);
             return result;
+        }
+        catch (OperationCanceledException ex)
+        {
+            GenerationFailed?.Invoke(this, new DiagramGenerationFailed(ex));
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Diagram generation failed");
+            GenerationFailed?.Invoke(this, new DiagramGenerationFailed(ex));
+            throw;
         }
         finally
         {
@@ -127,55 +131,139 @@ public sealed class DiagramOrchestrator
         }
     }
 
+    private static ScenePatch FilterGeneratedPatch(ScenePatch patch, bool rejectDestructive)
+    {
+        var safe = patch.Operations.Where(op =>
+            op is not ClearScene &&
+            (!rejectDestructive || op is not (
+                DeleteNode or Disconnect or UngroupOp or NoteDelete or DeleteImage))).ToArray();
+        return safe.Length == patch.Operations.Count ? patch : new ScenePatch(safe);
+    }
+
+    private void QueueImageGeneration(GenerateImage op)
+    {
+        Task task;
+        lock (_imageTaskGate)
+        {
+            task = GenerateImageBoundedAsync(op, _imageCts.Token);
+            _imageTasks.Add(task);
+        }
+        _ = task.ContinueWith(
+            completed =>
+            {
+                lock (_imageTaskGate) _imageTasks.Remove(completed);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task GenerateImageBoundedAsync(GenerateImage op, CancellationToken ct)
+    {
+        await _imageConcurrency.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await GenerateImageAsync(op, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _imageConcurrency.Release();
+        }
+    }
+
     private async Task GenerateImageAsync(GenerateImage op, CancellationToken ct)
     {
-        if (!Scene.Images.TryGetValue(op.Id, out var image)) return;
+        SceneImage? image;
+        lock (Scene.SyncRoot)
+        {
+            if (!Scene.Images.TryGetValue(op.Id, out image)) return;
+        }
         if (_imageGenerator is null || !_imageGenerator.IsConfigured)
         {
-            image.Status = ImageGenerationStatus.Failed;
-            image.ErrorMessage = "Image generator not configured";
-            Scene.NotifyImageUpdated(image.Id);
-            ImageUpdated?.Invoke(this, new SceneImageUpdated(image));
+            UpdateImage(op.Id, live =>
+            {
+                live.Status = ImageGenerationStatus.Failed;
+                live.ErrorMessage = "Image generator not configured";
+            });
             return;
         }
 
-        image.Status = ImageGenerationStatus.InFlight;
-        Scene.NotifyImageUpdated(image.Id);
-        ImageUpdated?.Invoke(this, new SceneImageUpdated(image));
+        UpdateImage(op.Id, live => live.Status = ImageGenerationStatus.InFlight);
 
         var sw = Stopwatch.StartNew();
         try
         {
             var resp = await _imageGenerator.GenerateAsync(new ImageGenerationRequest(op.Prompt), ct).ConfigureAwait(false);
             sw.Stop();
-            image.PngBytes = resp.PngBytes;
-            image.ModelName = resp.ModelName;
-            image.Elapsed = resp.Elapsed;
-            image.Status = ImageGenerationStatus.Ready;
+            UpdateImage(op.Id, live =>
+            {
+                live.PngBytes = resp.PngBytes;
+                live.ModelName = resp.ModelName;
+                live.Elapsed = resp.Elapsed;
+                live.Status = ImageGenerationStatus.Ready;
+            });
             _logger.LogInformation("Image generated id={Id} model={Model} elapsed={Ms}ms",
-                image.Id, resp.ModelName, resp.Elapsed.TotalMilliseconds);
+                op.Id, resp.ModelName, resp.Elapsed.TotalMilliseconds);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
             sw.Stop();
-            image.Status = ImageGenerationStatus.Failed;
-            image.ErrorMessage = ex.Message;
-            _logger.LogWarning(ex, "Image generation failed id={Id}", image.Id);
+            UpdateImage(op.Id, live =>
+            {
+                live.Status = ImageGenerationStatus.Failed;
+                live.ErrorMessage = ex.Message;
+            });
+            _logger.LogWarning(ex, "Image generation failed id={Id}", op.Id);
         }
-        finally
+    }
+
+    private void UpdateImage(string id, Action<SceneImage> update)
+    {
+        SceneImage? image;
+        lock (Scene.SyncRoot)
         {
-            Scene.NotifyImageUpdated(image.Id);
-            ImageUpdated?.Invoke(this, new SceneImageUpdated(image));
+            if (!Scene.Images.TryGetValue(id, out image)) return;
+            update(image);
+            Scene.NotifyImageUpdated(id);
+            image = image.Clone();
         }
+        ImageUpdated?.Invoke(this, new SceneImageUpdated(image));
     }
 
     public void Clear()
     {
+        CancellationTokenSource oldImageCts;
+        lock (_imageTaskGate)
+        {
+            oldImageCts = _imageCts;
+            _imageCts = new CancellationTokenSource();
+        }
+        oldImageCts.Cancel();
+        oldImageCts.Dispose();
+
         var clearPatch = new ScenePatch(new ScenePatchOperation[] { new ClearScene() });
         lock (Scene.SyncRoot)
         {
             _applier.Apply(Scene, clearPatch);
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        CancellationTokenSource imageCts;
+        Task[] tasks;
+        lock (_imageTaskGate)
+        {
+            imageCts = _imageCts;
+            tasks = _imageTasks.ToArray();
+        }
+        imageCts.Cancel();
+        try { await Task.WhenAll(tasks).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        imageCts.Dispose();
+        _gate.Dispose();
+        _imageConcurrency.Dispose();
     }
 }
 

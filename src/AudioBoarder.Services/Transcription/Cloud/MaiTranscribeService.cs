@@ -25,6 +25,7 @@ public sealed class MaiTranscribeService : ITranscriptionService
     private readonly object _credGate = new();
     private readonly Dictionary<AudioStreamRole, RoleBuffer> _buffers = new();
     private readonly object _bufferGate = new();
+    private readonly SemaphoreSlim _flushGate = new(1, 1);
     private bool _ready;
 
     public MaiTranscribeService(
@@ -50,15 +51,11 @@ public sealed class MaiTranscribeService : ITranscriptionService
         return Task.CompletedTask;
     }
 
-    public async Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
+    public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(chunk);
-        if (!_ready) return Array.Empty<TranscriptSegment>();
-        if (chunk.Format.BitsPerSample != 16) return Array.Empty<TranscriptSegment>();
-
-        byte[]? toFlush = null;
-        DateTimeOffset windowStart = default, windowEnd = default;
-        TranscriptSpeaker speaker = chunk.Role == AudioStreamRole.Loopback ? TranscriptSpeaker.Remote : TranscriptSpeaker.Local;
+        if (!_ready || chunk.Format.BitsPerSample != 16)
+            return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
 
         lock (_bufferGate)
         {
@@ -69,24 +66,77 @@ public sealed class MaiTranscribeService : ITranscriptionService
             }
             if (rb.Stream.Length == 0) rb.WindowStart = chunk.CapturedAt;
             rb.Stream.Write(chunk.Samples.Span);
-
-            var bytesPerSec = chunk.Format.BytesPerSecond;
-            var elapsed = bytesPerSec == 0 ? 0 : (double)rb.Stream.Length / bytesPerSec;
-            if (elapsed >= _options.WindowSeconds)
-            {
-                toFlush = rb.Stream.ToArray();
-                windowStart = rb.WindowStart;
-                windowEnd = chunk.CapturedAt;
-                rb.Stream.SetLength(0);
-            }
+            rb.LastAppendAt = DateTimeOffset.UtcNow;
         }
 
-        if (toFlush is null) return Array.Empty<TranscriptSegment>();
-        return await CallApiAsync(toFlush, chunk.Format, speaker, windowStart, windowEnd, ct).ConfigureAwait(false);
+        return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
     }
 
-    public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
-        => Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+    public async Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
+    {
+        if (!_ready) return Array.Empty<TranscriptSegment>();
+        await _flushGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var pending = new List<PendingBatch>();
+            lock (_bufferGate)
+            {
+                var minBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * 0.15);
+                var maxBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * _options.WindowSeconds);
+                foreach (var (role, rb) in _buffers)
+                {
+                    var quietMs = (now - rb.LastAppendAt).TotalMilliseconds;
+                    if (rb.Stream.Length == 0 || (!force && now < rb.RetryNotBefore) ||
+                        (!force && rb.Stream.Length < maxBytes &&
+                         (rb.Stream.Length < minBytes || quietMs < _options.SilenceFlushMs)))
+                        continue;
+                    pending.Add(new PendingBatch(role, rb.Stream.ToArray(),
+                        role == AudioStreamRole.Loopback ? TranscriptSpeaker.Remote : TranscriptSpeaker.Local,
+                        rb.WindowStart, rb.LastAppendAt));
+                    rb.Stream.SetLength(0);
+                }
+            }
+
+            var results = await Task.WhenAll(pending.Select(batch => TranscribeBatchAsync(batch, ct)))
+                .ConfigureAwait(false);
+            return results.SelectMany(x => x).ToArray();
+        }
+        finally
+        {
+            _flushGate.Release();
+        }
+    }
+
+    private async Task<IReadOnlyList<TranscriptSegment>> TranscribeBatchAsync(
+        PendingBatch batch, CancellationToken ct)
+    {
+        try
+        {
+            var result = await CallApiAsync(batch.Pcm, AudioFormat.Mono16kPcm16,
+                batch.Speaker, batch.Start, batch.End, ct).ConfigureAwait(false);
+            lock (_bufferGate)
+            {
+                if (_buffers.TryGetValue(batch.Role, out var rb))
+                {
+                    rb.FailureCount = 0;
+                    rb.RetryNotBefore = default;
+                }
+            }
+            return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Requeue(batch);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Requeue(batch);
+            _logger.LogWarning(ex, "MAI transcribe failed; audio retained for retry");
+            return Array.Empty<TranscriptSegment>();
+        }
+    }
 
     private async Task<IReadOnlyList<TranscriptSegment>> CallApiAsync(
         byte[] pcm, AudioFormat format, TranscriptSpeaker speaker,
@@ -111,27 +161,43 @@ public sealed class MaiTranscribeService : ITranscriptionService
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
         await ApplyAuthAsync(req, ct).ConfigureAwait(false);
 
-        try
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
         {
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
-            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("MAI transcribe HTTP {Status}", resp.StatusCode);
-                return Array.Empty<TranscriptSegment>();
-            }
-            using var doc = JsonDocument.Parse(body);
-            if (!doc.RootElement.TryGetProperty("text", out var t)) return Array.Empty<TranscriptSegment>();
-            var text = (t.GetString() ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(text)) return Array.Empty<TranscriptSegment>();
-            _logger.LogInformation("MAI transcript: speaker={Speaker} chars={Chars} window={Sec:F1}s",
-                speaker, text.Length, (end - start).TotalSeconds);
-            return new[] { new TranscriptSegment(Guid.NewGuid(), speaker, text, start, end) };
+            throw new HttpRequestException(
+                $"MAI transcribe HTTP {(int)resp.StatusCode}: {body[..Math.Min(body.Length, 300)]}",
+                null,
+                resp.StatusCode);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        using var doc = JsonDocument.Parse(body);
+        if (!doc.RootElement.TryGetProperty("text", out var t))
+            throw new InvalidDataException("MAI transcribe response did not contain a text field.");
+        var text = (t.GetString() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text)) return Array.Empty<TranscriptSegment>();
+        _logger.LogInformation("MAI transcript: speaker={Speaker} chars={Chars} window={Sec:F1}s",
+            speaker, text.Length, (end - start).TotalSeconds);
+        return new[] { new TranscriptSegment(Guid.NewGuid(), speaker, text, start, end) };
+    }
+
+    private void Requeue(PendingBatch batch)
+    {
+        lock (_bufferGate)
         {
-            _logger.LogWarning(ex, "MAI transcribe failed");
-            return Array.Empty<TranscriptSegment>();
+            if (!_buffers.TryGetValue(batch.Role, out var rb))
+            {
+                rb = new RoleBuffer();
+                _buffers[batch.Role] = rb;
+            }
+            var newer = rb.Stream.ToArray();
+            rb.Stream.SetLength(0);
+            rb.Stream.Write(batch.Pcm);
+            rb.Stream.Write(newer);
+            rb.WindowStart = batch.Start;
+            if (rb.LastAppendAt == default) rb.LastAppendAt = batch.End;
+            rb.FailureCount++;
+            rb.RetryNotBefore = DateTimeOffset.UtcNow +
+                TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, rb.FailureCount)));
         }
     }
 
@@ -173,12 +239,23 @@ public sealed class MaiTranscribeService : ITranscriptionService
             foreach (var rb in _buffers.Values) rb.Stream.Dispose();
             _buffers.Clear();
         }
+        _flushGate.Dispose();
         return ValueTask.CompletedTask;
     }
+
+    private readonly record struct PendingBatch(
+        AudioStreamRole Role,
+        byte[] Pcm,
+        TranscriptSpeaker Speaker,
+        DateTimeOffset Start,
+        DateTimeOffset End);
 
     private sealed class RoleBuffer
     {
         public MemoryStream Stream { get; } = new();
         public DateTimeOffset WindowStart { get; set; }
+        public DateTimeOffset LastAppendAt { get; set; }
+        public DateTimeOffset RetryNotBefore { get; set; }
+        public int FailureCount { get; set; }
     }
 }

@@ -75,7 +75,33 @@ public class SessionStoreTests : IDisposable
         await store.SaveAsync(scene);
         (await store.LoadLatestAsync()).Should().NotBeNull();
 
-        store.Clear();
+        await store.ClearAsync();
         (await store.LoadLatestAsync()).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ConcurrentSaves_PersistNewestSnapshotAsValidJson()
+    {
+        var store = new SessionStore();
+        var older = new SceneGraph();
+        var newer = new SceneGraph();
+        var applier = new ScenePatchApplier();
+        applier.Apply(older, new ScenePatch(new ScenePatchOperation[]
+        {
+            new AddNode("old", NodeKind.Process, new string('x', 20_000)),
+        }));
+        applier.Apply(newer, new ScenePatch(new ScenePatchOperation[]
+        {
+            new AddNode("new", NodeKind.Process, "Newest"),
+        }));
+
+        var first = store.SaveAsync(older);
+        var second = store.SaveAsync(newer);
+        await Task.WhenAll(first, second);
+
+        var loaded = await store.LoadLatestAsync();
+        loaded.Should().NotBeNull();
+        loaded!.Nodes.Should().ContainSingle(n => n.Id == "new");
+        Directory.EnumerateFiles(store.RootDirectory, "*.tmp").Should().BeEmpty();
     }
 }

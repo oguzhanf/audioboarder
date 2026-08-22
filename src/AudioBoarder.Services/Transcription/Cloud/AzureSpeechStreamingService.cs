@@ -24,6 +24,8 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     private readonly ILogger<AzureSpeechStreamingService> _logger;
     private readonly Dictionary<AudioStreamRole, RoleRecognizer> _recognizers = new();
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _recognizerGate = new(1, 1);
+    private readonly SemaphoreSlim _tokenGate = new(1, 1);
     private string? _cachedAadToken;
     private DateTimeOffset _cachedAadExpires;
     private bool _ready;
@@ -63,29 +65,44 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
+    public async Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(chunk);
-        if (!_ready) return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        if (!_ready) return Array.Empty<TranscriptSegment>();
 
         RoleRecognizer? rr;
         lock (_gate)
         {
-            if (!_recognizers.TryGetValue(chunk.Role, out rr))
+            _recognizers.TryGetValue(chunk.Role, out rr);
+        }
+        if (rr is null)
+        {
+            await _recognizerGate.WaitAsync(ct).ConfigureAwait(false);
+            try
             {
-                rr = EnsureRecognizer(chunk.Role, chunk.Format);
-                _recognizers[chunk.Role] = rr;
+                lock (_gate) _recognizers.TryGetValue(chunk.Role, out rr);
+                if (rr is null)
+                {
+                    rr = await CreateRecognizerAsync(chunk.Role, chunk.Format, ct).ConfigureAwait(false);
+                    lock (_gate) _recognizers[chunk.Role] = rr;
+                }
+            }
+            finally
+            {
+                _recognizerGate.Release();
             }
         }
+        await RefreshAuthorizationIfNeededAsync(ct).ConfigureAwait(false);
         // Push raw PCM straight into the SDK's input stream — recognition is event-driven.
         rr.PushStream.Write(chunk.Samples.ToArray());
-        return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        return Array.Empty<TranscriptSegment>();
     }
 
     public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
         => Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
 
-    private RoleRecognizer EnsureRecognizer(AudioStreamRole role, AudioFormat format)
+    private async Task<RoleRecognizer> CreateRecognizerAsync(
+        AudioStreamRole role, AudioFormat format, CancellationToken ct)
     {
         // Build SpeechConfig: AAD bearer if key not set, otherwise subscription key.
         SpeechConfig speechConfig;
@@ -95,7 +112,7 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         }
         else
         {
-            var token = AcquireAadToken();
+            var token = await AcquireAadTokenAsync(ct).ConfigureAwait(false);
             // Speech SDK AAD format: "aad#{resourceUrl}#{bearerToken}".
             var authToken = $"aad#{_settings.ResourceId}#{token}";
             speechConfig = SpeechConfig.FromAuthorizationToken(authToken, _settings.Region!);
@@ -148,7 +165,7 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         };
         recognizer.SessionStopped += (_, _) => _logger.LogInformation("Speech session stopped for {Role}", role);
 
-        recognizer.StartContinuousRecognitionAsync().GetAwaiter().GetResult();
+        await recognizer.StartContinuousRecognitionAsync().ConfigureAwait(false);
         return rr;
     }
 
@@ -160,17 +177,42 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     public event EventHandler<TranscriptSegment>? SegmentReady;
     public event EventHandler<TranscriptSegment>? InterimReady;
 
-    private string AcquireAadToken()
+    private async Task<string> AcquireAadTokenAsync(CancellationToken ct)
     {
-        if (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires)
+        if (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2))
             return _cachedAadToken;
-        var credential = ResolveCredential();
-        var token = credential.GetToken(
-            new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
-            CancellationToken.None);
-        _cachedAadToken = token.Token;
-        _cachedAadExpires = DateTimeOffset.UtcNow.AddMinutes(9);
-        return _cachedAadToken;
+        await _tokenGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2))
+                return _cachedAadToken;
+            var credential = ResolveCredential();
+            var token = await credential.GetTokenAsync(
+                new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+                ct).ConfigureAwait(false);
+            _cachedAadToken = token.Token;
+            _cachedAadExpires = token.ExpiresOn;
+            return _cachedAadToken;
+        }
+        finally
+        {
+            _tokenGate.Release();
+        }
+    }
+
+    private async Task RefreshAuthorizationIfNeededAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.ApiKey) ||
+            (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2)))
+            return;
+
+        var token = await AcquireAadTokenAsync(ct).ConfigureAwait(false);
+        var authorization = $"aad#{_settings.ResourceId}#{token}";
+        lock (_gate)
+        {
+            foreach (var rr in _recognizers.Values)
+                rr.Recognizer.AuthorizationToken = authorization;
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -188,6 +230,8 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
             rr.AudioConfig.Dispose();
             rr.PushStream.Dispose();
         }
+        _recognizerGate.Dispose();
+        _tokenGate.Dispose();
     }
 
     private sealed class RoleRecognizer

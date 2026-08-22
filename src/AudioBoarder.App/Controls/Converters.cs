@@ -41,3 +41,23 @@ public sealed class BoolVisibilityConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+public sealed class NoteKindBrushConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        var kind = value?.ToString();
+        var color = kind switch
+        {
+            "Decision" => Color.FromRgb(0x05, 0x96, 0x69),
+            "ActionItem" => Color.FromRgb(0x4F, 0x46, 0xE5),
+            "Risk" => Color.FromRgb(0xDC, 0x26, 0x26),
+            "Question" => Color.FromRgb(0xD9, 0x77, 0x06),
+            _ => Color.FromRgb(0x6B, 0x72, 0x80),
+        };
+        return new SolidColorBrush(color);
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

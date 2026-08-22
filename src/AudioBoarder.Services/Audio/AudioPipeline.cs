@@ -17,12 +17,14 @@ namespace AudioBoarder.Services.Audio;
 /// </summary>
 public sealed class AudioPipeline : IAsyncDisposable
 {
+    private const int ChannelCapacity = 256;
     private readonly IReadOnlyList<IAudioCaptureSource> _sources;
     private readonly Func<ITranscriptionService> _transcriptionFactory;
     private readonly IVoiceActivityDetector _vad;
     private readonly TranscriptBuffer _buffer;
     private readonly ILogger<AudioPipeline> _logger;
     private CancellationTokenSource? _cts;
+    private CancellationTokenSource? _flushCts;
     private Channel<AudioChunk>? _channel;
     private Task? _consumer;
     private Task? _flusher;
@@ -32,6 +34,7 @@ public sealed class AudioPipeline : IAsyncDisposable
     private long _chunksReceived;
     private long _chunksTranscribed;
     private long _segmentsEmitted;
+    private long _chunksDropped;
     private DateTimeOffset _firstChunkAt;
     private IStreamingTranscriptionService? _streamingService;
 
@@ -68,6 +71,7 @@ public sealed class AudioPipeline : IAsyncDisposable
     public long ChunksReceived => Interlocked.Read(ref _chunksReceived);
     public long ChunksTranscribed => Interlocked.Read(ref _chunksTranscribed);
     public long SegmentsEmitted => Interlocked.Read(ref _segmentsEmitted);
+    public long ChunksDropped => Interlocked.Read(ref _chunksDropped);
 
     /// <summary>
     /// Leaky-peak amplitude (0..1) of recently captured audio. Stays ~0 when the
@@ -81,19 +85,31 @@ public sealed class AudioPipeline : IAsyncDisposable
     public async Task StartAsync(CancellationToken ct)
     {
         if (_started) return;
+        _flushCts?.Dispose();
+        _cts?.Dispose();
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _flushCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         Interlocked.Exchange(ref _chunksReceived, 0);
         Interlocked.Exchange(ref _chunksTranscribed, 0);
         Interlocked.Exchange(ref _segmentsEmitted, 0);
+        Interlocked.Exchange(ref _chunksDropped, 0);
         _firstChunkAt = default;
         lock (_peakGate) _recentPeak = 0;
 
-        _channel = Channel.CreateBounded<AudioChunk>(new BoundedChannelOptions(capacity: 256)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false,
-        });
+        _channel = Channel.CreateBounded<AudioChunk>(
+            new BoundedChannelOptions(capacity: ChannelCapacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false,
+            },
+            _ =>
+            {
+                var dropped = Interlocked.Increment(ref _chunksDropped);
+                if (dropped == 1 || dropped % 100 == 0)
+                    _logger.LogWarning(
+                        "Audio channel saturated; dropped oldest chunk (total={Dropped})", dropped);
+            });
 
         var transcription = _transcriptionFactory();
         _activeTranscription = transcription;
@@ -112,15 +128,35 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
 
         _consumer = Task.Run(() => ConsumeAsync(transcription, _channel.Reader, _cts.Token), _cts.Token);
-        _flusher = Task.Run(() => FlushLoopAsync(transcription, _cts.Token), _cts.Token);
+        _flusher = Task.Run(() => FlushLoopAsync(transcription, _flushCts.Token), _flushCts.Token);
 
-        foreach (var src in _sources)
+        try
         {
-            src.CaptureFailed += OnSourceFailed;
-            src.ChunkCaptured += OnChunkCaptured;
-            await src.StartAsync(_cts.Token).ConfigureAwait(false);
+            foreach (var src in _sources)
+            {
+                src.CaptureFailed += OnSourceFailed;
+                src.ChunkCaptured += OnChunkCaptured;
+                await src.StartAsync(_cts.Token).ConfigureAwait(false);
+            }
+            _started = true;
         }
-        _started = true;
+        catch
+        {
+            foreach (var src in _sources)
+            {
+                src.ChunkCaptured -= OnChunkCaptured;
+                src.CaptureFailed -= OnSourceFailed;
+                if (src.IsRunning)
+                {
+                    try { await src.StopAsync(CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Cleanup after capture start failure failed"); }
+                }
+            }
+            _channel.Writer.TryComplete();
+            _flushCts.Cancel();
+            _cts.Cancel();
+            throw;
+        }
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -139,10 +175,30 @@ public sealed class AudioPipeline : IAsyncDisposable
             _streamingService = null;
         }
         _channel?.Writer.TryComplete();
+        _flushCts?.Cancel();
 
-        // Final force-flush BEFORE cancelling so the last spoken utterance (which
-        // is still sitting in the transcriber's buffer waiting for the silence
-        // window) is transcribed and emitted instead of being discarded.
+        // Stop the periodic flusher, then let the serialized consumer drain every
+        // queued chunk before the final force-flush. Flushing first allowed queued
+        // tail audio to be appended afterward and then discarded on cancellation.
+        try
+        {
+            if (_flusher is not null)
+                await _flusher.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_flushCts?.IsCancellationRequested == true) { }
+        catch (TimeoutException ex) { _logger.LogWarning(ex, "Timed out stopping transcription flush loop"); }
+
+        try
+        {
+            if (_consumer is not null)
+                await _consumer.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(ex, "Timed out draining queued audio; cancelling consumer");
+            _cts?.Cancel();
+        }
+
         if (_activeTranscription is not null)
         {
             try
@@ -155,13 +211,10 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
 
         _cts?.Cancel();
-        try
-        {
-            if (_consumer is not null) await _consumer.WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
-            if (_flusher is not null) await _flusher.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
-        }
-        catch { /* swallow */ }
         _activeTranscription = null;
+        _consumer = null;
+        _flusher = null;
+        _channel = null;
         _started = false;
     }
 
@@ -363,6 +416,7 @@ public sealed class AudioPipeline : IAsyncDisposable
     {
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         foreach (var src in _sources) await src.DisposeAsync().ConfigureAwait(false);
+        _flushCts?.Dispose();
         _cts?.Dispose();
     }
 }

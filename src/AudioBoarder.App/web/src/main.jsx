@@ -9,6 +9,12 @@ window.EXCALIDRAW_ASSET_PATH = "/";
 
 let excalidrawAPI = null;
 let pendingScene = null;
+let pendingSceneChange = null;
+let sceneChangeTimer = 0;
+let lastSentSceneSignature = null;
+let suppressSceneMessages = false;
+let appliedSceneRevision = null;
+let hasFramedNonEmptyScene = false;
 
 function postToHost(message) {
   try {
@@ -26,7 +32,18 @@ function applyScene(scene) {
     pendingScene = scene;
     return;
   }
+
   const elements = Array.isArray(scene.elements) ? scene.elements : [];
+  if (sceneChangeTimer !== 0) {
+    window.clearTimeout(sceneChangeTimer);
+    sceneChangeTimer = 0;
+  }
+  pendingSceneChange = null;
+  appliedSceneRevision = Number.isInteger(scene.sceneRevision)
+    ? scene.sceneRevision
+    : null;
+
+  suppressSceneMessages = true;
   excalidrawAPI.updateScene({
     elements,
     appState: {
@@ -34,16 +51,26 @@ function applyScene(scene) {
         (scene.appState && scene.appState.viewBackgroundColor) || "#ffffff",
     },
   });
-  if (elements.length > 0) {
+
+  if (elements.length === 0) {
+    hasFramedNonEmptyScene = false;
+  } else if (!hasFramedNonEmptyScene) {
     try {
       excalidrawAPI.scrollToContent(elements, {
         fitToContent: true,
         animate: false,
       });
+      hasFramedNonEmptyScene = true;
     } catch (_) {
       /* ignore framing errors */
     }
   }
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      suppressSceneMessages = false;
+    });
+  });
 }
 
 // Public API the C# host (or a test harness) calls to push a scene.
@@ -106,6 +133,79 @@ function installWheelZoom(container) {
   );
 }
 
+function serializeElement(element) {
+  return {
+    id: element.id,
+    type: element.type,
+    x: element.x,
+    y: element.y,
+    width: element.width,
+    height: element.height,
+    locked: Boolean(element.locked),
+    isDeleted: Boolean(element.isDeleted),
+    frameId: element.frameId || null,
+    containerId: element.containerId || null,
+  };
+}
+
+function serializeAppState(appState) {
+  return {
+    viewBackgroundColor: appState.viewBackgroundColor || "#ffffff",
+    theme: appState.theme || null,
+    zenModeEnabled:
+      typeof appState.zenModeEnabled === "boolean"
+        ? appState.zenModeEnabled
+        : null,
+  };
+}
+
+function serializeViewport(appState) {
+  return {
+    scrollX: typeof appState.scrollX === "number" ? appState.scrollX : 0,
+    scrollY: typeof appState.scrollY === "number" ? appState.scrollY : 0,
+    zoom:
+      appState.zoom && typeof appState.zoom.value === "number"
+        ? appState.zoom.value
+        : 1,
+    width: typeof appState.width === "number" ? appState.width : null,
+    height: typeof appState.height === "number" ? appState.height : null,
+  };
+}
+
+function flushSceneChange() {
+  sceneChangeTimer = 0;
+  if (!pendingSceneChange) return;
+  if (suppressSceneMessages) {
+    sceneChangeTimer = window.setTimeout(flushSceneChange, 120);
+    return;
+  }
+
+  const signature = JSON.stringify(pendingSceneChange);
+  if (signature === lastSentSceneSignature) {
+    pendingSceneChange = null;
+    return;
+  }
+
+  lastSentSceneSignature = signature;
+  postToHost(pendingSceneChange);
+  pendingSceneChange = null;
+}
+
+function queueSceneChange(elements, appState) {
+  if (suppressSceneMessages) return;
+
+  pendingSceneChange = {
+    type: "scene-change",
+    sceneRevision: appliedSceneRevision,
+    elements: elements.map(serializeElement),
+    appState: serializeAppState(appState),
+    viewport: serializeViewport(appState),
+  };
+
+  if (sceneChangeTimer !== 0) return;
+  sceneChangeTimer = window.setTimeout(flushSceneChange, 180);
+}
+
 function App() {
   return React.createElement(Excalidraw, {
     excalidrawAPI: (api) => {
@@ -116,6 +216,14 @@ function App() {
         pendingScene = null;
       }
       postToHost({ type: "ready" });
+    },
+    onChange: (elements, appState) => {
+      try {
+        queueSceneChange(elements, appState);
+      } catch (e) {
+        console.error("scene-change failed", e);
+        postToHost({ type: "error", message: `scene-change failed: ${String(e)}` });
+      }
     },
     UIOptions: {
       canvasActions: {
