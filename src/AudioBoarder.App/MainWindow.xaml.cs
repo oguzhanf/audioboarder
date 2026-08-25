@@ -49,7 +49,6 @@ public partial class MainWindow : FluentWindow
             if (e.PropertyName == nameof(MainViewModel.TranscriptDisplay))
                 Dispatcher.BeginInvoke(() => TranscriptBox.ScrollToEnd());
         };
-        viewModel.Notes.CollectionChanged += OnNotesChanged;
 
         UpdateSidePaneLayout();
     }
@@ -69,7 +68,6 @@ public partial class MainWindow : FluentWindow
         }
 
         Whiteboard.UserSceneChanged -= OnWhiteboardUserSceneChanged;
-        _viewModel.Notes.CollectionChanged -= OnNotesChanged;
     }
 
     private void OnToggleTranscriptPane(object sender, RoutedEventArgs e)
@@ -86,12 +84,6 @@ public partial class MainWindow : FluentWindow
 
     private void OnShowWelcome(object sender, RoutedEventArgs e)
         => Onboarding.FirstRunExperience.Show(this, markComplete: false);
-
-    private void OnNotesChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (e.Action == NotifyCollectionChangedAction.Add && _viewModel.Notes.Count > 0)
-            Dispatcher.BeginInvoke(() => NotesList.ScrollIntoView(_viewModel.Notes[^1]));
-    }
 
     private void UpdateSidePaneLayout()
     {

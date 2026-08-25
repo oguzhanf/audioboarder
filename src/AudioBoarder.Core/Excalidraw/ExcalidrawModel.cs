@@ -102,11 +102,32 @@ public sealed class ExcalidrawElement
 
     // ---- frame ----
     public string? Name { get; set; }
+
+    // ---- image ----
+    /// <summary>Key into <see cref="ExcalidrawDocument.Files"/> for image elements.</summary>
+    public string? FileId { get; set; }
+
+    /// <summary>pending | saved | error.</summary>
+    public string? Status { get; set; }
+
+    public double[]? Scale { get; set; }
 }
 
 public sealed class ExcalidrawRoundness
 {
     public int Type { get; set; } = 3;
+}
+
+/// <summary>An entry in <see cref="ExcalidrawDocument.Files"/> backing an image element.</summary>
+public sealed class ExcalidrawFile
+{
+    public required string Id { get; set; }
+    public required string MimeType { get; set; }
+
+    [JsonPropertyName("dataURL")]
+    public required string DataURL { get; set; }
+
+    public long Created { get; set; }
 }
 
 public sealed class ExcalidrawBinding

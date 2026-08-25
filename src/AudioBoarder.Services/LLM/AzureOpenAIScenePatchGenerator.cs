@@ -232,7 +232,6 @@ internal static class SceneSummariser
             // Surface icon/description/group so a refine pass can see what is already
             // enriched and extend it instead of silently stripping it back to a bare box.
             sb.Append($"  N {n.Id} ({n.Kind}) {n.Label}");
-            if (!string.IsNullOrWhiteSpace(n.Icon)) sb.Append($" icon={n.Icon}");
             if (!string.IsNullOrWhiteSpace(n.Description)) sb.Append($" desc=\"{n.Description}\"");
             if (!string.IsNullOrWhiteSpace(n.GroupId)) sb.Append($" group={n.GroupId}");
             sb.AppendLine();

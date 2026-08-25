@@ -44,6 +44,7 @@ function applyScene(scene) {
     : null;
 
   suppressSceneMessages = true;
+
   excalidrawAPI.updateScene({
     elements,
     appState: {
@@ -51,6 +52,22 @@ function applyScene(scene) {
         (scene.appState && scene.appState.viewBackgroundColor) || "#ffffff",
     },
   });
+
+  // Register icon blobs AFTER the scene, not before: addFiles caches only images
+  // referenced by elements already in the scene, so calling it first leaves the
+  // first frame blank until a throttled refresh eventually repaints.
+  if (scene.files) {
+    const files = Object.values(scene.files).filter(
+      (f) => f && f.id && f.dataURL
+    );
+    if (files.length > 0) {
+      try {
+        excalidrawAPI.addFiles(files);
+      } catch (e) {
+        console.error("addFiles failed", e);
+      }
+    }
+  }
 
   if (elements.length === 0) {
     hasFramedNonEmptyScene = false;

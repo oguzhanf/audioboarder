@@ -11,9 +11,9 @@ public sealed class SceneNode
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
-    /// Short glyph rendered before the label (emoji or symbol) so technologies and
-    /// concepts read like a Visio stencil instead of an unlabelled box. Supplied by
-    /// the LLM, or auto-resolved from the label by <see cref="IconRegistry"/>.
+    /// Optional icon name from <see cref="IconRegistry"/> (for example "database").
+    /// Normally left null — the icon is resolved deterministically from the label and
+    /// kind, so the model cannot inject arbitrary glyphs.
     /// </summary>
     public string? Icon { get; set; }
 
@@ -30,13 +30,28 @@ public sealed class SceneNode
     public string? GroupId { get; set; }
 
     /// <summary>
+    /// Monotonic recency stamp maintained by <see cref="SceneGraph"/>: bumped whenever
+    /// the node is added or touched by a patch. Eviction drops the least recently
+    /// discussed nodes first, so a topic under active discussion outlives one that
+    /// was mentioned once and abandoned.
+    /// </summary>
+    public long Sequence { get; set; }
+
+    /// <summary>
     /// True if the user has manually positioned the node; layout engines must
     /// leave locked nodes alone.
     /// </summary>
     public bool Locked { get; set; }
 
-    /// <summary>Glyph actually used for rendering: explicit icon, else one inferred from the label/kind.</summary>
-    public string? EffectiveIcon => !string.IsNullOrWhiteSpace(Icon) ? Icon : IconRegistry.Resolve(Label, Kind);
+    /// <summary>
+    /// Name of the vector icon to draw inside the shape. Uses an explicit
+    /// <see cref="Icon"/> only when it names a real registry icon; otherwise it is
+    /// resolved from the label and kind.
+    /// </summary>
+    public string EffectiveIconName =>
+        !string.IsNullOrWhiteSpace(Icon) && IconRegistry.Has(Icon)
+            ? Icon
+            : IconRegistry.Resolve(Label, Kind);
 
     public SceneNode Clone() => new()
     {
@@ -51,5 +66,6 @@ public sealed class SceneNode
         Height = Height,
         GroupId = GroupId,
         Locked = Locked,
+        Sequence = Sequence,
     };
 }

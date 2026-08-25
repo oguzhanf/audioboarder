@@ -22,6 +22,8 @@ public sealed class SceneGraph
 
     public int Revision { get; internal set; }
 
+    private long _sequence;
+
     /// <summary>
     /// Synchronisation root. The diagram is mutated on a background thread
     /// (continuous diagrammer / refine) but rendered on the WPF UI thread.
@@ -31,7 +33,20 @@ public sealed class SceneGraph
     /// </summary>
     public object SyncRoot { get; } = new();
 
-    internal void AddNode(SceneNode node) { _nodes[node.Id] = node; Revision++; }
+    internal void AddNode(SceneNode node)
+    {
+        node.Sequence = ++_sequence;
+        _nodes[node.Id] = node;
+        Revision++;
+    }
+
+    /// <summary>
+    /// Marks a node as discussed again so it moves to the front of the recency order.
+    /// </summary>
+    internal void TouchNode(string id)
+    {
+        if (_nodes.TryGetValue(id, out var node)) node.Sequence = ++_sequence;
+    }
     internal void RemoveNode(string id)
     {
         if (!_nodes.Remove(id)) return;
@@ -58,6 +73,7 @@ public sealed class SceneGraph
         foreach (var g in source._groups.Values) _groups[g.Id] = g;
         foreach (var n in source._notes.Values) _notes[n.Id] = n;
         foreach (var image in source._images.Values) _images[image.Id] = image;
+        _sequence = Math.Max(_sequence, source._sequence);
         Revision = source.Revision;
     }
 
@@ -126,7 +142,7 @@ public sealed class SceneGraph
     {
         lock (SyncRoot)
         {
-            var copy = new SceneGraph { Revision = Revision };
+            var copy = new SceneGraph { Revision = Revision, _sequence = _sequence };
             foreach (var n in _nodes.Values) copy._nodes[n.Id] = n.Clone();
             foreach (var e in _edges.Values) copy._edges[e.Id] = e.Clone();
             foreach (var g in _groups.Values) copy._groups[g.Id] = g.Clone();

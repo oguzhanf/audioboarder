@@ -76,6 +76,16 @@ public sealed class RealtimeSettings
     /// (the smart model that groups + cleans up the diagram, like Deep Refine)
     /// instead of a quick fast-model update. 0 disables automatic deep passes.</summary>
     public double DeepPassIntervalSeconds { get; set; } = 30;
+
+    /// <summary>Maximum nodes kept on the live board. Continuous passes only add, so
+    /// without a cap a long meeting grows into an unreadable hairball. Content
+    /// restored from a prior session is never trimmed below what was restored.
+    /// Negative disables the cap.</summary>
+    public int MaxNodes { get; set; } = 42;
+
+    /// <summary>Maximum notes kept in the rail. General commentary is dropped before
+    /// decisions, action items, risks and questions. Negative disables the cap.</summary>
+    public int MaxNotes { get; set; } = 24;
 }
 
 public sealed class ImageGenerationSettings

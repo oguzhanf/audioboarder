@@ -42,11 +42,27 @@ public class SceneToExcalidrawConverterTests
         var graph = new SceneGraph();
         _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
         {
-            new AddNode("t", NodeKind.Technology, "Power BI", Icon: "\U0001F680"),
+            new AddNode("t", NodeKind.Technology, "Power BI", Icon: "database"),
         }));
         graph.Nodes["t"].X = 10; graph.Nodes["t"].Y = 10;
 
-        Find(_converter.Convert(graph), "t_label")!.OriginalText.Should().Contain("\U0001F680");
+        // A valid registry icon name wins over the label-derived default.
+        graph.Nodes["t"].EffectiveIconName.Should().Be("database");
+        // Icons are vector elements, never glyphs spliced into the label text.
+        Find(_converter.Convert(graph), "t_label")!.OriginalText.Should().Be("Power BI");
+    }
+
+    [Fact]
+    public void UnknownExplicitIconFallsBackToTheResolvedIcon()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
+        {
+            // An emoji (or any junk) must never reach the renderer.
+            new AddNode("t", NodeKind.Technology, "Microsoft Purview", Icon: "\U0001F680"),
+        }));
+
+        graph.Nodes["t"].EffectiveIconName.Should().Be("search");
     }
 
     [Fact]
@@ -59,9 +75,38 @@ public class SceneToExcalidrawConverterTests
         }));
         graph.Nodes["t"].X = 10; graph.Nodes["t"].Y = 10;
 
-        var text = Find(_converter.Convert(graph), "t_label")!.OriginalText!;
-        text.Should().Contain(IconRegistry.Resolve("Microsoft Purview", NodeKind.Technology));
-        text.Should().EndWith("Microsoft Purview");
+        var doc = _converter.Convert(graph);
+
+        // The label carries text only …
+        Find(doc, "t_label")!.OriginalText.Should().Be("Microsoft Purview");
+        // … and the icon is a real image element backed by an SVG data URL.
+        var icon = Find(doc, "t_icon");
+        icon.Should().NotBeNull();
+        icon!.Type.Should().Be("image");
+        icon.FileId.Should().NotBeNullOrEmpty();
+        doc.Files.Should().ContainKey(icon.FileId!);
+    }
+
+    [Fact]
+    public void IconsContainNoEmoji()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
+        {
+            new AddNode("a", NodeKind.Security, "Defender"),
+            new AddNode("b", NodeKind.Actor, "Priya"),
+            new AddNode("c", NodeKind.Risk, "Cloud capacity delay"),
+        }));
+
+        var doc = _converter.Convert(graph);
+
+        foreach (var element in doc.Elements)
+        {
+            var text = (element.Text ?? string.Empty) + (element.OriginalText ?? string.Empty);
+            text.Should().NotContainAny("\U0001F680", "\u26A0", "\U0001F6E1", "\U0001F464");
+            foreach (var ch in text)
+                char.IsSurrogate(ch).Should().BeFalse("emoji must not appear anywhere on the board");
+        }
     }
 
     [Fact]
@@ -142,13 +187,14 @@ public class SceneToExcalidrawConverterTests
             new AddNode("a", NodeKind.Process, "A"),
         }));
         var node = graph.Nodes["a"];
-        node.X = 300; node.Y = 200; node.Width = 140; node.Height = 60;
+        // Generous explicit size so auto-sizing does not grow the box past it.
+        node.X = 300; node.Y = 200; node.Width = 300; node.Height = 160;
 
         var shape = Find(_converter.Convert(graph), "a")!;
-        shape.X.Should().Be(230); // 300 - 140/2
-        shape.Y.Should().Be(170); // 200 - 60/2
-        shape.Width.Should().Be(140);
-        shape.Height.Should().Be(60);
+        shape.X.Should().Be(150);  // 300 - 300/2
+        shape.Y.Should().Be(120);  // 200 - 160/2
+        shape.Width.Should().Be(300);
+        shape.Height.Should().Be(160);
     }
 
     [Fact]
@@ -157,9 +203,8 @@ public class SceneToExcalidrawConverterTests
         var doc = _converter.Convert(BuildScene());
         var label = Find(doc, "a_label")!;
         label.Type.Should().Be("text");
-        // The rendered label now leads with a glyph so the board reads like a stencil.
-        label.Text.Should().EndWith("Client app");
-        label.Text.Should().Contain(IconRegistry.Resolve("Client app", NodeKind.Process));
+        // The label carries text only; the kind icon is a separate vector element.
+        label.Text.Should().Be("Client app");
         label.ContainerId.Should().Be("a");
         label.FontFamily.Should().Be(1); // Virgil hand-drawn
         label.StrokeColor.Should().Be(ExcalidrawPalette.Ink);
@@ -177,7 +222,18 @@ public class SceneToExcalidrawConverterTests
         arrow.StartBinding!.ElementId.Should().Be("a");
         arrow.EndBinding!.ElementId.Should().Be("b");
         arrow.EndArrowhead.Should().Be("arrow");
-        arrow.Points.Should().HaveCount(2);
+        // Stepped orthogonal route: start, two waypoints, end.
+        arrow.Points.Should().HaveCount(4);
+        // Every segment is axis-aligned — no free diagonals.
+        for (var i = 1; i < arrow.Points!.Length; i++)
+        {
+            var dx = Math.Abs(arrow.Points[i][0] - arrow.Points[i - 1][0]);
+            var dy = Math.Abs(arrow.Points[i][1] - arrow.Points[i - 1][1]);
+            Math.Min(dx, dy).Should().Be(0, "each elbow segment must be horizontal or vertical");
+        }
+        // Excalidraw's own elbow mode is deliberately off: with bound endpoints it
+        // never regenerates points, so it would render straight while hiding handles.
+        arrow.Elbowed.Should().BeFalse();
 
         // The endpoints register the arrow on both nodes (so Excalidraw routes it).
         Find(doc, "a")!.BoundElements.Should().Contain(b => b.Id == "e1" && b.Type == "arrow");
@@ -326,5 +382,60 @@ public class SceneToExcalidrawConverterTests
         var doc = ExcalidrawJson.Deserialize(json);
         doc.Elements.Should().NotBeEmpty();
         doc.Type.Should().Be("excalidraw");
+    }
+
+    [Fact]
+    public void IconsAreDrawnInsideEveryShapeAndMoveWithIt()
+    {
+        // A diamond's bounding-box corner is OUTSIDE its outline, so a bounding-box
+        // offset would leave the icon floating in empty canvas.
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
+        {
+            new AddNode("risk", NodeKind.Risk, "Cloud capacity delay"),
+            new AddNode("dec", NodeKind.Decision, "Ship the Orion pilot"),
+            new AddNode("ds", NodeKind.DataStore, "Documentation repository"),
+            new AddNode("proc", NodeKind.Process, "Run replay test"),
+        }));
+        NodeSizer.ApplyTo(graph);
+        foreach (var n in graph.Nodes.Values) { n.X = 500; n.Y = 500; }
+
+        var doc = _converter.Convert(graph);
+
+        foreach (var node in graph.Nodes.Values)
+        {
+            var icon = Find(doc, node.Id + "_icon")!;
+            var shape = Find(doc, node.Id)!;
+
+            foreach (var (px, py) in new[]
+            {
+                (icon.X, icon.Y),
+                (icon.X + icon.Width, icon.Y),
+                (icon.X, icon.Y + icon.Height),
+                (icon.X + icon.Width, icon.Y + icon.Height),
+            })
+            {
+                IsInsideShape(node, px, py, 500, 500).Should().BeTrue(
+                    $"icon corner ({px:F0},{py:F0}) must lie inside the {node.Kind} outline");
+            }
+
+            // Grouped, not locked — otherwise dragging the node leaves the icon behind.
+            icon.Locked.Should().BeFalse();
+            icon.GroupIds.Should().NotBeEmpty();
+            shape.GroupIds.Should().Equal(icon.GroupIds);
+        }
+    }
+
+    private static bool IsInsideShape(SceneNode node, double px, double py, double cx, double cy)
+    {
+        double w = node.Width, h = node.Height;
+        return node.Kind switch
+        {
+            NodeKind.Risk or NodeKind.Decision or NodeKind.Security or NodeKind.Milestone =>
+                Math.Abs(px - cx) / (w / 2) + Math.Abs(py - cy) / (h / 2) <= 1.0,
+            NodeKind.DataStore or NodeKind.Cloud or NodeKind.Metric =>
+                Math.Pow((px - cx) / (w / 2), 2) + Math.Pow((py - cy) / (h / 2), 2) <= 1.0,
+            _ => px >= cx - w / 2 && px <= cx + w / 2 && py >= cy - h / 2 && py <= cy + h / 2,
+        };
     }
 }

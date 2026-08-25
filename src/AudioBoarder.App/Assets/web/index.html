@@ -19,8 +19,31 @@
         position: fixed;
         inset: 0;
       }
+
+      /*
+        AudioBoarder drives this canvas from the conversation, so Excalidraw's own
+        authoring chrome is noise: the shape-tool island, the "hold mouse wheel to
+        pan" hint, the Library trigger, the hamburger menu and Excalidraw's help
+        button (the app has its own Help). Selection/drag still works because the
+        selection tool is active by default, and panning/zooming stay available via
+        wheel, space-drag and middle-drag. Zoom and undo/redo are deliberately kept.
+      */
+      .excalidraw .App-toolbar,
+      .excalidraw .HintViewer,
+      .excalidraw .help-icon,
+      .excalidraw .sidebar-trigger,
+      .excalidraw .dropdown-menu-button,
+      .excalidraw .layer-ui__wrapper__top-right {
+        display: none !important;
+      }
+
+      /* Soften the remaining islands so they read as part of the app shell. */
+      .excalidraw .Island {
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+        border-radius: 10px;
+      }
     </style>
-    <script type="module" crossorigin src="./assets/index-B2vHuMl9.js"></script>
+    <script type="module" crossorigin src="./assets/index-BK8QeKzu.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-BRA5OktX.css">
   </head>
   <body>

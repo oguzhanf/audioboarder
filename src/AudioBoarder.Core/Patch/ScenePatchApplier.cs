@@ -70,6 +70,7 @@ public sealed class ScenePatchApplier
                     existingById.Kind = add.Kind;
                     if (!string.IsNullOrWhiteSpace(add.Icon)) existingById.Icon = add.Icon;
                     if (!string.IsNullOrWhiteSpace(add.Description)) existingById.Description = CleanLabel(add.Description);
+                    graph.TouchNode(add.Id);
                     ctx.MapAlias(add.Id, add.Id);
                     ctx.IndexLabel(key, add.Id);
                     break;
@@ -81,6 +82,7 @@ public sealed class ScenePatchApplier
                     existingByLabel.Kind = add.Kind;
                     if (!string.IsNullOrWhiteSpace(add.Icon)) existingByLabel.Icon = add.Icon;
                     if (!string.IsNullOrWhiteSpace(add.Description)) existingByLabel.Description = CleanLabel(add.Description);
+                    graph.TouchNode(existingId!);
                     ctx.MapAlias(add.Id, existingId!);
                     break;
                 }
@@ -119,6 +121,7 @@ public sealed class ScenePatchApplier
                         throw new ScenePatchException(index, "update_node", $"group '{upd.GroupId}' missing");
                     else nodeToUpdate.GroupId = upd.GroupId;
                 }
+                graph.TouchNode(id);
                 break;
             }
 
@@ -126,8 +129,13 @@ public sealed class ScenePatchApplier
             {
                 Validate.NonEmpty(index, "delete_node.id", del.Id);
                 var id = ctx.Resolve(del.Id);
-                if (!graph.ContainsNode(id))
+                if (!graph.Nodes.TryGetValue(id, out var nodeToDelete))
                     throw new ScenePatchException(index, "delete_node", $"node '{del.Id}' missing");
+                // Check AFTER alias resolution: a patch can alias a fresh id onto an
+                // existing node by label, so an id-only guard upstream is bypassable.
+                // A node the user dragged is deliberate curation — never delete it.
+                if (nodeToDelete.Locked)
+                    throw new ScenePatchException(index, "delete_node", $"node '{id}' is locked by the user");
                 graph.RemoveNode(id);
                 break;
             }
@@ -160,6 +168,9 @@ public sealed class ScenePatchApplier
                     Kind = conn.Kind,
                     Label = conn.Label is null ? null : CleanLabel(conn.Label),
                 });
+                // Both endpoints are part of the live discussion again.
+                graph.TouchNode(from);
+                graph.TouchNode(to);
                 break;
             }
 
@@ -221,7 +232,16 @@ public sealed class ScenePatchApplier
                     Kind = nu.Kind,
                     Text = text,
                     Owner = nu.Owner,
-                    SourceTimestamp = nu.SourceTimestamp,
+                    // The model is not asked for a timestamp, so stamp arrival time.
+                    // Without this every note sorts equal and the rail shows no time
+                    // at all — and eviction would fall back to lexicographic id order
+                    // instead of dropping the oldest chatter first. Re-upserting the
+                    // same id keeps its original time so a note doesn't look new.
+                    SourceTimestamp = nu.SourceTimestamp
+                        ?? (graph.Notes.TryGetValue(nu.Id, out var priorNote)
+                                ? priorNote.SourceTimestamp
+                                : null)
+                        ?? DateTimeOffset.UtcNow,
                 });
                 ctx.IndexNote(noteKey, nu.Id);
                 break;

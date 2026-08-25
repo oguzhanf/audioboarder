@@ -30,7 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SceneGraph>();
         services.AddSingleton<TranscriptBuffer>(_ => new TranscriptBuffer(TimeSpan.FromMinutes(5)));
         services.AddSingleton<DiagramTheme>(_ => DiagramTheme.Light);
-        services.AddSingleton<ILayoutEngine, MindMapLayoutEngine>();
+        services.AddSingleton<ILayoutEngine, LayeredGroupLayoutEngine>();
         services.AddSingleton<SceneRenderer>(sp => new SceneRenderer(sp.GetService<DiagramTheme>()));
 
         // Energy VAD is the reliable DEFAULT speech gate. The Silero ONNX model
@@ -151,7 +151,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<TranscriptBuffer>(),
             sp.GetRequiredService<SceneGraph>(),
             sp.GetService<IImageGenerator>(),
-            sp.GetService<ILoggerFactory>()?.CreateLogger<DiagramOrchestrator>()));
+            sp.GetService<ILoggerFactory>()?.CreateLogger<DiagramOrchestrator>(),
+            sp.GetService<SceneBudget>()));
 
         services.AddSingleton<FoundryDiscovery>();
         return services;

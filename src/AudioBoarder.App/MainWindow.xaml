@@ -24,6 +24,14 @@
         <ctrl:BoolVisibilityConverter x:Key="BoolVis" />
         <ctrl:BoolToStringConverter x:Key="BoolToString" />
         <ctrl:NoteKindBrushConverter x:Key="NoteKindBrush" />
+
+        <!-- Grouped so a long meeting reads as "Action items / Decisions / Risks"
+             instead of one undifferentiated column of tiny coloured rows. -->
+        <CollectionViewSource x:Key="GroupedNotes" Source="{Binding Notes}">
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="KindDisplay" />
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
     </ui:FluentWindow.Resources>
 
     <ui:FluentWindow.InputBindings>
@@ -371,22 +379,23 @@
                             Padding="12,10">
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" MinWidth="120" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
 
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
                                 <TextBlock Text="{Binding ShowWhiteboard, Converter={StaticResource BoolToString}, ConverterParameter='Classic canvas|Live whiteboard'}"
                                            FontWeight="SemiBold"
                                            FontSize="14"
+                                           TextTrimming="CharacterEllipsis"
                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                 <TextBlock Text="Wheel zoom is enabled on the whiteboard. Drag shapes to lock layout."
                                            FontSize="11"
+                                           TextTrimming="CharacterEllipsis"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
 
-                            <StackPanel Grid.Column="2"
+                            <StackPanel Grid.Column="1"
                                         Orientation="Horizontal"
                                         VerticalAlignment="Center">
                                 <Border Margin="0,0,8,0"
@@ -496,14 +505,38 @@
                         </Grid>
                     </Border>
                     <ListBox x:Name="NotesList"
-                             ItemsSource="{Binding Notes}"
+                             ItemsSource="{Binding Source={StaticResource GroupedNotes}}"
                              BorderThickness="0"
                              Background="Transparent"
                              Padding="6"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.IsVirtualizingWhenGrouping="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling"
                              AutomationProperties.Name="Session notes">
+                        <ListBox.GroupStyle>
+                            <GroupStyle>
+                                <GroupStyle.HeaderTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,8,0,4" Padding="2,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontWeight="SemiBold"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                <TextBlock Text="{Binding ItemCount, StringFormat=' ({0})'}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </GroupStyle.HeaderTemplate>
+                            </GroupStyle>
+                        </ListBox.GroupStyle>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
-                                <Setter Property="Padding" Value="4,2" />
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Margin" Value="0,0,0,6" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                                 <Setter Property="Background" Value="Transparent" />
                                 <Setter Property="BorderThickness" Value="0" />
@@ -511,27 +544,36 @@
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="0,0,0,1"
-                                        Padding="4,6">
-                                    <StackPanel>
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBlock Text="{Binding Kind}"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{Binding Kind, Converter={StaticResource NoteKindBrush}}" />
-                                            <TextBlock Text="{Binding Time}"
-                                                       Margin="6,0,0,0"
-                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                       FontSize="11" />
+                                <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                        CornerRadius="8"
+                                        Padding="10,8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Width="3"
+                                                CornerRadius="2"
+                                                Margin="0,1,10,1"
+                                                Background="{Binding Kind, Converter={StaticResource NoteKindBrush}}" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="{Binding Text}"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="{Binding Owner}"
+                                                           Visibility="{Binding HasOwner, Converter={StaticResource BoolVis}}"
+                                                           FontWeight="SemiBold"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                                <TextBlock Text="{Binding Time}"
+                                                           Margin="8,0,0,0"
+                                                           FontSize="11"
+                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                                            </StackPanel>
                                         </StackPanel>
-                                        <TextBlock Text="{Binding Text}"
-                                                   TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                        <TextBlock Text="{Binding Owner}"
-                                                   FontStyle="Italic"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                   FontSize="11" />
-                                    </StackPanel>
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ListBox.ItemTemplate>

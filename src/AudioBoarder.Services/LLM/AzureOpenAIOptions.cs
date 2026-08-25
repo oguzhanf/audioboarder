@@ -39,11 +39,8 @@ public sealed class AzureOpenAIOptions
         primary tool here, not a rare one — use them whenever a system is identifiable.
         Do not group across unrelated centres.
 
-        ICONS: set "icon" to ONE emoji that depicts the thing, for every node where a
-        sensible glyph exists — technologies especially. Examples: Power BI, a
-        database, a shield for a security control, a person for a role, a warning sign
-        for a risk. The host also auto-assigns glyphs for well-known Microsoft
-        products, so prefer an explicit icon only when you can do better.
+        ICONS: do not supply an "icon" field. The application draws a vector icon for
+        every node automatically from its label and kind.
 
         DESCRIPTIONS: set "description" to a SHORT clause (max ~8 words) adding the
         detail behind the label — what it does, or why it came up. Add one wherever it
@@ -86,6 +83,12 @@ public sealed class AzureOpenAIOptions
         SIZE: at most 22 nodes. Go deeper rather than wider; reuse existing node ids
         instead of inventing duplicates.
 
+        CONSOLIDATE: this runs repeatedly on a growing board, so tidying matters as
+        much as adding. When the scene already holds near that many nodes, prefer
+        merging near-duplicates (relabel the survivor, delete_node the rest) and
+        removing anything the discussion has moved past, over appending more. A
+        board that stays readable is worth more than one that records everything.
+
         NOTES: note_upsert only for an explicit decision, action item, stated risk, or
         open question — not general commentary.
 
@@ -105,9 +108,9 @@ public sealed class AzureOpenAIOptions
         The JSON you return MUST match this shape exactly:
         {
           "operations": [
-            { "op": "add_node", "id": "<string>", "kind": "<node kind>", "label": "<1-5 words>", "icon": "<emoji, optional>", "description": "<short clause, optional>" },
+            { "op": "add_node", "id": "<string>", "kind": "<node kind>", "label": "<1-5 words>", "description": "<short clause, optional>" },
             { "op": "connect", "id": "<string>", "from": "<node-id>", "to": "<node-id>", "kind": "flow|dependency|association|inheritance", "label": "<what flows / how they relate>" },
-            { "op": "update_node", "id": "<string>", "label": "<optional>", "kind": "<optional>", "icon": "<optional>", "description": "<optional>" },
+            { "op": "update_node", "id": "<string>", "label": "<optional>", "kind": "<optional>", "description": "<optional>" },
             { "op": "delete_node", "id": "<string>" },
             { "op": "disconnect", "id": "<edge-id>" },
             { "op": "relabel", "id": "<string>", "label": "<string>" },
@@ -137,17 +140,18 @@ public sealed class AzureOpenAIOptions
         ONLY a ScenePatch JSON object: {"operations":[...]}. Max 6 operations.
 
         Add only what is NEW since the current scene. Reuse existing ids (given as
-        "N <id> (kind) label") instead of duplicating; match by meaning. Return an
-        empty operations array if nothing notable was said.
+        "N <id> (kind) label") instead of duplicating; match by meaning. Connecting
+        to an existing node is better than adding another one. Return an empty
+        operations array if nothing notable was said.
 
         Ops:
-        {"op":"add_node","id":"","kind":"","label":"1-5 words","icon":"one emoji","description":"short clause"}
+        {"op":"add_node","id":"","kind":"","label":"1-5 words","description":"short clause"}
         {"op":"connect","id":"","from":"","to":"","kind":"flow","label":"what flows between them"}
         {"op":"group","id":"","label":"system name","node_ids":[]}
         {"op":"note_upsert","id":"","kind":"action_item","text":""}
 
-        Label every connection between distinct things. Give named technologies an
-        icon. Group nodes that belong to one system or platform.
+        Label every connection between distinct things. Group nodes that belong to one
+        system or platform. Do not supply icons — the application draws them.
 
         node kind: process entity decision data_store actor note system technology
         security cloud document milestone risk metric external callout

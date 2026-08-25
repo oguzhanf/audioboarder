@@ -415,6 +415,13 @@ public partial class MainViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(payload);
         _sessions.Apply(Scene, payload);
+        // Older sessions persisted the previous fixed 140x60 boxes and coordinates
+        // from the old radial engine. Re-size and re-lay out so a restored board is
+        // readable immediately rather than overlapping until the next generation.
+        _orchestrator.Relayout();
+        // The user explicitly chose to bring this board back, so the size cap must
+        // not quietly delete most of it on the next automatic pass.
+        _orchestrator.RaiseBudgetFloorToCurrentScene();
         RefreshNotes();
         SceneRevision = Scene.Revision;
         SceneInvalidated?.Invoke(this, EventArgs.Empty);
@@ -570,8 +577,9 @@ public partial class MainViewModel : ObservableObject
         lock (Scene.SyncRoot)
         {
             snapshot = Scene.Notes.Values
-                .OrderByDescending(n => n.SourceTimestamp ?? DateTimeOffset.MinValue)
                 .Select(n => new NoteViewModel(n))
+                .OrderBy(n => n.KindRank)
+                .ThenByDescending(n => n.Time, StringComparer.Ordinal)
                 .ToList();
         }
         foreach (var nvm in snapshot) Notes.Add(nvm);
@@ -603,12 +611,37 @@ public sealed class NoteViewModel
     public NoteViewModel(SceneNote note)
     {
         Kind = note.Kind.ToString();
+        KindDisplay = Humanize(note.Kind);
+        KindRank = Rank(note.Kind);
         Text = note.Text;
         Owner = note.Owner ?? string.Empty;
         Time = note.SourceTimestamp?.LocalDateTime.ToString("HH:mm:ss") ?? string.Empty;
     }
+
     public string Kind { get; }
+    public string KindDisplay { get; }
+    public int KindRank { get; }
     public string Text { get; }
     public string Owner { get; }
     public string Time { get; }
+    public bool HasOwner => !string.IsNullOrWhiteSpace(Owner);
+
+    // What the meeting committed to reads before what it merely mentioned.
+    private static int Rank(NoteKind kind) => kind switch
+    {
+        NoteKind.ActionItem => 0,
+        NoteKind.Decision => 1,
+        NoteKind.Risk => 2,
+        NoteKind.Question => 3,
+        _ => 4,
+    };
+
+    private static string Humanize(NoteKind kind) => kind switch
+    {
+        NoteKind.ActionItem => "Action items",
+        NoteKind.Decision => "Decisions",
+        NoteKind.Risk => "Risks",
+        NoteKind.Question => "Open questions",
+        _ => "Notes",
+    };
 }

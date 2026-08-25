@@ -34,17 +34,30 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
             }
         }
 
-        var components = FindComponents(ids, adj);
+        // Cluster by group FIRST, across the whole graph. A group frame is drawn from
+        // the bounds of ALL its members, so a group must be exactly one cluster — if
+        // its members are split across connectivity components they get tiled into
+        // different cells and the single frame stretches across both, overlapping its
+        // neighbours. That is the original hairball symptom.
+        var clusters = BuildClusters(ids, adj, graph);
 
         var local = new Dictionary<string, (double X, double Y)>(StringComparer.Ordinal);
         var roots = new HashSet<string>(StringComparer.Ordinal);
         var boxes = new List<ComponentBox>();
 
-        foreach (var comp in components)
+        foreach (var comp in clusters)
         {
-            var root = ChooseRoot(comp, adj);
+            // Confine traversal to this cluster, otherwise the spanning tree would
+            // walk out through an edge that leaves the group and place foreign nodes.
+            var members = new HashSet<string>(comp, StringComparer.Ordinal);
+            var localAdj = comp.ToDictionary(
+                id => id,
+                id => new HashSet<string>(adj[id].Where(members.Contains), StringComparer.Ordinal),
+                StringComparer.Ordinal);
+
+            var root = ChooseRoot(comp, localAdj);
             roots.Add(root);
-            var children = BuildSpanningTree(root, adj);
+            var children = BuildSpanningTree(root, localAdj, comp);
             var leaves = ComputeLeafCounts(root, children);
 
             var avgW = comp.Average(id => Size(graph.Nodes[id]).W);
@@ -68,24 +81,47 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
             boxes.Add(new ComponentBox(comp, maxX - minX, maxY - minY, (minX + maxX) / 2, (minY + maxY) / 2));
         }
 
-        // Tile components in a compact grid so several mind maps stack in 2-D.
-        var cols = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(boxes.Count)));
-        var margin = options.HorizontalSpacing * 2 + 60;
-        var cellW = boxes.Max(b => b.Width) + margin;
-        var cellH = boxes.Max(b => b.Height) + margin;
+        // Pack clusters onto shelves (rows sized to their own tallest member) rather
+        // than a uniform grid. Clusters vary hugely — one 20-node group beside several
+        // single-node strays — and uniform cells would pad every small cluster out to
+        // the largest, inflating the canvas with whitespace and driving zoom-to-fit
+        // back down to single digits.
+        //
+        // Gaps must clear BOTH the group frame padding the Excalidraw converter adds
+        // (34px per side) and the frame's name, which renders in a band above the box.
+        // Too small a gap here is exactly what made adjacent group labels collide.
+        const double FramePadding = 34;
+        const double FrameLabelBand = 44;
+        var gapX = options.HorizontalSpacing * 2 + FramePadding * 2 + 40;
+        var gapY = options.VerticalSpacing * 2 + FramePadding * 2 + FrameLabelBand + 24;
+
+        // Keep the drawing roughly square so it fits a landscape canvas well.
+        var totalArea = boxes.Sum(b => (b.Width + gapX) * (b.Height + gapY));
+        var shelfLimit = Math.Max(
+            boxes.Max(b => b.Width) + gapX,
+            Math.Sqrt(totalArea * 1.6));
 
         var global = new Dictionary<string, (double X, double Y)>(StringComparer.Ordinal);
-        for (var k = 0; k < boxes.Count; k++)
+        double shelfX = 0, shelfY = 0, shelfHeight = 0;
+        foreach (var box in boxes.OrderByDescending(b => b.Height))
         {
-            int col = k % cols, row = k / cols;
-            var cellCx = col * cellW + cellW / 2;
-            var cellCy = row * cellH + cellH / 2;
-            var box = boxes[k];
+            if (shelfX > 0 && shelfX + box.Width + gapX > shelfLimit)
+            {
+                shelfY += shelfHeight + gapY;
+                shelfX = 0;
+                shelfHeight = 0;
+            }
+
+            var originX = shelfX + box.Width / 2;
+            var originY = shelfY + box.Height / 2;
             foreach (var id in box.Nodes)
             {
                 var (lx, ly) = local[id];
-                global[id] = (lx - box.CenterX + cellCx, ly - box.CenterY + cellCy);
+                global[id] = (lx - box.CenterX + originX, ly - box.CenterY + originY);
             }
+
+            shelfX += box.Width + gapX;
+            shelfHeight = Math.Max(shelfHeight, box.Height);
         }
 
         double gMinX = global.Values.Min(p => p.X), gMinY = global.Values.Min(p => p.Y);
@@ -118,6 +154,47 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
     }
 
     private readonly record struct ComponentBox(List<string> Nodes, double Width, double Height, double CenterX, double CenterY);
+
+    /// <summary>
+    /// Builds layout clusters: every group becomes exactly one cluster containing all
+    /// of its members (regardless of connectivity), and the ungrouped remainder is
+    /// split into its natural connected components.
+    /// </summary>
+    private static List<List<string>> BuildClusters(
+        List<string> ids, Dictionary<string, HashSet<string>> adj, SceneGraph graph)
+    {
+        var byGroup = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
+        var ungrouped = new List<string>();
+
+        foreach (var id in ids)
+        {
+            var groupId = graph.Nodes[id].GroupId;
+            if (string.IsNullOrEmpty(groupId) || !graph.Groups.ContainsKey(groupId))
+            {
+                ungrouped.Add(id);
+                continue;
+            }
+            if (!byGroup.TryGetValue(groupId, out var bucket))
+            {
+                bucket = new List<string>();
+                byGroup[groupId] = bucket;
+            }
+            bucket.Add(id);
+        }
+
+        var clusters = new List<List<string>>(byGroup.Values);
+
+        // Components of the ungrouped remainder only — edges into grouped nodes must
+        // not drag a grouped node back out of its cluster.
+        var ungroupedSet = new HashSet<string>(ungrouped, StringComparer.Ordinal);
+        var ungroupedAdj = ungrouped.ToDictionary(
+            id => id,
+            id => new HashSet<string>(adj[id].Where(ungroupedSet.Contains), StringComparer.Ordinal),
+            StringComparer.Ordinal);
+        clusters.AddRange(FindComponents(ungrouped, ungroupedAdj));
+
+        return clusters;
+    }
 
     private static (double W, double H) Size(SceneNode n)
         => (n.Width <= 0 ? 140 : n.Width, n.Height <= 0 ? 60 : n.Height);
@@ -161,7 +238,8 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
         return root;
     }
 
-    private static Dictionary<string, List<string>> BuildSpanningTree(string root, Dictionary<string, HashSet<string>> adj)
+    private static Dictionary<string, List<string>> BuildSpanningTree(
+        string root, Dictionary<string, HashSet<string>> adj, IEnumerable<string>? allMembers = null)
     {
         var children = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var visited = new HashSet<string>(StringComparer.Ordinal) { root };
@@ -179,6 +257,20 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
                 queue.Enqueue(nb);
             }
         }
+
+        // A cluster grouped by label need not be internally connected. Any member the
+        // traversal could not reach still has to be positioned, so hang it off the
+        // root as its own branch rather than leaving it without coordinates.
+        if (allMembers is not null)
+        {
+            foreach (var id in allMembers.OrderBy(x => x, StringComparer.Ordinal))
+            {
+                if (!visited.Add(id)) continue;
+                children[root].Add(id);
+                children[id] = new List<string>();
+            }
+        }
+
         return children;
     }
 

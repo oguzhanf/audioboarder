@@ -286,6 +286,11 @@ public partial class App : Application
 
         builder.Services.AddAudioBoarder();
 
+        // Registered before AddAudioBoarder's orchestrator resolves it, so the board's
+        // size cap is configurable rather than hard-coded.
+        builder.Services.AddSingleton(_ => new SceneBudget(
+            settings.Realtime.MaxNodes, settings.Realtime.MaxNotes));
+
         builder.Services.AddSingleton<DiagramTheme>(_ =>
             string.Equals(settings.Theme, "Dark", StringComparison.OrdinalIgnoreCase)
                 ? DiagramTheme.Dark : DiagramTheme.Light);

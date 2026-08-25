@@ -17,6 +17,12 @@ public sealed record ExcalidrawExportOptions
     /// <summary>Append captured notes (decisions/action items/risks) as sticky notes beside the diagram.</summary>
     public bool IncludeNotes { get; init; } = true;
 
+    /// <summary>Draw the Lucide vector icon for each node's kind/technology.</summary>
+    public bool IncludeIcons { get; init; } = true;
+
+    /// <summary>Route arrows as orthogonal elbows rather than free diagonals.</summary>
+    public bool ElbowArrows { get; init; } = true;
+
     public string Background { get; init; } = "#ffffff";
 
     public static ExcalidrawExportOptions Default { get; } = new();
@@ -37,6 +43,8 @@ public sealed class SceneToExcalidrawConverter
     private const double NoteFontSize = 14;
     private const double LineHeight = 1.25;
     private const double BindingGap = 6;
+    private const double IconSize = 18;
+    private const double IconInset = 8;
 
     public ExcalidrawDocument Convert(SceneGraph graph, ExcalidrawExportOptions? options = null)
     {
@@ -48,6 +56,7 @@ public sealed class SceneToExcalidrawConverter
         var mid = new List<ExcalidrawElement>();     // arrows + arrow labels
         var front = new List<ExcalidrawElement>();   // node shapes + node labels
         var sticky = new List<ExcalidrawElement>();  // sidebar notes
+        var files = new Dictionary<string, object>(StringComparer.Ordinal);
 
         lock (graph.SyncRoot)
         {
@@ -114,6 +123,16 @@ public sealed class SceneToExcalidrawConverter
                     front.Add(shape);
                 }
 
+                if (options.IncludeIcons)
+                {
+                    var icon = BuildNodeIcon(node, box, shape.StrokeColor, files, now);
+                    if (frameByNode.TryGetValue(node.Id, out var iconFrame)) icon.FrameId = iconFrame;
+                    // The shape must join the same group, otherwise dragging the node
+                    // leaves the icon behind at the old coordinates.
+                    shape.GroupIds = new List<string> { node.Id + "_grp" };
+                    front.Add(icon);
+                }
+
                 if (bound.Count > 0) shape.BoundElements = bound;
             }
 
@@ -129,6 +148,7 @@ public sealed class SceneToExcalidrawConverter
         doc.Elements.AddRange(mid);
         doc.Elements.AddRange(front);
         doc.Elements.AddRange(sticky);
+        foreach (var kv in files) doc.Files[kv.Key] = kv.Value;
         return doc;
     }
 
@@ -150,18 +170,13 @@ public sealed class SceneToExcalidrawConverter
         var auto = 0;
         foreach (var node in graph.Nodes.Values)
         {
-            var w = node.Width <= 0 ? 140 : node.Width;
-            var h = node.Height <= 0 ? 60 : node.Height;
-
-            // Grow the box only when a description genuinely adds wrapped lines.
-            // The glyph rides inside the existing width (Excalidraw wraps bound text),
-            // so an icon alone must NOT override a width the layout engine chose.
-            if (!string.IsNullOrWhiteSpace(node.Description))
-            {
-                w = Math.Max(w, 190);
-                var descLines = Math.Max(1, (int)Math.Ceiling(node.Description!.Length / 24.0));
-                h = Math.Max(h, 60 + descLines * NodeFontSize * LineHeight);
-            }
+            // Size from the actual text so a long label can never spill outside its
+            // shape. NodeSizer is the single source of truth — the layout engine sizes
+            // nodes the same way, so reserved footprint and drawn box always agree.
+            var (measuredW, measuredH) = NodeSizer.Measure(
+                node.Label, node.Description, hasIcon: true, kind: node.Kind);
+            var w = node.Width > 0 ? Math.Max(node.Width, measuredW) : measuredW;
+            var h = node.Height > 0 ? Math.Max(node.Height, measuredH) : measuredH;
 
             double cx, cy;
             if (node.X.HasValue && node.Y.HasValue)
@@ -248,22 +263,83 @@ public sealed class SceneToExcalidrawConverter
     };
 
     /// <summary>
-    /// Composes the text inside a node: glyph + label, plus an optional smaller
-    /// description line. This is what turns a bare rectangle into a stencil-like
-    /// element with supporting explanation.
+    /// Text rendered inside a node: the label, plus an optional smaller description
+    /// line. The kind icon is a real vector element drawn beside the text, never a
+    /// glyph spliced into the string.
     /// </summary>
     private static string ComposeNodeText(SceneNode node)
+        => string.IsNullOrWhiteSpace(node.Description)
+            ? node.Label
+            : $"{node.Label}\n{node.Description}";
+
+    /// <summary>
+    /// Builds the vector icon shown inside a node as an Excalidraw image element
+    /// backed by an inline SVG data URL, and registers the blob in the document's
+    /// file map. Kept unbound and locked so it never becomes a drag target.
+    /// </summary>
+    private static ExcalidrawElement BuildNodeIcon(
+        SceneNode node, NodeBox box, string strokeColor, Dictionary<string, object> files, long now)
     {
-        var icon = node.EffectiveIcon;
-        var head = string.IsNullOrWhiteSpace(icon) ? node.Label : $"{icon}  {node.Label}";
-        return string.IsNullOrWhiteSpace(node.Description)
-            ? head
-            : $"{head}\n{node.Description}";
+        var iconName = node.EffectiveIconName;
+        var fileId = $"icon_{iconName}_{Sanitize(strokeColor)}";
+        if (!files.ContainsKey(fileId))
+        {
+            files[fileId] = new ExcalidrawFile
+            {
+                Id = fileId,
+                MimeType = "image/svg+xml",
+                DataURL = IconRegistry.RenderDataUrl(iconName, strokeColor, IconSize),
+                Created = now,
+            };
+        }
+
+        // Anchor to the shape's INSCRIBED rectangle, not its bounding box: the
+        // top-left corner of a diamond's bounds is outside the drawn outline, so a
+        // bounding-box offset would leave the icon floating in empty canvas.
+        var ratio = NodeSizer.InteriorRatioFor(node.Kind);
+        var interiorLeft = box.Cx - box.W * ratio / 2;
+        var interiorTop = box.Cy - box.H * ratio / 2;
+
+        return new ExcalidrawElement
+        {
+            Id = node.Id + "_icon",
+            Type = "image",
+            FileId = fileId,
+            Status = "saved",
+            X = interiorLeft + IconInset,
+            Y = interiorTop + IconInset,
+            Width = IconSize,
+            Height = IconSize,
+            StrokeColor = "transparent",
+            BackgroundColor = "transparent",
+            FillStyle = "solid",
+            StrokeWidth = 1,
+            Roughness = 0,
+            Scale = new double[] { 1, 1 },
+            // Grouped with its shape (not locked) so dragging the node carries the
+            // icon with it. A locked element is excluded from selection and would be
+            // left behind at the old coordinates.
+            GroupIds = new List<string> { node.Id + "_grp" },
+            Seed = Seed(node.Id, 4),
+            VersionNonce = Seed(node.Id, 5),
+            Updated = now,
+        };
+    }
+
+    private static string Sanitize(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length);
+        foreach (var c in value)
+            if (char.IsLetterOrDigit(c)) sb.Append(c);
+        return sb.ToString();
     }
 
     private ExcalidrawElement BuildBoundLabel(SceneNode node, NodeBox box, ExcalidrawExportOptions o, long now)
     {
-        var width = Math.Max(20, box.W - 16);
+        // Constrain the text to the shape's usable interior — a diamond's sloped
+        // sides mean its inscribed rectangle is far smaller than its bounding box.
+        var interior = NodeSizer.InteriorRatioFor(node.Kind);
+        var width = Math.Max(20, box.W * interior - NodeSizer.IconBand - 12);
         var composed = ComposeNodeText(node);
         var (wrapped, lines) = WrapToWidth(composed, width, NodeFontSize);
         var height = lines * NodeFontSize * LineHeight;
@@ -271,7 +347,7 @@ public sealed class SceneToExcalidrawConverter
         {
             Id = node.Id + "_label",
             Type = "text",
-            X = box.Cx - width / 2,
+            X = box.Cx - width / 2 + NodeSizer.IconBand / 2,
             Y = box.Cy - height / 2,
             Width = width,
             Height = height,
@@ -302,6 +378,7 @@ public sealed class SceneToExcalidrawConverter
         var dx = to.Cx - from.Cx;
         var dy = to.Cy - from.Cy;
         var dashed = edge.Kind is EdgeKind.Dependency or EdgeKind.Association;
+        var points = o.ElbowArrows ? OrthogonalPoints(dx, dy) : new[] { new[] { 0.0, 0.0 }, new[] { dx, dy } };
         return new ExcalidrawElement
         {
             Id = edge.Id,
@@ -316,17 +393,50 @@ public sealed class SceneToExcalidrawConverter
             StrokeWidth = 2,
             StrokeStyle = dashed ? "dashed" : "solid",
             Roughness = o.Roughness,
-            Points = new[] { new[] { 0.0, 0.0 }, new[] { dx, dy } },
+            Points = points,
             LastCommittedPoint = null,
             StartBinding = new ExcalidrawBinding { ElementId = edge.FromNodeId, Focus = 0, Gap = BindingGap },
             EndBinding = new ExcalidrawBinding { ElementId = edge.ToNodeId, Focus = 0, Gap = BindingGap },
             StartArrowhead = null,
             EndArrowhead = edge.Kind == EdgeKind.Inheritance ? "triangle" : "arrow",
+            // Deliberately NOT Excalidraw's `elbowed` mode: with bound endpoints it
+            // never regenerates the intermediate points, so the arrow still draws as a
+            // straight diagonal while disabling its transform handles. We emit the
+            // orthogonal waypoints ourselves and let roundness soften the corners.
             Elbowed = false,
+            Roundness = new ExcalidrawRoundness { Type = 2 },
             Seed = Seed(edge.Id),
             VersionNonce = Seed(edge.Id, 1),
             Updated = now,
         };
+    }
+
+    /// <summary>
+    /// Builds a stepped route between two nodes. Layered layout stacks nodes in ranks,
+    /// so a vertical-first dogleg follows the flow; near-straight runs stay straight
+    /// rather than gaining a pointless jog.
+    /// </summary>
+    private static double[][] OrthogonalPoints(double dx, double dy)
+    {
+        const double Straight = 12;
+        if (Math.Abs(dx) < Straight || Math.Abs(dy) < Straight)
+            return new[] { new[] { 0.0, 0.0 }, new[] { dx, dy } };
+
+        return Math.Abs(dy) >= Math.Abs(dx)
+            ? new[]                                   // vertical flow: down, across, down
+            {
+                new[] { 0.0, 0.0 },
+                new[] { 0.0, dy / 2 },
+                new[] { dx, dy / 2 },
+                new[] { dx, dy },
+            }
+            : new[]                                   // horizontal flow: across, down, across
+            {
+                new[] { 0.0, 0.0 },
+                new[] { dx / 2, 0.0 },
+                new[] { dx / 2, dy },
+                new[] { dx, dy },
+            };
     }
 
     private ExcalidrawElement BuildArrowLabel(ExcalidrawElement arrow, string label, NodeBox from, NodeBox to,
@@ -508,6 +618,21 @@ public sealed class SceneToExcalidrawConverter
             var line = string.Empty;
             foreach (var word in paragraph.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             {
+                // Hard-break a token that cannot fit on a line by itself, so a long
+                // unbroken identifier cannot run outside the shape.
+                if (word.Length > charsPerLine)
+                {
+                    if (line.Length > 0) { outLines.Add(line); line = string.Empty; }
+                    var rest = word;
+                    while (rest.Length > charsPerLine)
+                    {
+                        outLines.Add(rest[..charsPerLine]);
+                        rest = rest[charsPerLine..];
+                    }
+                    line = rest;
+                    continue;
+                }
+
                 var candidate = line.Length == 0 ? word : line + " " + word;
                 if (candidate.Length > charsPerLine && line.Length > 0)
                 {

@@ -25,6 +25,9 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
     private readonly TranscriptBuffer _buffer;
     private readonly IImageGenerator? _imageGenerator;
     private readonly ILogger<DiagramOrchestrator> _logger;
+    private readonly SceneBudget _budget;
+    private int _restoredNodeFloor;
+    private int _restoredNoteFloor;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _imageConcurrency = new(2, 2);
     private readonly object _imageTaskGate = new();
@@ -50,7 +53,8 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
         TranscriptBuffer buffer,
         SceneGraph? scene = null,
         IImageGenerator? imageGenerator = null,
-        ILogger<DiagramOrchestrator>? logger = null)
+        ILogger<DiagramOrchestrator>? logger = null,
+        SceneBudget? budget = null)
     {
         _generator = generator ?? throw new ArgumentNullException(nameof(generator));
         _layout = layout ?? throw new ArgumentNullException(nameof(layout));
@@ -58,10 +62,45 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
         _imageGenerator = imageGenerator;
         _applier = new ScenePatchApplier();
         _logger = logger ?? NullLogger<DiagramOrchestrator>.Instance;
+        _budget = budget ?? SceneBudget.Default;
         Scene = scene ?? new SceneGraph();
     }
 
     public bool SupportsImages => _imageGenerator is { IsConfigured: true };
+
+    /// <summary>
+    /// Raises the budget floor so content the user explicitly restored from a prior
+    /// session is never silently evicted. The cap still bounds further growth, but a
+    /// restored board keeps everything the user said yes to.
+    /// </summary>
+    public void RaiseBudgetFloorToCurrentScene()
+    {
+        lock (Scene.SyncRoot)
+        {
+            _restoredNodeFloor = Math.Max(_restoredNodeFloor, Scene.Nodes.Count);
+            _restoredNoteFloor = Math.Max(_restoredNoteFloor, Scene.Notes.Count);
+        }
+    }
+
+    private SceneBudget EffectiveBudget() => _restoredNodeFloor == 0 && _restoredNoteFloor == 0
+        ? _budget
+        : new SceneBudget(
+            Math.Max(_budget.MaxNodes, _restoredNodeFloor),
+            Math.Max(_budget.MaxNotes, _restoredNoteFloor));
+
+    /// <summary>
+    /// Re-sizes every node to its text and re-runs layout without calling the model.
+    /// Used after restoring a session, whose persisted geometry may predate the
+    /// current sizing and layout rules.
+    /// </summary>
+    public void Relayout(LayoutOptions? layoutOptions = null)
+    {
+        lock (Scene.SyncRoot)
+        {
+            NodeSizer.ApplyTo(Scene);
+            _layout.Apply(Scene, layoutOptions ?? new LayoutOptions());
+        }
+    }
 
     public async Task<DiagramGenerationResult> GenerateAsync(
         string? userInstruction,
@@ -88,10 +127,6 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
                 IsContinuous: isContinuous);
 
             var response = await _generator.GenerateAsync(request, ct).ConfigureAwait(false);
-            response = response with
-            {
-                Patch = FilterGeneratedPatch(response.Patch, rejectDestructive: isContinuous || isAutomatic),
-            };
 
             // Apply the patch and run layout as ONE critical section against the
             // same lock the renderer uses, so the UI thread never paints a
@@ -99,10 +134,30 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
             // it won't throw on imperfect LLM output.
             ScenePatchResult applyResult;
             LayoutResult layoutResult;
+            SceneBudgetResult budgetResult;
             lock (Scene.SyncRoot)
             {
-                applyResult = _applier.Apply(Scene, response.Patch);
+                // Filter inside the same lock as the apply: reading the locked-node
+                // set outside it leaves a window where a drag completing mid-flight
+                // would not be seen, and the node the user just pinned gets deleted.
+                var safePatch = FilterGeneratedPatch(
+                    response.Patch, Scene, isContinuous, isAutomatic);
+                response = response with { Patch = safePatch };
+
+                applyResult = _applier.Apply(Scene, safePatch);
+                // Trim before layout so positions are only computed for what survives.
+                budgetResult = SceneBudgetEnforcer.Enforce(Scene, EffectiveBudget());
+                // Size every box to its own text BEFORE layout, so the footprint the
+                // layout engine reserves matches what actually gets drawn.
+                NodeSizer.ApplyTo(Scene);
                 layoutResult = _layout.Apply(Scene, layoutOptions ?? new LayoutOptions());
+            }
+
+            if (budgetResult.ChangedAnything)
+            {
+                _logger.LogInformation(
+                    "Scene budget trimmed the board: {Nodes} node(s), {Notes} note(s), {Groups} empty group(s)",
+                    budgetResult.NodesEvicted, budgetResult.NotesEvicted, budgetResult.GroupsRemoved);
             }
 
             var imageOps = response.Patch.Operations.OfType<GenerateImage>().ToList();
@@ -131,13 +186,46 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
         }
     }
 
-    private static ScenePatch FilterGeneratedPatch(ScenePatch patch, bool rejectDestructive)
+    internal static ScenePatch FilterGeneratedPatch(
+        ScenePatch patch, SceneGraph scene, bool isContinuous, bool isAutomatic)
     {
-        var safe = patch.Operations.Where(op =>
-            op is not ClearScene &&
-            (!rejectDestructive || op is not (
-                DeleteNode or Disconnect or UngroupOp or NoteDelete or DeleteImage))).ToArray();
+        // Caller holds Scene.SyncRoot.
+        var lockedNodeIds = scene.Nodes.Values
+            .Where(n => n.Locked)
+            .Select(n => n.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var safe = patch.Operations
+            .Where(op => IsAllowed(op, lockedNodeIds, isContinuous, isAutomatic))
+            .ToArray();
         return safe.Length == patch.Operations.Count ? patch : new ScenePatch(safe);
+    }
+
+    private static bool IsAllowed(
+        ScenePatchOperation op, HashSet<string> lockedNodeIds, bool isContinuous, bool isAutomatic)
+    {
+        // Never honour a wholesale wipe from the model; Clear is a user action.
+        if (op is ClearScene) return false;
+
+        // Protect user-pinned nodes from deletion on any pass.
+        if (op is DeleteNode delete && lockedNodeIds.Contains(delete.Id)) return false;
+
+        // Quick continuous passes are purely additive: they run every few seconds, so
+        // a single mis-fire must never be able to remove anything.
+        if (isContinuous &&
+            op is DeleteNode or Disconnect or UngroupOp or NoteDelete or DeleteImage)
+        {
+            return false;
+        }
+
+        // The periodic deep pass MAY prune structure — without that the board could
+        // only ever grow. But notes are the meeting's actual deliverable (decisions,
+        // action items, risks), they cannot be pinned, and autosave overwrites the
+        // only copy within milliseconds. So an unattended pass never deletes a note
+        // or a generated image; only a user-invoked Deep Refine can.
+        if (isAutomatic && op is NoteDelete or DeleteImage) return false;
+
+        return true;
     }
 
     private void QueueImageGeneration(GenerateImage op)
