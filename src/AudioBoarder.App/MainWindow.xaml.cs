@@ -57,13 +57,23 @@ public partial class MainWindow : FluentWindow
     {
         SystemThemeWatcher.Watch(this, WindowBackdropType.Mica, true);
         _isThemeWatcherActive = true;
+        SyncCanvasTheme();
+        // The WebView can't observe the app theme, so push it on every change.
+        ApplicationThemeManager.Changed += OnApplicationThemeChanged;
     }
+
+    private void OnApplicationThemeChanged(ApplicationTheme theme, System.Windows.Media.Color accent)
+        => SyncCanvasTheme();
+
+    private void SyncCanvasTheme() =>
+        Whiteboard.SetTheme(ApplicationThemeManager.GetAppTheme() == ApplicationTheme.Dark);
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         if (_isThemeWatcherActive)
         {
             SystemThemeWatcher.UnWatch(this);
+            ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
             _isThemeWatcherActive = false;
         }
 

@@ -13,6 +13,7 @@ const stage = document.getElementById("stage");
 const zoomLabel = document.getElementById("zoomLevel");
 
 let scene = { nodes: [], edges: [], groups: [] };
+let sceneRevision = null;
 let view = { x: 120, y: 120, k: 1 };
 // Auto-fit keeps the growing diagram in frame during a live meeting, and stops
 // the moment the user pans or zooms — snatching the view back mid-sentence would
@@ -43,15 +44,28 @@ function autoFit(force = false) {
   if ((userTookControl && !force) || !scene.nodes || scene.nodes.length === 0) return;
   const b = bounds(scene.nodes);
   if (b.w <= 0 || b.h <= 0) return;
-  const pad = 80;
-  const k = Math.min(
-    1.15,
-    Math.max(0.25, Math.min(
-      (svg.clientWidth - pad * 2) / b.w,
-      (svg.clientHeight - pad * 2) / b.h)));
+  const pad = 70;
+  const raw = Math.min(
+    (svg.clientWidth - pad * 2) / b.w,
+    (svg.clientHeight - pad * 2) / b.h);
+
+  // Never shrink below readable. A board you have to scroll beats one you cannot
+  // read at all — which is what fitting a wide tree into the panel produces.
+  const MIN_READABLE = 0.55;
+  const k = Math.min(1.15, Math.max(MIN_READABLE, raw));
   view.k = k;
-  view.x = (svg.clientWidth - b.w * k) / 2 - b.x * k;
-  view.y = (svg.clientHeight - b.h * k) / 2 - b.y * k;
+
+  if (raw >= MIN_READABLE) {
+    // Fits: centre it.
+    view.x = (svg.clientWidth - b.w * k) / 2 - b.x * k;
+    view.y = (svg.clientHeight - b.h * k) / 2 - b.y * k;
+  } else {
+    // Too wide to fit legibly — anchor at the root so the newest branches grow
+    // into view rather than the whole thing shrinking away.
+    view.x = pad - b.x * k;
+    view.y = (svg.clientHeight - b.h * k) / 2 - b.y * k;
+    if (b.h * k > svg.clientHeight - pad * 2) view.y = pad - b.y * k;
+  }
   applyView();
 }
 
@@ -59,8 +73,9 @@ window.loadScene = function (json) {
   try {
     const next = typeof json === "string" ? JSON.parse(json) : json;
     if (!next) return;
+    sceneRevision = Number.isInteger(next.sceneRevision) ? next.sceneRevision : null;
     scene = {
-      nodes: next.nodes || [],
+      nodes: (next.nodes || []).map((n) => ({ ...n, pinX: n.x, pinY: n.y })),
       edges: next.edges || [],
       groups: next.groups || [],
     };
@@ -77,12 +92,27 @@ try {
   if (window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener("message", (e) => {
       const data = e.data;
-      if (typeof data === "string") window.loadScene(data);
-      else if (data && data.type === "scene") window.loadScene(data.payload);
+      if (typeof data === "string") {
+        // The host sends both scenes and small control messages as strings.
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.type === "theme") { applyTheme(parsed.theme); return; }
+        } catch (_) { /* not a control message — treat as a scene */ }
+        window.loadScene(data);
+      } else if (data && data.type === "scene") {
+        window.loadScene(data.payload);
+      } else if (data && data.type === "theme") {
+        applyTheme(data.theme);
+      }
     });
   }
 } catch (_) {
   /* ignore */
+}
+
+/** Follows the app's theme; the WebView cannot see it otherwise. */
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
 }
 
 // ---- pan + zoom ------------------------------------------------------------
@@ -99,19 +129,74 @@ stage.addEventListener("wheel", (ev) => {
 }, { passive: false });
 
 let drag = null;
+let nodeDrag = null;
+
+/** Node under the pointer, if any — drives drag-to-pin. */
+function hitNode(ev) {
+  const g = ev.target.closest ? ev.target.closest(".node") : null;
+  if (!g) return null;
+  return scene.nodes.find((n) => n.id === g.getAttribute("data-id")) || null;
+}
+
 stage.addEventListener("pointerdown", (ev) => {
+  const node = hitNode(ev);
+  if (node) {
+    // Dragging a node pins it: the layout stops moving it on later passes.
+    nodeDrag = {
+      node,
+      dx: node.x - (ev.clientX - view.x) / view.k,
+      dy: node.y - (ev.clientY - view.y) / view.k,
+    };
+    stage.setPointerCapture(ev.pointerId);
+    return;
+  }
   drag = { x: ev.clientX - view.x, y: ev.clientY - view.y };
   stage.classList.add("panning");
   stage.setPointerCapture(ev.pointerId);
 });
+
 stage.addEventListener("pointermove", (ev) => {
+  if (nodeDrag) {
+    const n = nodeDrag.node;
+    n.x = (ev.clientX - view.x) / view.k + nodeDrag.dx;
+    n.y = (ev.clientY - view.y) / view.k + nodeDrag.dy;
+    n.locked = true;
+    n.pinX = n.x;
+    n.pinY = n.y;
+    draw();
+    return;
+  }
   if (!drag) return;
   userTookControl = true;
   view.x = ev.clientX - drag.x;
   view.y = ev.clientY - drag.y;
   applyView();
 });
-const endDrag = () => { drag = null; stage.classList.remove("panning"); };
+
+function endDrag() {
+  if (nodeDrag) {
+    const n = nodeDrag.node;
+    // Report in the element shape the host already understands (top-left origin),
+    // so the existing pin/persist path in MainWindow keeps working unchanged.
+    postToHost({
+      type: "scene-change",
+      sceneRevision,
+      elements: [{
+        id: n.id,
+        type: "rectangle",
+        x: n.x,
+        y: n.y - (n._h || 26) / 2,
+        width: n._w || 120,
+        height: n._h || 26,
+        locked: true,
+        isDeleted: false,
+      }],
+    });
+    nodeDrag = null;
+  }
+  drag = null;
+  stage.classList.remove("panning");
+}
 stage.addEventListener("pointerup", endDrag);
 stage.addEventListener("pointercancel", endDrag);
 

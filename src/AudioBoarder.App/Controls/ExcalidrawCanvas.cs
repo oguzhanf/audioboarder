@@ -25,6 +25,7 @@ public sealed class ExcalidrawCanvas : UserControl
     private readonly SceneToExcalidrawConverter _converter = new();
     private bool _ready;
     private string? _pendingJson;
+    private string _theme = "light";
     private bool _initFailed;
 
     public SceneGraph? Scene { get; set; }
@@ -90,6 +91,9 @@ public sealed class ExcalidrawCanvas : UserControl
             {
                 case "ready":
                     _ready = true;
+                    // Push the theme before the scene so the first paint is correct.
+                    _web.CoreWebView2.PostWebMessageAsString(
+                        $"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
                     if (_pendingJson is not null)
                     {
                         _web.CoreWebView2.PostWebMessageAsString(_pendingJson);
@@ -145,6 +149,24 @@ public sealed class ExcalidrawCanvas : UserControl
             _web.CoreWebView2.PostWebMessageAsString(json);
         else
             _pendingJson = json;
+    }
+
+    /// <summary>
+    /// Tells the canvas which theme to paint. The WebView cannot see the app's
+    /// theme (WPF-UI applies it to native windows only), so a dark app would
+    /// otherwise keep a glaring white canvas in the middle of it.
+    /// </summary>
+    public void SetTheme(bool isDark)
+    {
+        _theme = isDark ? "dark" : "light";
+        if (_initFailed) return;
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => SetTheme(isDark));
+            return;
+        }
+        if (_ready && _web.CoreWebView2 is not null)
+            _web.CoreWebView2.PostWebMessageAsString($"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
     }
 
     private void ShowFallback(string detail)

@@ -89,7 +89,9 @@ function textWidth(t, size, weight) {
 const ICON_W = 24;
 const ROW_H = 26;
 const ROW_GAP = 16;
-const COL_GAP = 132;
+// Column spacing is the dominant term in overall width; a wide tree is what forces
+// zoom-to-fit down to an unreadable level, so keep the gap tight.
+const COL_GAP = 96;
 
 /**
  * Lays the graph out as a left-to-right branch tree.
@@ -138,7 +140,7 @@ function layoutTree(nodes, edges) {
     seen.add(id);
     const n = byId.get(id);
     const children = kids.get(id).filter((c) => !seen.has(c));
-    n.x = depth * COL_GAP + (depth > 0 ? depth * 60 : 0);
+    n.x = depth * COL_GAP;
 
     if (children.length === 0) {
       n.y = cursorY;
@@ -174,6 +176,15 @@ function layoutTree(nodes, edges) {
     x += cols.get(c) + COL_GAP;
   }
   for (const n of nodes) n.x = colX.get(n._col);
+
+  // A pinned node keeps exactly where the user put it. Re-laying it out every
+  // pass would silently undo the placement they deliberately made.
+  for (const n of nodes) {
+    if (n.locked && Number.isFinite(n.pinX) && Number.isFinite(n.pinY)) {
+      n.x = n.pinX;
+      n.y = n.pinY;
+    }
+  }
 
   return { byId, kids };
 }
@@ -251,7 +262,7 @@ export function renderScene(svg, scene, view) {
   for (const n of nodes) {
     const tone = toneFor(n.kind);
     const g = el("g", {
-      class: ["node", n.root && "root", tone].filter(Boolean).join(" "),
+      class: ["node", n.root && "root", tone, n.locked && "pinned"].filter(Boolean).join(" "),
       "data-id": n.id,
     });
 
@@ -259,6 +270,11 @@ export function renderScene(svg, scene, view) {
       class: "node-plate",
       x: n.x - 7, y: n.y - n._h / 2 - 3,
       width: n._w + 14, height: n._h + 6, rx: 7,
+    }));
+
+    // Small dot marking a user-pinned node.
+    g.appendChild(el("circle", {
+      class: "node-pin", cx: n.x + n._w + 11, cy: n.y - n._h / 2 + 1, r: 2.5,
     }));
 
     const ic = el("g", { transform: `translate(${n.x}, ${n.y - 8}) scale(0.66)` });

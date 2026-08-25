@@ -39,6 +39,32 @@
   }
 }
 
+/* An explicit theme from the host always wins over the OS preference, so the
+   canvas matches the app window rather than the system setting. */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --ink: #18181b;
+  --ink-mid: #52525b;
+  --ink-dim: #a1a1aa;
+  --line: #3f3f46;
+  --rule: #e4e4e7;
+  --plate: #f4f4f5;
+  --risk: #e5484d;
+  --ok: #30a46c;
+}
+
+:root[data-theme="dark"] {
+  --bg: #131316;
+  --ink: #f4f4f5;
+  --ink-mid: #a1a1aa;
+  --ink-dim: #6b6b74;
+  --line: #7c7c88;
+  --rule: #2a2a30;
+  --plate: #1e1e23;
+  --risk: #ff6369;
+  --ok: #3dd68c;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -86,7 +112,18 @@ svg { width: 100%; height: 100%; display: block; }
 
 /* Hover affordance without a permanent outline. */
 .node-plate { fill: transparent; transition: fill 120ms ease; }
+.node { cursor: grab; }
 .node:hover .node-plate { fill: var(--plate); }
+.node:active { cursor: grabbing; }
+
+/* A pinned node is one the user placed deliberately — mark it quietly so they
+   can tell which parts of the board the layout will stop rearranging. */
+.node.pinned .node-plate {
+  fill: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.node.pinned .node-pin { fill: var(--accent); }
+.node-pin { display: none; }
+.node.pinned .node-pin { display: block; }
 
 /* ---- branches ------------------------------------------------------------- */
 .edge {

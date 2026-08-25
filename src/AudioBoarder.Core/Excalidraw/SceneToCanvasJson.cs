@@ -46,6 +46,10 @@ public static class SceneToCanvasJson
                         Kind = ToSnake(n.Kind.ToString()),
                         Group = n.GroupId,
                         Locked = n.Locked ? true : null,
+                        // Pinned nodes carry their coordinates so the renderer can honour
+                        // the user's placement instead of re-laying them out every pass.
+                        X = n.Locked ? n.X : null,
+                        Y = n.Locked ? n.Y : null,
                     })
                     .ToArray(),
                 Edges = graph.Edges.Values
@@ -95,6 +99,8 @@ public static class SceneToCanvasJson
         public required string Kind { get; init; }
         public string? Group { get; init; }
         public bool? Locked { get; init; }
+        public double? X { get; init; }
+        public double? Y { get; init; }
     }
 
     private sealed class CanvasEdge

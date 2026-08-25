@@ -88,7 +88,12 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             lock (_bufferGate)
             {
                 var minBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * 0.15);
-                var maxBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * _options.WindowSeconds);
+                // Adaptive: under rate limiting we deliberately buffer LONGER, which
+                // sends fewer, larger requests. Latency degrades gracefully instead of
+                // the transcript dying in a 429 loop — and shortening the window (the
+                // obvious "make it faster" move) is what pushes a modest tier over.
+                var effectiveWindow = _options.WindowSeconds * Volatile.Read(ref _windowScale);
+                var maxBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * effectiveWindow);
                 foreach (var (role, rb) in _buffers)
                 {
                     if (rb.Stream.Length == 0 || (!force && now < rb.RetryNotBefore)) continue;
@@ -139,7 +144,26 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                             rb.RetryNotBefore = default;
                         }
                     }
+                    // Recover toward the configured window once calls succeed again.
+                    RelaxWindow();
                     return result;
+                }
+                catch (RateLimitedException ex)
+                {
+                    // Widening the window is the only thing that actually reduces load;
+                    // retrying at the same cadence just burns the quota again.
+                    WidenWindow();
+                    var wait = Clamp(ex.RetryAfter ?? TimeSpan.FromMilliseconds(500 * attempt));
+                    if (attempt >= 2)
+                    {
+                        MarkRateLimited(batch.Role, wait);
+                        _logger.LogWarning(
+                            "Cloud transcribe rate limited; buffering {Window:F1}s per request and pausing {Wait:F1}s",
+                            _options.WindowSeconds * Volatile.Read(ref _windowScale), wait.TotalSeconds);
+                        Requeue(batch);
+                        return Array.Empty<TranscriptSegment>();
+                    }
+                    await Task.Delay(wait, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (attempt < 3 && IsTransient(ex, ct))
                 {
@@ -192,6 +216,18 @@ public sealed class OpenAITranscribeService : ITranscriptionService
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
+            if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                // The service tells us how long to wait; guessing is how you get
+                // stuck in a 429 loop that never clears.
+                var retryAfter = resp.Headers.RetryAfter?.Delta
+                    ?? (resp.Headers.RetryAfter?.Date is { } d
+                            ? d - DateTimeOffset.UtcNow
+                            : (TimeSpan?)null);
+                throw new RateLimitedException(
+                    $"Cloud transcribe HTTP 429: {Truncate(body, 300)}", retryAfter);
+            }
+
             throw new HttpRequestException(
                 $"Cloud transcribe HTTP {(int)resp.StatusCode}: {Truncate(body, 300)}",
                 inner: null,
@@ -217,6 +253,39 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             speaker, text.Length, (end - start).TotalSeconds, Truncate(text, 120));
         return new[] { new TranscriptSegment(Guid.NewGuid(), speaker, text, start, end) };
     }
+
+    /// <summary>Multiplier on <see cref="CloudTranscriptionOptions.WindowSeconds"/>,
+    /// raised while the service is rate limiting us and relaxed as calls succeed.</summary>
+    private double _windowScale = 1.0;
+    private const double MaxWindowScale = 4.0;
+
+    private void WidenWindow()
+    {
+        var next = Math.Min(MaxWindowScale, Volatile.Read(ref _windowScale) * 1.6);
+        Volatile.Write(ref _windowScale, next);
+    }
+
+    private void RelaxWindow()
+    {
+        var current = Volatile.Read(ref _windowScale);
+        if (current <= 1.0) return;
+        Volatile.Write(ref _windowScale, Math.Max(1.0, current * 0.9));
+    }
+
+    private void MarkRateLimited(AudioStreamRole role, TimeSpan wait)
+    {
+        lock (_bufferGate)
+        {
+            if (_buffers.TryGetValue(role, out var rb))
+                rb.RetryNotBefore = DateTimeOffset.UtcNow + wait;
+        }
+    }
+
+    /// <summary>A live transcript cannot wait a minute, whatever the header says.</summary>
+    private static TimeSpan Clamp(TimeSpan wait) =>
+        wait < TimeSpan.Zero ? TimeSpan.Zero
+        : wait > TimeSpan.FromSeconds(10) ? TimeSpan.FromSeconds(10)
+        : wait;
 
     private void Requeue(PendingBatch batch)
     {
@@ -258,8 +327,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService
     }
 
     private static bool IsTransient(Exception ex, CancellationToken ct)
-    {
-        if (ex is OperationCanceledException) return !ct.IsCancellationRequested;
+    {        if (ex is OperationCanceledException) return !ct.IsCancellationRequested;
         if (ex is not HttpRequestException http) return false;
         return http.StatusCode is null
             or System.Net.HttpStatusCode.RequestTimeout
@@ -388,4 +456,14 @@ public sealed class OpenAITranscribeService : ITranscriptionService
         public DateTimeOffset RetryNotBefore { get; set; }
         public int FailureCount { get; set; }
     }
+}
+
+/// <summary>
+/// Signals an HTTP 429, carrying the service's own <c>Retry-After</c> hint so the
+/// caller can wait exactly as long as it was told to rather than guessing.
+/// </summary>
+internal sealed class RateLimitedException(string message, TimeSpan? retryAfter)
+    : HttpRequestException(message, null, System.Net.HttpStatusCode.TooManyRequests)
+{
+    public TimeSpan? RetryAfter { get; } = retryAfter;
 }

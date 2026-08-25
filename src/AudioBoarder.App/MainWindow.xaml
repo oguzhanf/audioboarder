@@ -389,7 +389,7 @@
                                            FontSize="14"
                                            TextTrimming="CharacterEllipsis"
                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                <TextBlock Text="Wheel zoom is enabled on the whiteboard. Drag shapes to lock layout."
+                                <TextBlock Text="Scroll to zoom. Drag any node to pin it where you want."
                                            FontSize="11"
                                            TextTrimming="CharacterEllipsis"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
