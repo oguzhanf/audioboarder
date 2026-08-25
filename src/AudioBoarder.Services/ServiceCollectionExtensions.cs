@@ -80,9 +80,12 @@ public static class ServiceCollectionExtensions
         // StartupHealthService also resolves via this factory so it can re-evaluate after
         // discovery populates CloudTranscriptionOptions.
         //
-        // Priority: gpt-4o-transcribe (LLM-ASR — best accuracy for accented speech, the
-        // "AI tools" experience) is primary. Azure Speech streaming is an opt-in fallback
-        // (Backend="speech"), and local Whisper is the last resort.
+        // Priority for "auto": Azure Speech STREAMING first when it is configured.
+        // Streaming emits partial hypotheses in ~200-300ms ("words appear as you
+        // talk"); gpt-4o-transcribe is a BATCH API that cannot emit partials at all,
+        // so it always costs a full buffer window plus a round trip. Accuracy is
+        // worth less than latency in a live meeting tool. Explicit Backend="cloud"
+        // or "openai" still forces the LLM transcriber.
         services.AddSingleton<Func<ITranscriptionService>>(sp => () =>
         {
             var cloud = sp.GetRequiredService<IOptions<CloudTranscriptionOptions>>().Value;
@@ -95,21 +98,23 @@ public static class ServiceCollectionExtensions
             if (backend == "speech" && speech.IsConfigured)
                 return sp.GetRequiredService<AzureSpeechStreamingService>();
 
-            // auto / cloud / openai: prefer the LLM transcriber.
-            if (cloud.IsConfigured)
-            {
-                var isMai = cloud.DeploymentName!.StartsWith("MAI-", StringComparison.OrdinalIgnoreCase);
-                return isMai
-                    ? (ITranscriptionService)sp.GetRequiredService<MaiTranscribeService>()
-                    : sp.GetRequiredService<OpenAITranscribeService>();
-            }
+            if (backend is "cloud" or "openai" && cloud.IsConfigured)
+                return ResolveCloud(sp, cloud);
 
-            // Fallbacks when no gpt-4o-transcribe deployment is configured.
+            // auto: streaming wins when available.
             if (speech.IsConfigured)
                 return sp.GetRequiredService<AzureSpeechStreamingService>();
 
+            if (cloud.IsConfigured)
+                return ResolveCloud(sp, cloud);
+
             return sp.GetRequiredService<WhisperTranscriptionService>();
         });
+
+        static ITranscriptionService ResolveCloud(IServiceProvider sp, CloudTranscriptionOptions cloud)
+            => cloud.DeploymentName!.StartsWith("MAI-", StringComparison.OrdinalIgnoreCase)
+                ? sp.GetRequiredService<MaiTranscribeService>()
+                : sp.GetRequiredService<OpenAITranscribeService>();
         // NOTE: We intentionally do NOT register ITranscriptionService as a DI singleton.
         // Doing so cached the first resolution (Whisper, picked before discovery had a
         // chance to populate CloudTranscriptionOptions) and froze the app on the local

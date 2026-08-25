@@ -234,8 +234,26 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             rb.WindowStart = batch.Start;
             if (rb.LastAppendAt == default) rb.LastAppendAt = batch.End;
             rb.FailureCount++;
-            rb.RetryNotBefore = DateTimeOffset.UtcNow +
-                TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, rb.FailureCount)));
+
+            // Never let a backlog grow without bound: a long outage would otherwise
+            // build an ever-larger payload that is slower and likelier to fail again.
+            // Losing the oldest audio beats stalling the whole live transcript.
+            var maxBytes = (long)(AudioFormat.Mono16kPcm16.BytesPerSecond * _options.MaxBufferedSeconds);
+            if (rb.Stream.Length > maxBytes)
+            {
+                var all = rb.Stream.ToArray();
+                var keep = all.AsSpan((int)(all.Length - maxBytes));
+                rb.Stream.SetLength(0);
+                rb.Stream.Write(keep);
+                _logger.LogWarning(
+                    "Transcription backlog exceeded {Max}s for role={Role}; dropped {Dropped}B of the oldest audio",
+                    _options.MaxBufferedSeconds, batch.Role, all.Length - maxBytes);
+            }
+
+            // Short, bounded backoff. This is a live transcript, not a durable queue.
+            var backoff = Math.Min(
+                _options.MaxRetryBackoffSeconds, 0.25 * Math.Pow(2, rb.FailureCount));
+            rb.RetryNotBefore = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(backoff);
         }
     }
 

@@ -128,13 +128,13 @@ public sealed class ExcalidrawCanvas : UserControl
         string json;
         try
         {
-            int revision;
             lock (Scene.SyncRoot)
             {
-                json = _converter.ConvertToJson(Scene);
-                revision = Scene.Revision;
+                // The canvas renderer does its own layout, so it receives the graph's
+                // meaning rather than drawing instructions — a far smaller payload to
+                // push across the bridge several times a minute during a meeting.
+                json = SceneToCanvasJson.Serialize(Scene, Scene.Revision);
             }
-            json = AttachSceneRevision(json, revision);
         }
         catch
         {

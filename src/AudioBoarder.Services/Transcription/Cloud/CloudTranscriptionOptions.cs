@@ -16,12 +16,32 @@ public sealed class CloudTranscriptionOptions
     public string Backend { get; set; } = "auto";
 
     /// <summary>Max length of a single buffered utterance before it is force-flushed
-    /// even if the speaker hasn't paused. Guards against unbounded monologues.</summary>
-    public double WindowSeconds { get; set; } = 14.0;
+    /// even if the speaker hasn't paused.
+    /// <para>
+    /// This is the dominant latency term for the batch backend: a continuous speaker
+    /// never triggers the silence flush, so EVERY utterance waits this long before it
+    /// is even sent. Keep it short — the transcript appearing promptly matters more
+    /// than the marginal accuracy gained from a longer context window.
+    /// </para></summary>
+    public double WindowSeconds { get; set; } = 4.0;
 
     /// <summary>Trailing silence (no VAD-passed audio) that marks the end of an
     /// utterance and triggers a flush. Lower = snappier, higher = fewer cuts.</summary>
     public int SilenceFlushMs { get; set; } = 380;
+
+    /// <summary>
+    /// Ceiling on the backoff applied after a failed batch. A long backoff is correct
+    /// for a durable queue but wrong for a live transcript — the user sees a growing
+    /// gap and audio piles up behind it, making the next payload larger and slower.
+    /// </summary>
+    public double MaxRetryBackoffSeconds { get; set; } = 2.0;
+
+    /// <summary>
+    /// Hard cap on buffered audio per role. Once a backlog exceeds this the OLDEST
+    /// audio is dropped rather than growing the payload without bound, which is how a
+    /// transient outage used to snowball into a minute of missing transcript.
+    /// </summary>
+    public double MaxBufferedSeconds { get; set; } = 20.0;
 
     /// <summary>
     /// Domain prompt biasing recognition toward expected vocabulary, sent as the
