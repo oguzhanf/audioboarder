@@ -42,6 +42,16 @@ public sealed class BoolVisibilityConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>Shows an element only while a flag is false — used for the Sign in
+/// button, which is relevant precisely when Azure is NOT ready.</summary>
+public sealed class InverseBoolVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 public sealed class NoteKindBrushConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)

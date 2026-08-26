@@ -106,10 +106,16 @@ public partial class MainWindow : FluentWindow
         SetPaneButtonState(NotesPaneButton, "notes", _isNotesPaneVisible);
     }
 
+    /// <summary>
+    /// Updates a pane toggle's affordance. The buttons are icon-only, so state is
+    /// conveyed by appearance (filled while the pane is open) plus tooltip and
+    /// automation name — setting Content here would replace the icon with text.
+    /// </summary>
     private static void SetPaneButtonState(Button button, string paneName, bool isVisible)
     {
-        var contentName = char.ToUpperInvariant(paneName[0]) + paneName[1..];
-        button.Content = isVisible ? $"Hide {contentName}" : $"Show {contentName}";
+        button.Appearance = isVisible
+            ? Wpf.Ui.Controls.ControlAppearance.Secondary
+            : Wpf.Ui.Controls.ControlAppearance.Transparent;
         var action = isVisible ? "Hide" : "Show";
         button.ToolTip = $"{action} the {paneName} side panel.";
         AutomationProperties.SetName(button, $"{action} {paneName} panel");

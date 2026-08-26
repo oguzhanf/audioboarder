@@ -22,6 +22,7 @@
     <ui:FluentWindow.Resources>
         <ctrl:HealthStatusBrushConverter x:Key="HealthBrush" />
         <ctrl:BoolVisibilityConverter x:Key="BoolVis" />
+        <ctrl:InverseBoolVisibilityConverter x:Key="InverseBoolVis" />
         <ctrl:BoolToStringConverter x:Key="BoolToString" />
         <ctrl:NoteKindBrushConverter x:Key="NoteKindBrush" />
 
@@ -45,7 +46,6 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -63,15 +63,15 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <WrapPanel Grid.Column="0"
-                           VerticalAlignment="Center"
-                           ItemHeight="36">
+                <StackPanel Grid.Column="0"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
                     <ui:Button Command="{Binding ToggleListenCommand}"
                                Content="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Listen|Stop'}"
                                Appearance="Primary"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
+                               MinWidth="104"
+                               Height="34"
+                               Padding="12,0"
                                ToolTip="Start or stop live capture. Shortcut: Ctrl+Shift+L."
                                AutomationProperties.Name="Start or stop listening">
                         <ui:Button.Icon>
@@ -79,45 +79,68 @@
                         </ui:Button.Icon>
                     </ui:Button>
 
+                    <ui:Button Command="{Binding ImportTranscriptCommand}"
+                               Content="Import"
+                               Height="34"
+                               Padding="12,0"
+                               Margin="6,0,0,0"
+                               ToolTip="Build a diagram from an exported meeting transcript (Teams .vtt, .srt or plain text) — no audio needed."
+                               AutomationProperties.Name="Import a meeting transcript">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="DocumentArrowUp20" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+
+                    <Rectangle Width="1"
+                               Height="20"
+                               Margin="10,0"
+                               Fill="{DynamicResource ControlElevationBorderBrush}" />
+
                     <ui:Button Command="{Binding RefineDiagramCommand}"
-                               Content="Deep Refine"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
-                               ToolTip="Run a thorough pass with the active deep model. Shortcut: Ctrl+Shift+R."
+                               Content="Refine"
+                               Height="34"
+                               Padding="12,0"
+                               ToolTip="Run a thorough pass with the deep model. Shortcut: Ctrl+Shift+R."
                                AutomationProperties.Name="Run deep refine">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="Sparkle24" />
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ui:TextBox Width="230"
-                                MinHeight="36"
-                                Margin="0,0,6,6"
-                                VerticalAlignment="Center"
+                    <ui:TextBox Width="188"
+                                Height="34"
+                                Margin="6,0,0,0"
+                                VerticalContentAlignment="Center"
                                 Text="{Binding RefinementInstruction, UpdateSourceTrigger=PropertyChanged}"
-                                PlaceholderText="Refinement instruction"
-                                ToolTip="Optional instruction for deep refine, for example 'group the database operations'."
+                                PlaceholderText="Refine instruction…"
+                                ToolTip="Optional instruction for refine, for example 'group the database operations'."
                                 AutomationProperties.Name="Deep refine instruction" />
 
+                    <Rectangle Width="1"
+                               Height="20"
+                               Margin="10,0"
+                               Fill="{DynamicResource ControlElevationBorderBrush}" />
+
+                    <!-- Export and destructive actions are icon-only: the tooltip
+                         carries the meaning and the labels were crowding out the
+                         primary action. -->
                     <ui:Button Command="{Binding ExportPngCommand}"
-                               Content="PNG"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
-                               ToolTip="Export the current diagram as a PNG image."
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               ToolTip="Export the diagram as a PNG image."
                                AutomationProperties.Name="Export PNG">
                         <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Save24" />
+                            <ui:SymbolIcon Symbol="Image24" />
                         </ui:Button.Icon>
                     </ui:Button>
 
                     <ui:Button Command="{Binding ExportExcalidrawCommand}"
-                               Content="Excalidraw"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
-                               ToolTip="Save a hand-drawn .excalidraw file. Shortcut: Ctrl+Shift+E."
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="4,0,0,0"
+                               ToolTip="Save an editable .excalidraw file. Shortcut: Ctrl+Shift+E."
                                AutomationProperties.Name="Export Excalidraw">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="DrawShape24" />
@@ -125,179 +148,133 @@
                     </ui:Button>
 
                     <ui:Button Command="{Binding ClearSceneCommand}"
-                               Content="Clear"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,10,6"
-                               ToolTip="Clear the current scene. Shortcut: Ctrl+Shift+Delete."
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="4,0,0,0"
+                               ToolTip="Clear the board. Shortcut: Ctrl+Shift+Delete."
                                AutomationProperties.Name="Clear scene">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="Delete24" />
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ui:ToggleSwitch Content="Whiteboard"
-                                     IsChecked="{Binding ShowWhiteboard, Mode=TwoWay}"
-                                     MinHeight="36"
-                                     Margin="0,0,10,6"
-                                     VerticalAlignment="Center"
-                                     ToolTip="Toggle between the hand-drawn Excalidraw whiteboard and the classic renderer."
-                                     AutomationProperties.Name="Toggle whiteboard mode" />
+                    <Rectangle Width="1"
+                               Height="20"
+                               Margin="10,0"
+                               Fill="{DynamicResource ControlElevationBorderBrush}" />
 
                     <ui:Button x:Name="TranscriptPaneButton"
                                Click="OnToggleTranscriptPane"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
+                               Height="34"
+                               Width="38"
+                               Padding="0"
                                ToolTip="Hide or show the transcript panel."
-                               AutomationProperties.Name="Toggle transcript panel" />
+                               AutomationProperties.Name="Toggle transcript panel">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="TextBulletListLtr24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
 
                     <ui:Button x:Name="NotesPaneButton"
                                Click="OnToggleNotesPane"
-                               MinHeight="36"
-                               Padding="12,6"
-                               Margin="0,0,6,6"
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="4,0,0,0"
                                ToolTip="Hide or show the notes panel."
-                               AutomationProperties.Name="Toggle notes panel" />
+                               AutomationProperties.Name="Toggle notes panel">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="Note24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
 
                     <ui:Button Click="OnShowWelcome"
                                Appearance="Transparent"
-                               MinHeight="36"
-                               Padding="10,6"
-                               Margin="0,0,6,6"
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="4,0,0,0"
                                ToolTip="Open the getting-started guide."
                                AutomationProperties.Name="Open help and getting started">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="QuestionCircle24" />
                         </ui:Button.Icon>
                     </ui:Button>
-                </WrapPanel>
+                </StackPanel>
 
-                <WrapPanel Grid.Column="1"
-                           VerticalAlignment="Center"
-                           HorizontalAlignment="Right"
-                           ItemHeight="36">
-                    <TextBlock Margin="0,0,8,6"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                               Text="Mic" />
-                    <ProgressBar Width="82"
-                                 Height="6"
-                                 Margin="0,0,8,6"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Value="{Binding MicLevel, Mode=OneWay}"
-                                 Foreground="{DynamicResource SystemAccentBrush}"
-                                 VerticalAlignment="Center"
-                                 ToolTip="Live microphone input level. If this stays flat while you talk, pick another device."
-                                 AutomationProperties.Name="Microphone input level" />
-                    <ComboBox Width="210"
-                              MinHeight="36"
-                              Margin="0,0,6,6"
-                              ItemsSource="{Binding InputDevices}"
-                              SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
-                              DisplayMemberPath="Name"
-                              VerticalAlignment="Center"
-                              ToolTip="Choose which microphone to capture. Shared mode — Teams keeps using it too."
-                              AutomationProperties.Name="Input device" />
-                    <ui:Button Command="{Binding RefreshInputDevicesCommand}"
-                               Appearance="Transparent"
-                               MinHeight="36"
-                               Padding="10,6"
-                               Margin="0,0,0,6"
-                               ToolTip="Rescan microphones"
-                               AutomationProperties.Name="Refresh input devices">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="ArrowSync24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-                </WrapPanel>
-            </Grid>
-        </Border>
-
-        <Border Grid.Row="2"
-                Visibility="{Binding IsHealthPanelVisible, Converter={StaticResource BoolVis}}"
-                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="12,8">
-            <DockPanel LastChildFill="True">
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Right">
+                    <!-- Sign In surfaces only while Azure is unavailable; the health
+                         panel that used to host it is gone, so this is now the only
+                         way in. -->
                     <ui:Button Command="{Binding SignInToAzureCommand}"
-                               Content="Sign In"
-                               MinHeight="34"
-                               Padding="12,5"
+                               Content="Sign in"
+                               Appearance="Primary"
+                               Height="34"
+                               Padding="12,0"
+                               Margin="0,0,6,0"
+                               Visibility="{Binding IsAzureReady, Converter={StaticResource InverseBoolVis}}"
                                ToolTip="Sign in to your Azure tenant (opens a browser)."
-                               Margin="6,0,0,0"
                                AutomationProperties.Name="Sign in to Azure">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="PersonKey24" />
                         </ui:Button.Icon>
                     </ui:Button>
+
                     <ui:Button Command="{Binding RetryHealthCommand}"
-                               Content="Retry"
-                               MinHeight="34"
-                               Padding="12,5"
-                               Margin="6,0,0,0"
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="0,0,10,0"
+                               ToolTip="Re-run the component health checks."
                                AutomationProperties.Name="Retry health checks">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="ArrowClockwise24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+
+                    <ProgressBar Width="72"
+                                 Height="4"
+                                 Margin="0,0,8,0"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding MicLevel, Mode=OneWay}"
+                                 Foreground="{DynamicResource SystemAccentBrush}"
+                                 VerticalAlignment="Center"
+                                 ToolTip="Live microphone level. If this stays flat while you talk, pick another device."
+                                 AutomationProperties.Name="Microphone input level" />
+
+                    <ComboBox Width="190"
+                              Height="34"
+                              ItemsSource="{Binding InputDevices}"
+                              SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
+                              DisplayMemberPath="Name"
+                              VerticalContentAlignment="Center"
+                              ToolTip="Choose which microphone to capture. Shared mode — Teams keeps using it too."
+                              AutomationProperties.Name="Input device" />
+
+                    <ui:Button Command="{Binding RefreshInputDevicesCommand}"
+                               Appearance="Transparent"
+                               Height="34"
+                               Width="38"
+                               Padding="0"
+                               Margin="4,0,0,0"
+                               ToolTip="Rescan microphones."
+                               AutomationProperties.Name="Refresh input devices">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="ArrowSync24" />
                         </ui:Button.Icon>
                     </ui:Button>
-                    <ui:Button Command="{Binding DismissHealthPanelCommand}"
-                               Appearance="Transparent"
-                               MinHeight="34"
-                               Padding="8,5"
-                               Margin="6,0,0,0"
-                               ToolTip="Dismiss the health panel"
-                               AutomationProperties.Name="Dismiss health panel">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Dismiss20" />
-                        </ui:Button.Icon>
-                    </ui:Button>
                 </StackPanel>
-
-                <ItemsControl ItemsSource="{Binding HealthStates}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <WrapPanel Orientation="Horizontal" />
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="8"
-                                    Padding="10,6"
-                                    Margin="0,0,8,8">
-                                <StackPanel Orientation="Horizontal">
-                                    <Ellipse Width="10"
-                                             Height="10"
-                                             Margin="0,1,8,0"
-                                             VerticalAlignment="Top"
-                                             Fill="{Binding Status, Converter={StaticResource HealthBrush}}"
-                                             AutomationProperties.HelpText="{Binding Status}" />
-                                    <StackPanel>
-                                        <TextBlock Text="{Binding Title}"
-                                                   FontWeight="SemiBold"
-                                                   FontSize="13"
-                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                        <TextBlock Text="{Binding Detail}"
-                                                   FontSize="11"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   MaxWidth="340" />
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </DockPanel>
+            </Grid>
         </Border>
 
-        <Grid Grid.Row="3" Margin="8,8,8,10">
+
+
+        <Grid Grid.Row="2" Margin="8,8,8,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="TranscriptColumn" Width="300" />
                 <ColumnDefinition Width="*" />
@@ -582,24 +559,65 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="4"
+        <Border Grid.Row="3"
                 Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{DynamicResource ControlElevationBorderBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="12,6">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock VerticalAlignment="Center"
+
+                <!-- Component health lives here rather than in a panel that pushed the
+                     canvas down: a traffic-light per check is all the signal needed,
+                     and the detail is available on hover. -->
+                <ItemsControl Grid.Column="0"
+                              ItemsSource="{Binding HealthStates}"
+                              VerticalAlignment="Center"
+                              Margin="0,0,16,0"
+                              AutomationProperties.Name="Component health">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal"
+                                        Margin="0,0,14,0"
+                                        VerticalAlignment="Center"
+                                        ToolTip="{Binding Detail}"
+                                        AutomationProperties.Name="{Binding Title}"
+                                        AutomationProperties.HelpText="{Binding Detail}">
+                                <Ellipse Width="8"
+                                         Height="8"
+                                         Margin="0,0,6,0"
+                                         VerticalAlignment="Center"
+                                         Fill="{Binding Status, Converter={StaticResource HealthBrush}}" />
+                                <TextBlock Text="{Binding Title}"
+                                           FontSize="12"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock Grid.Column="1"
+                           VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                            Text="{Binding StatusMessage}"
                            TextTrimming="CharacterEllipsis" />
-                <TextBlock Grid.Column="1"
+
+                <TextBlock Grid.Column="2"
                            VerticalAlignment="Center"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                           Text="Ctrl+Shift+L listen  •  Ctrl+Shift+R refine  •  Ctrl+Shift+E export  •  Ctrl+Shift+Delete clear" />
+                           Margin="16,0,0,0"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Text="Ctrl+Shift+L listen  •  Ctrl+Shift+R refine  •  Ctrl+Shift+E export" />
             </Grid>
         </Border>
     </Grid>

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows.Threading;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Continuous;
@@ -185,11 +186,12 @@ public partial class MainViewModel : ObservableObject
         var anyChecking = _health.States.Values.Any(s => s.Status == ComponentStatus.Checking);
         var anyFailed = _health.States.Values.Any(s => s.Status == ComponentStatus.Failed);
         if (anyChecking) StatusMessage = "Health checks running…";
-        else if (anyFailed) StatusMessage = "Some components unavailable. See health panel.";
+        else if (anyFailed) StatusMessage = "Some components unavailable — see the indicators below.";
         else if (IsAudioReady && IsTranscriptionReady && IsAzureReady) StatusMessage = "Ready — click Listen to start.";
 
         ToggleListenCommand.NotifyCanExecuteChanged();
         RefineDiagramCommand.NotifyCanExecuteChanged();
+        ImportTranscriptCommand.NotifyCanExecuteChanged();
     }
 
     public bool CanListen => IsListening || (!IsGenerating && IsAudioReady && IsTranscriptionReady);
@@ -392,6 +394,72 @@ public partial class MainViewModel : ObservableObject
             await _orchestrator.GenerateAsync(RefinementInstruction, isContinuous: false);
         }
         catch (Exception ex) { _logger.LogError(ex, "Refine failed"); }
+    }
+
+    public bool CanImportTranscript => !IsGenerating && !IsListening && IsAzureReady;
+
+    /// <summary>
+    /// Builds a diagram from an exported meeting transcript — no audio, no live
+    /// capture. This is how you get a board out of a Teams/Zoom meeting that already
+    /// happened, and it sidesteps transcription cost and rate limits entirely.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanImportTranscript))]
+    public async Task ImportTranscriptAsync()
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Import a meeting transcript",
+            Filter = TranscriptImporter.FileFilter,
+            CheckFileExists = true,
+        };
+        // Own the dialog, otherwise it can open behind the main window.
+        if (dialog.ShowDialog(System.Windows.Application.Current?.MainWindow) != true) return;
+
+        try
+        {
+            StatusMessage = "Reading transcript…";
+            var content = await File.ReadAllTextAsync(dialog.FileName);
+            var segments = TranscriptImporter.Parse(content);
+            if (segments.Count == 0)
+            {
+                StatusMessage = "That file didn't contain any readable transcript text.";
+                return;
+            }
+
+            // Replace rather than append: importing is "diagram THIS meeting", so
+            // mixing it with whatever was already buffered would blur two meetings.
+            _buffer.Clear();
+            Captions.Clear();
+            LiveTranscript = "";
+            foreach (var segment in segments)
+            {
+                _buffer.Append(segment);
+                Captions.Add(new CaptionViewModel(segment));
+            }
+            LiveTranscript = string.Join(" ", segments.Select(s => s.Text));
+            if (LiveTranscript.Length > 40000) LiveTranscript = LiveTranscript[^40000..];
+
+            var name = Path.GetFileName(dialog.FileName);
+            StatusMessage = $"Read {segments.Count} lines from {name}. Building the diagram…";
+
+            IsGenerating = true;
+            ImportTranscriptCommand.NotifyCanExecuteChanged();
+            // Deep pass: an imported transcript is complete, so there is no reason to
+            // use the fast incremental path meant for live speech.
+            await _orchestrator.GenerateAsync(
+                "Diagram this complete meeting transcript.", isContinuous: false);
+            StatusMessage = $"Diagram built from {name}.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Transcript import failed");
+            StatusMessage = $"Could not import that transcript: {ex.Message}";
+        }
+        finally
+        {
+            IsGenerating = false;
+            ImportTranscriptCommand.NotifyCanExecuteChanged();
+        }
     }
 
     [RelayCommand]
