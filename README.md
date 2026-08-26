@@ -76,14 +76,25 @@ dotnet run --project src\AudioBoarder.App
 
 ### First launch
 
-Three health pills fill in independently — **Audio devices**, **Transcription**,
-**Azure OpenAI** — and buttons enable as their subsystem becomes ready. If you have no
-cloud transcription deployment, Whisper downloads `ggml-base.bin` (~148 MB) once.
+Three health indicators fill in independently — **Audio devices**, **Transcription**,
+**Azure OpenAI** — shown as coloured dots in the status bar, and toolbar buttons enable
+as each subsystem becomes ready. If you have no cloud transcription deployment, Whisper
+downloads `ggml-base.bin` (~148 MB) once.
 
-Then: **🎙 Listen** → talk → **📐 Diagram now**, or let continuous mode grow the board as
-you speak. **✏ Refine** applies an incremental change (optionally with an instruction),
-**💾 Export PNG** and **✒ Export Excalidraw** save the result, and dragging a node locks
-it so later refinements leave it alone.
+Then **Listen** → talk, and the board grows on its own as the conversation develops.
+**Refine** runs a deeper pass (optionally with an instruction like "group the security
+controls"), the export buttons save a PNG or an editable `.excalidraw` file, and dragging
+a node pins it so later passes leave it where you put it.
+
+### Diagramming a meeting that already happened
+
+**Import** builds a board from an exported transcript — no audio, no live capture, no
+transcription cost. It reads **WebVTT** (what Teams, Zoom and Google Meet all export),
+**SRT**, and plain text, and recognises speaker names from both Teams' `<v Name>` voice
+tags and `Name:` prefixes, so action items come out attributed to the right person.
+
+This is also the practical way to get a Teams meeting onto the board: Teams exposes no
+API for the live caption stream, but its exported `.vtt` drops straight in.
 
 ---
 
@@ -150,11 +161,12 @@ sibling of the same family (e.g. `gpt-5-6-luna`) rather than an older small mode
 
 Four mechanisms keep the board from degenerating into identical rectangles:
 
-**Icons.** Every node carries a glyph. The model may set `icon` explicitly, and
-`IconRegistry` auto-resolves one from the label for ~140 known technologies and concepts
-— Purview, Fabric, Power BI, Defender, Entra, Copilot, SQL, Kubernetes — falling back to
-a per-kind default. Glyphs are plain Unicode, so exports open anywhere with no image
-assets and no licensing.
+**Icons.** Every node carries a vector icon drawn inside its shape. `IconRegistry`
+resolves one from the label for ~140 known technologies and concepts — Purview, Fabric,
+Power BI, Defender, Entra, Copilot, SQL, Kubernetes — falling back to a per-kind default.
+Icons are embedded [Lucide](https://lucide.dev) SVG paths (ISC licence), so they render
+crisply at any zoom, take the node's own colour, and work fully offline with no network
+fetch. Matching is whole-word, so "Staging environment" doesn't pick up a price tag.
 
 **System boundaries.** A `group` op draws a tinted, dashed, labelled container behind its
 members, so a platform or team reads as a box you can point at.
@@ -220,12 +232,16 @@ than discarding the whole patch, then a layout engine positions anything unplace
 Dependency direction is `Core ← Services ← App`. No mock or demo services exist in any
 production assembly; test doubles live in `tests/AudioBoarder.Tests/Fakes`.
 
-### The Excalidraw whiteboard
+### The live canvas
 
-The central canvas is a real, **fully offline** Excalidraw board hosted in WebView2. The
-vendored bundle lives in `src/AudioBoarder.App/Assets/web` and is rebuilt from the Vite
-source in `src/AudioBoarder.App/web` (see that folder's README). The same converter backs
-**Export Excalidraw**, so the file you hand over opens in any Excalidraw instance.
+The central canvas is a typography-first SVG renderer hosted in WebView2 — text and thin
+bezier branches rather than boxes, with secondary associations de-emphasised so the
+structure reads. The bundle lives in `src/AudioBoarder.App/Assets/web` (~14 KB) and is
+rebuilt from the Vite source in `src/AudioBoarder.App/web` (see that folder's README).
+Drag any node to pin it; pinned nodes keep their position through later layout passes.
+
+**Export Excalidraw** is unchanged and still emits a real `.excalidraw` document via
+`SceneToExcalidrawConverter`, so the file you hand over opens in any Excalidraw instance.
 
 ---
 
