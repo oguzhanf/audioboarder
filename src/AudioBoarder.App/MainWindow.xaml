@@ -13,7 +13,7 @@
                  Height="760"
                  Width="1240"
                  MinHeight="640"
-                 MinWidth="980"
+                 MinWidth="1180"
                  WindowStartupLocation="CenterScreen"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True"
@@ -59,12 +59,18 @@
                 Padding="12,8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
+                    <!-- Both groups shrink. Auto on the left let the action group
+                         claim whatever it wanted and push the mic/device group off
+                         the right edge; star lets each give ground under pressure. -->
+                    <ColumnDefinition Width="Auto" MinWidth="0" />
+                    <ColumnDefinition Width="*" MinWidth="0" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0"
-                            Orientation="Horizontal"
+                <ScrollViewer Grid.Column="0"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled"
+                              VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal"
                             VerticalAlignment="Center">
                     <ui:Button Command="{Binding ToggleListenCommand}"
                                Content="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Listen|Stop'}"
@@ -107,7 +113,8 @@
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ui:TextBox Width="188"
+                    <ui:TextBox Width="150"
+                                MinWidth="90"
                                 Height="34"
                                 Margin="6,0,0,0"
                                 VerticalContentAlignment="Center"
@@ -202,15 +209,26 @@
                         </ui:Button.Icon>
                     </ui:Button>
                 </StackPanel>
+                </ScrollViewer>
 
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center"
-                            HorizontalAlignment="Right">
-                    <!-- Sign In surfaces only while Azure is unavailable; the health
+                <Grid Grid.Column="1"
+                      VerticalAlignment="Center"
+                      Margin="12,0,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <!-- Star so the device list absorbs slack and elides its own
+                             text rather than pushing the refresh button off-screen. -->
+                        <ColumnDefinition Width="*" MinWidth="110" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Sign in surfaces only while Azure is unavailable; the health
                          panel that used to host it is gone, so this is now the only
                          way in. -->
-                    <ui:Button Command="{Binding SignInToAzureCommand}"
+                    <ui:Button Grid.Column="0"
+                               Command="{Binding SignInToAzureCommand}"
                                Content="Sign in"
                                Appearance="Primary"
                                Height="34"
@@ -224,7 +242,8 @@
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ui:Button Command="{Binding RetryHealthCommand}"
+                    <ui:Button Grid.Column="1"
+                               Command="{Binding RetryHealthCommand}"
                                Height="34"
                                Width="38"
                                Padding="0"
@@ -236,7 +255,8 @@
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ProgressBar Width="72"
+                    <ProgressBar Grid.Column="2"
+                                 Width="72"
                                  Height="4"
                                  Margin="0,0,8,0"
                                  Minimum="0"
@@ -247,16 +267,26 @@
                                  ToolTip="Live microphone level. If this stays flat while you talk, pick another device."
                                  AutomationProperties.Name="Microphone input level" />
 
-                    <ComboBox Width="190"
+                    <ComboBox Grid.Column="3"
                               Height="34"
+                              MaxWidth="200"
+                              HorizontalAlignment="Stretch"
                               ItemsSource="{Binding InputDevices}"
                               SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
-                              DisplayMemberPath="Name"
                               VerticalContentAlignment="Center"
                               ToolTip="Choose which microphone to capture. Shared mode — Teams keeps using it too."
-                              AutomationProperties.Name="Input device" />
+                              AutomationProperties.Name="Input device">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Name}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
-                    <ui:Button Command="{Binding RefreshInputDevicesCommand}"
+                    <ui:Button Grid.Column="4"
+                               Command="{Binding RefreshInputDevicesCommand}"
                                Appearance="Transparent"
                                Height="34"
                                Width="38"
@@ -268,7 +298,7 @@
                             <ui:SymbolIcon Symbol="ArrowSync24" />
                         </ui:Button.Icon>
                     </ui:Button>
-                </StackPanel>
+                </Grid>
             </Grid>
         </Border>
 
@@ -276,9 +306,12 @@
 
         <Grid Grid.Row="2" Margin="8,8,8,10">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="TranscriptColumn" Width="300" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition x:Name="NotesColumn" Width="320" />
+                <!-- Proportional with a floor so the side rails give ground to the
+                     canvas as the window narrows, instead of holding a fixed width
+                     and squeezing the whiteboard to nothing. -->
+                <ColumnDefinition x:Name="TranscriptColumn" Width="0.22*" MinWidth="220" MaxWidth="360" />
+                <ColumnDefinition Width="*" MinWidth="320" />
+                <ColumnDefinition x:Name="NotesColumn" Width="0.24*" MinWidth="240" MaxWidth="380" />
             </Grid.ColumnDefinitions>
 
             <Border x:Name="TranscriptPane"

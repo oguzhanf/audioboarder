@@ -38,6 +38,9 @@ internal static class ScenePatchJsonSchema
               "from": { "type": "string" },
               "to": { "type": "string" },
               "node_ids": { "type": "array", "items": { "type": "string" } },
+              "parent_group_id": { "type": "string" },
+              "subtitle": { "type": "string" },
+              "step": { "type": ["integer", "null"] },
               "text": { "type": "string" },
               "owner": { "type": "string" },
               "prompt": { "type": "string" },
@@ -55,8 +58,8 @@ internal static class ScenePatchJsonSchema
             },
             "required": [
               "op", "id", "kind", "label", "icon", "description", "group_id", "from", "to",
-              "node_ids", "text", "owner", "prompt", "attach_to_node_id",
-              "position", "source_timestamp"
+              "node_ids", "parent_group_id", "subtitle", "step", "text", "owner", "prompt",
+              "attach_to_node_id", "position", "source_timestamp"
             ]
           }
         }

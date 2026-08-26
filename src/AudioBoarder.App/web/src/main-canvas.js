@@ -19,6 +19,7 @@ let view = { x: 120, y: 120, k: 1 };
 // the moment the user pans or zooms — snatching the view back mid-sentence would
 // be worse than a badly framed board.
 let userTookControl = false;
+let lastLayout = null;
 
 function postToHost(message) {
   try {
@@ -35,15 +36,17 @@ function applyView() {
 }
 
 function draw() {
-  renderScene(svg, scene, view);
+  lastLayout = renderScene(svg, scene, view);
   applyView();
 }
 
 /** Keeps the diagram framed as it grows, until the user takes manual control. */
 function autoFit(force = false) {
   if ((userTookControl && !force) || !scene.nodes || scene.nodes.length === 0) return;
-  const b = bounds(scene.nodes);
-  if (b.w <= 0 || b.h <= 0) return;
+  // Bounds must include containers: a boundary extends well past its members, so
+  // fitting to nodes alone crops the outermost box.
+  const b = lastLayout?.bounds ?? bounds(scene.nodes);
+  if (!b || b.w <= 0 || b.h <= 0) return;
   const pad = 70;
   const raw = Math.min(
     (svg.clientWidth - pad * 2) / b.w,
@@ -185,9 +188,9 @@ function endDrag() {
         id: n.id,
         type: "rectangle",
         x: n.x,
-        y: n.y - (n._h || 26) / 2,
-        width: n._w || 120,
-        height: n._h || 26,
+        y: n.y,
+        width: n.w || 168,
+        height: n.h || 56,
         locked: true,
         isDeleted: false,
       }],
@@ -209,7 +212,12 @@ document.getElementById("zoomOut").onclick = () => {
 // "Fit" also hands auto-framing back to the app.
 document.getElementById("zoomFit").onclick = () => { userTookControl = false; autoFit(true); };
 
-window.addEventListener("resize", () => autoFit());
+window.addEventListener("resize", () => {
+  // Redraw as well as refit: the empty-state hint is centred on the SVG at draw
+  // time, so a resize (or a side panel opening) would otherwise leave it offset.
+  draw();
+  autoFit();
+});
 
 draw();
 postToHost({ type: "ready" });

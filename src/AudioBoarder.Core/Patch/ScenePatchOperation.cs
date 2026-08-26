@@ -50,13 +50,19 @@ public sealed record Connect(
     string From,
     string To,
     EdgeKind Kind = EdgeKind.Flow,
-    string? Label = null) : ScenePatchOperation;
+    string? Label = null,
+    int? Step = null) : ScenePatchOperation;
 
 public sealed record Disconnect(string Id) : ScenePatchOperation;
 
 public sealed record Relabel(string Id, string Label) : ScenePatchOperation;
 
-public sealed record GroupOp(string Id, string Label, IReadOnlyList<string> NodeIds) : ScenePatchOperation;
+public sealed record GroupOp(
+    string Id,
+    string Label,
+    IReadOnlyList<string> NodeIds,
+    string? ParentGroupId = null,
+    string? Subtitle = null) : ScenePatchOperation;
 
 public sealed record UngroupOp(string Id) : ScenePatchOperation;
 

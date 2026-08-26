@@ -60,10 +60,17 @@ public static class SceneToCanvasJson
                         To = e.ToNodeId,
                         Kind = ToSnake(e.Kind.ToString()),
                         Label = string.IsNullOrWhiteSpace(e.Label) ? null : e.Label,
+                        Step = e.Step,
                     })
                     .ToArray(),
                 Groups = graph.Groups.Values
-                    .Select(g => new CanvasGroup { Id = g.Id, Label = g.Label })
+                    .Select(g => new CanvasGroup
+                    {
+                        Id = g.Id,
+                        Label = g.Label,
+                        Parent = g.ParentGroupId,
+                        Subtitle = string.IsNullOrWhiteSpace(g.Subtitle) ? null : g.Subtitle,
+                    })
                     .ToArray(),
             };
         }
@@ -110,11 +117,14 @@ public static class SceneToCanvasJson
         public required string To { get; init; }
         public required string Kind { get; init; }
         public string? Label { get; init; }
+        public int? Step { get; init; }
     }
 
     private sealed class CanvasGroup
     {
         public required string Id { get; init; }
         public required string Label { get; init; }
+        public string? Parent { get; init; }
+        public string? Subtitle { get; init; }
     }
 }

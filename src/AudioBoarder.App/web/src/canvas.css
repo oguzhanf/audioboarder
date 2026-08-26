@@ -17,12 +17,21 @@
   --ink: #18181b;
   --ink-mid: #52525b;
   --ink-dim: #a1a1aa;
-  --line: #3f3f46;
+  --line: #64748b;
   --rule: #e4e4e7;
   --plate: #f4f4f5;
-  --accent: #7c6cf6;
+  --accent: #0078d4;
   --risk: #e5484d;
   --ok: #30a46c;
+  --step: #0078d4;
+  --card: #ffffff;
+  --card-stroke: #d4d4d8;
+  /* Nested boundaries: progressively lighter tints of the accent. */
+  --container-1: #f4f8fd;
+  --container-2: #eaf2fb;
+  --container-3: #dfebf8;
+  --container-4: #d5e5f5;
+  --container-stroke: #bcd4ea;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -31,11 +40,20 @@
     --ink: #f4f4f5;
     --ink-mid: #a1a1aa;
     --ink-dim: #6b6b74;
-    --line: #7c7c88;
+    --line: #8b96a5;
     --rule: #2a2a30;
     --plate: #1e1e23;
+    --accent: #4aa3e8;
     --risk: #ff6369;
     --ok: #3dd68c;
+    --step: #2b88d8;
+    --card: #1c1c21;
+    --card-stroke: #34343d;
+    --container-1: #17181c;
+    --container-2: #1a1c22;
+    --container-3: #1e2028;
+    --container-4: #22252e;
+    --container-stroke: #2f3945;
   }
 }
 
@@ -46,11 +64,20 @@
   --ink: #18181b;
   --ink-mid: #52525b;
   --ink-dim: #a1a1aa;
-  --line: #3f3f46;
+  --line: #64748b;
   --rule: #e4e4e7;
   --plate: #f4f4f5;
+  --accent: #0078d4;
   --risk: #e5484d;
   --ok: #30a46c;
+  --step: #0078d4;
+  --card: #ffffff;
+  --card-stroke: #d4d4d8;
+  --container-1: #f4f8fd;
+  --container-2: #eaf2fb;
+  --container-3: #dfebf8;
+  --container-4: #d5e5f5;
+  --container-stroke: #bcd4ea;
 }
 
 :root[data-theme="dark"] {
@@ -58,11 +85,20 @@
   --ink: #f4f4f5;
   --ink-mid: #a1a1aa;
   --ink-dim: #6b6b74;
-  --line: #7c7c88;
+  --line: #8b96a5;
   --rule: #2a2a30;
   --plate: #1e1e23;
+  --accent: #4aa3e8;
   --risk: #ff6369;
   --ok: #3dd68c;
+  --step: #2b88d8;
+  --card: #1c1c21;
+  --card-stroke: #34343d;
+  --container-1: #17181c;
+  --container-2: #1a1c22;
+  --container-3: #1e2028;
+  --container-4: #22252e;
+  --container-stroke: #2f3945;
 }
 
 * { box-sizing: border-box; }
@@ -82,25 +118,55 @@ html, body {
 #stage.panning { cursor: grabbing; }
 svg { width: 100%; height: 100%; display: block; }
 
-/* ---- nodes: text, not boxes ---------------------------------------------- */
-.node-label {
-  font-size: 15px;
-  font-weight: 500;
-  fill: var(--ink);
+/* ---- containers: the backbone of an architecture diagram ------------------- */
+/* Nesting is conveyed by progressively lighter fills so a subnet inside a vnet
+   inside a subscription stays legible without heavy borders. */
+.container-box {
+  fill: var(--container-1);
+  stroke: var(--container-stroke);
+  stroke-width: 1;
+}
+.depth-1 .container-box { fill: var(--container-2); }
+.depth-2 .container-box { fill: var(--container-3); }
+.depth-3 .container-box { fill: var(--container-4); }
+
+.container-name {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  fill: var(--ink-mid);
   dominant-baseline: middle;
 }
-.node.root .node-label { font-size: 19px; font-weight: 650; }
-.node.risk .node-label { fill: var(--risk); }
-
-.node-desc {
-  font-size: 12px;
+.container-subtitle {
+  font-size: 11px;
   font-weight: 450;
   fill: var(--ink-dim);
   dominant-baseline: middle;
 }
 
+/* ---- node cards ----------------------------------------------------------- */
+.node-card {
+  fill: var(--card);
+  stroke: var(--card-stroke);
+  stroke-width: 1;
+}
+.node:hover .node-card { stroke: var(--accent); }
+.node.risk .node-card { stroke: var(--risk); }
+
+.node-label {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--ink);
+  dominant-baseline: middle;
+}
+.node-desc {
+  font-size: 11px;
+  font-weight: 450;
+  fill: var(--ink-dim);
+  dominant-baseline: middle;
+}
 .node-icon {
-  stroke: var(--ink-mid);
+  stroke: var(--accent);
   stroke-width: 1.7;
   fill: none;
   stroke-linecap: round;
@@ -108,58 +174,44 @@ svg { width: 100%; height: 100%; display: block; }
 }
 .node.risk .node-icon { stroke: var(--risk); }
 .node.ok .node-icon { stroke: var(--ok); }
-.node.root .node-icon { stroke: var(--accent); }
 
-/* Hover affordance without a permanent outline. */
-.node-plate { fill: transparent; transition: fill 120ms ease; }
 .node { cursor: grab; }
-.node:hover .node-plate { fill: var(--plate); }
 .node:active { cursor: grabbing; }
 
-/* A pinned node is one the user placed deliberately — mark it quietly so they
-   can tell which parts of the board the layout will stop rearranging. */
-.node.pinned .node-plate {
-  fill: color-mix(in srgb, var(--accent) 9%, transparent);
-}
+/* A pinned node is one the user placed deliberately. */
+.node-pin { fill: transparent; }
 .node.pinned .node-pin { fill: var(--accent); }
-.node-pin { display: none; }
-.node.pinned .node-pin { display: block; }
 
-/* ---- branches ------------------------------------------------------------- */
+/* ---- connectors ----------------------------------------------------------- */
 .edge {
   fill: none;
   stroke: var(--line);
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  opacity: 0.8;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
 }
-.edge.soft { stroke: var(--ink-dim); stroke-dasharray: 4 5; opacity: 0.65; }
-
-/* Secondary associations: present, but never competing with the structure. */
-.edge.cross {
-  stroke: var(--ink-dim);
-  stroke-width: 1;
-  stroke-dasharray: 3 6;
-  opacity: 0.28;
-}
+/* Dashed = asynchronous / dependency, paired with meaning rather than colour
+   alone so the distinction survives greyscale and colour-blindness. */
+.edge.soft { stroke: var(--ink-dim); stroke-dasharray: 5 4; }
+.arrow-head { fill: var(--line); }
 
 .edge-label {
   font-size: 11px;
   font-weight: 450;
-  fill: var(--ink-dim);
+  fill: var(--ink-mid);
   text-anchor: middle;
   dominant-baseline: middle;
 }
 .edge-label-bg { fill: var(--bg); }
 
-/* ---- group: hairline rule + quiet caption --------------------------------- */
-.group-rule { stroke: var(--rule); stroke-width: 1; }
-.group-name {
+/* ---- numbered step badges ------------------------------------------------- */
+/* The convention that turns a picture into a walkthrough. */
+.step-badge { fill: var(--step); stroke: var(--bg); stroke-width: 2; }
+.step-num {
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  fill: var(--ink-dim);
+  font-weight: 700;
+  fill: #ffffff;
+  text-anchor: middle;
+  dominant-baseline: central;
 }
 
 .empty-hint {
@@ -203,4 +255,6 @@ svg { width: 100%; height: 100%; display: block; }
 .zoom button:hover { background: var(--plate); color: var(--ink); }
 .zoom #zoomLevel { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
 .zoom #zoomFit { width: auto; padding: 0 7px; font-size: 11px; font-weight: 500; }
+
+
 

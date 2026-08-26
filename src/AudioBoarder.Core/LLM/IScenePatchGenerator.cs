@@ -8,7 +8,7 @@ public sealed record ScenePatchRequest(
     SceneGraph CurrentScene,
     IReadOnlyList<TranscriptSegment> TranscriptWindow,
     string? UserInstruction = null,
-    int MaxNodes = 15,
+    int MaxNodes = 60,
     /// <summary>
     /// True when this call is part of the continuous mid-meeting summarizer.
     /// Generators should prefer a fast deployment, use the continuous system

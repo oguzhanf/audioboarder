@@ -6,7 +6,7 @@ namespace AudioBoarder.Core.Scene;
 /// the board), which means a long meeting would otherwise grow the diagram without
 /// bound until it is an unreadable hairball at 10% zoom.
 /// </summary>
-public sealed record SceneBudget(int MaxNodes = 42, int MaxNotes = 24)
+public sealed record SceneBudget(int MaxNodes = 80, int MaxNotes = 24)
 {
     public static SceneBudget Default { get; } = new();
 }

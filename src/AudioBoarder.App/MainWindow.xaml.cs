@@ -12,8 +12,8 @@ namespace AudioBoarder.App;
 
 public partial class MainWindow : FluentWindow
 {
-    private const double TranscriptPaneWidth = 300d;
-    private const double NotesPaneWidth = 320d;
+    private const double TranscriptPaneMinWidth = 220d;
+    private const double NotesPaneMinWidth = 240d;
     private const double NumericTolerance = 0.5d;
 
     private readonly MainViewModel _viewModel;
@@ -97,10 +97,20 @@ public partial class MainWindow : FluentWindow
 
     private void UpdateSidePaneLayout()
     {
+        // Restore the proportional widths declared in XAML rather than fixed pixels,
+        // so an open rail still gives ground to the canvas as the window narrows.
+        // MinWidth has to be cleared when collapsing or the column can't reach zero.
         TranscriptPane.Visibility = _isTranscriptPaneVisible ? Visibility.Visible : Visibility.Collapsed;
-        TranscriptColumn.Width = _isTranscriptPaneVisible ? new GridLength(TranscriptPaneWidth) : new GridLength(0);
+        TranscriptColumn.MinWidth = _isTranscriptPaneVisible ? TranscriptPaneMinWidth : 0d;
+        TranscriptColumn.Width = _isTranscriptPaneVisible
+            ? new GridLength(0.22, GridUnitType.Star)
+            : new GridLength(0);
+
         NotesPane.Visibility = _isNotesPaneVisible ? Visibility.Visible : Visibility.Collapsed;
-        NotesColumn.Width = _isNotesPaneVisible ? new GridLength(NotesPaneWidth) : new GridLength(0);
+        NotesColumn.MinWidth = _isNotesPaneVisible ? NotesPaneMinWidth : 0d;
+        NotesColumn.Width = _isNotesPaneVisible
+            ? new GridLength(0.24, GridUnitType.Star)
+            : new GridLength(0);
 
         SetPaneButtonState(TranscriptPaneButton, "transcript", _isTranscriptPaneVisible);
         SetPaneButtonState(NotesPaneButton, "notes", _isNotesPaneVisible);

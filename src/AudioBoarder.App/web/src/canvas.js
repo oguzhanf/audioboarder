@@ -1,16 +1,22 @@
 /*
-  AudioBoarder canvas — typography-first renderer.
+  AudioBoarder canvas — architecture renderer.
 
-  Replaces Excalidraw. Excalidraw is deliberately a hand-drawn *sketch* tool; its
-  rough strokes and boxes are what made generated boards look like doodles. This
-  renders the same SceneGraph as clean typography: no boxes, thin bezier branches,
-  generous whitespace, one accent colour.
+  Draws the scene the way the Azure Architecture Center draws reference
+  architectures: nested boundary containers, product cards with icons, orthogonal
+  connectors, and numbered step badges for a request path.
+
+  Conventions follow the Well-Architected guidance on design diagrams
+  (learn.microsoft.com/azure/well-architected/architect-role/design-diagrams):
+  every relationship is directional, never bidirectional; containers and
+  relationships are labelled; line style is consistent and paired with meaning
+  rather than relying on colour alone.
 
   Contract with the C# host is unchanged:
-    - host  -> js : window.loadScene(json)   (ExcalidrawDocument-shaped payload)
+    - host  -> js : window.loadScene(json)
     - js -> host  : { type: "ready" | "scene-change" | "error" }
-  so ExcalidrawCanvas.cs keeps working without modification.
 */
+
+import { layoutArchitecture } from "./architecture-layout.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -57,14 +63,51 @@ const KIND = {
 };
 
 const NAMED = [
-  [/\bpurview\b/i, "search"], [/\bdefender\b/i, "shield"], [/\bsentinel\b/i, "search"],
-  [/\bentra\b|\bactive directory\b/i, "key"], [/\bcopilot\b|\bagent\b/i, "bot"],
-  [/\bpower bi\b|\bdashboard\b|\breport\b/i, "chart"], [/\bapi\b|\bendpoint\b/i, "plug"],
-  [/\bazure\b|\baws\b|\bgcp\b/i, "cloud"], [/\bsql\b|\bdatabase\b/i, "database"],
-  [/\bteams\b|\bstakeholder\b/i, "users"], [/\bdeadline\b|\bdue\b/i, "clock"],
-  [/\bcheckpoint\b|\bschedule\b/i, "calendar"], [/\bapproval\b|\bapprove\b/i, "check"],
-  [/\bgovernance\b|\bcompliance\b|\bpolicy\b/i, "scale"], [/\bpipeline\b|\bworkflow\b/i, "workflow"],
-  [/\bencryption\b|\brbac\b/i, "lock"],
+  // Identity & security
+  [/\bentra\b|\bactive directory\b|\baad\b|\bmanaged identit/i, "key"],
+  [/\bkey vault\b|\bsecret|\bcertificate/i, "lock"],
+  [/\bdefender\b|\bwaf\b|\bweb application firewall\b|\bfirewall\b|\bddos\b/i, "shield"],
+  [/\bsentinel\b|\bpurview\b|\baudit\b|\bcompliance\b/i, "search"],
+  [/\bprivate endpoint\b|\bprivate link\b|\brbac\b|\bencryption\b/i, "lock"],
+
+  // Networking
+  [/\bvirtual network\b|\bvnet\b|\bsubnet\b|\bpeering\b|\bnsg\b/i, "network"],
+  [/\bfront door\b|\bapplication gateway\b|\bapp gateway\b|\bload balancer\b|\btraffic manager\b|\bcdn\b/i, "network"],
+  [/\bexpressroute\b|\bvpn\b|\bgateway\b|\bdns\b|\bbastion\b/i, "network"],
+
+  // Compute & hosting
+  [/\bapp service\b|\bweb app\b|\bfunction|\bcontainer app|\blogic app\b/i, "zap"],
+  [/\bkubernetes\b|\baks\b|\bcontainer\b|\bdocker\b|\bregistry\b/i, "container"],
+  [/\bvirtual machine\b|\bvm\b|\bscale set\b|\bvmss\b|\bserver\b/i, "server"],
+
+  // Data
+  [/\bcosmos\b|\bsql\b|\bdatabase\b|\bpostgres|\bmysql\b|\bredis\b|\bdocumentdb\b/i, "database"],
+  [/\bstorage\b|\bblob\b|\bdata lake\b|\bonelake\b|\bbackup\b|\barchive\b/i, "archive"],
+  [/\bsynapse\b|\bfabric\b|\bdatabricks\b|\bdata factory\b|\bstream analytics\b/i, "workflow"],
+  [/\bevent hub\b|\bservice bus\b|\bqueue\b|\bevent grid\b|\bkafka\b/i, "workflow"],
+
+  // AI
+  [/\bfoundry\b|\bopenai\b|\bcognitive\b|\bmachine learning\b|\baml\b|\bmodel\b/i, "brain"],
+  [/\bcopilot\b|\bagent\b|\bbot\b|\bprompt\b/i, "bot"],
+  [/\bai search\b|\bcognitive search\b|\bvector\b|\bembedding\b/i, "search"],
+
+  // Operations
+  [/\bmonitor\b|\bapplication insights\b|\blog analytics\b|\bmetric|\btelemetry\b/i, "trending"],
+  [/\balert\b|\bincident\b|\bon-call\b/i, "bell"],
+  [/\bdevops\b|\bpipeline\b|\bgithub\b|\bci\/cd\b|\bdeploy/i, "workflow"],
+  [/\bresource manager\b|\barm\b|\bbicep\b|\bterraform\b|\bpolicy\b/i, "file-text"],
+  [/\bsubscription\b|\btenant\b|\blanding zone\b|\bmanagement group\b/i, "cloud"],
+
+  // Generic cloud & endpoints
+  [/\bazure\b|\baws\b|\bgcp\b|\bcloud\b/i, "cloud"],
+  [/\bapi\b|\bendpoint\b|\brest\b|\bwebhook\b|\bconnector\b/i, "plug"],
+  [/\bpower bi\b|\bdashboard\b|\breport\b|\banalytics\b/i, "chart"],
+  [/\bteams\b|\bstakeholder\b|\busers?\b|\bcustomer\b|\bclient\b/i, "users"],
+  [/\bsharepoint\b|\bonedrive\b|\bdocument\b|\bfile\b/i, "folder"],
+  [/\bdeadline\b|\bdue\b|\bsla\b|\blatency\b/i, "clock"],
+  [/\bcheckpoint\b|\bmilestone\b|\bschedule\b|\brelease\b/i, "calendar"],
+  [/\bapproval\b|\bapprove\b|\bsign-?off\b/i, "check"],
+  [/\bgovernance\b|\bdecision\b|\btrade-?off\b/i, "scale"],
 ];
 
 function iconFor(label, kind) {
@@ -86,169 +129,126 @@ function textWidth(t, size, weight) {
   return measureCtx.measureText(t || "").width;
 }
 
-const ICON_W = 24;
-const ROW_H = 26;
-const ROW_GAP = 16;
-// Column spacing is the dominant term in overall width; a wide tree is what forces
-// zoom-to-fit down to an unreadable level, so keep the gap tight.
-const COL_GAP = 96;
-
 /**
- * Lays the graph out as a left-to-right branch tree.
- *
- * Radial/force layouts produce the diagonal spaghetti this replaces. A tidy tree
- * (Reingold-Tilford style: children stacked, parent centred on its children) is
- * what reads as a designed mind map.
+ * Orthogonal route between two node boxes. Architecture diagrams use stepped
+ * connectors, not free diagonals — a diagonal across a container reads as an error.
  */
-function layoutTree(nodes, edges) {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const kids = new Map(nodes.map((n) => [n.id, []]));
-  const indeg = new Map(nodes.map((n) => [n.id, 0]));
+function routePath(a, b) {
+  const ax = a.x + a.w, ay = a.y + a.h / 2;
+  const bx = b.x, by = b.y + b.h / 2;
 
-  for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to) || e.from === e.to) continue;
-    // Keep a strict tree: the first parent wins. Everything else is a cross-link,
-    // which is drawn far more quietly — a mind map with every association at full
-    // weight is exactly the spaghetti this layout replaces.
-    if (indeg.get(e.to) === 0) {
-      kids.get(e.from).push(e.to);
-      indeg.set(e.to, 1);
-      e._tree = true;
-    } else {
-      e._tree = false;
-    }
+  // Target is to the right: leave right, enter left, with a mid dogleg.
+  if (bx >= ax + 24) {
+    const mid = (ax + bx) / 2;
+    return { d: `M ${ax} ${ay} H ${mid} V ${by} H ${bx}`, mx: mid, my: (ay + by) / 2 };
   }
 
-  // Measure every node first — the row height depends on whether it has a detail line.
-  for (const n of nodes) {
-    n._size = n.root ? 19 : 15;
-    n._weight = n.root ? 650 : 500;
-    n._tw = textWidth(n.label, n._size, n._weight);
-    n._dw = n.desc ? textWidth(n.desc, 12, 450) : 0;
-    n._w = ICON_W + Math.max(n._tw, n._dw);
-    n._h = n.desc ? 36 : ROW_H;
-  }
-
-  const roots = nodes.filter((n) => indeg.get(n.id) === 0);
-  if (roots.length === 0 && nodes.length) roots.push(nodes[0]);
-  if (roots.length === 1) roots[0].root = true;
-
-  // Depth-first: stack leaves vertically, centre each parent on its children.
-  let cursorY = 0;
-  const place = (id, depth, seen) => {
-    if (seen.has(id)) return 0;
-    seen.add(id);
-    const n = byId.get(id);
-    const children = kids.get(id).filter((c) => !seen.has(c));
-    n.x = depth * COL_GAP;
-
-    if (children.length === 0) {
-      n.y = cursorY;
-      cursorY += n._h + ROW_GAP;
-      return n.y;
-    }
-    const ys = children.map((c) => place(c, depth + 1, seen));
-    n.y = (Math.min(...ys) + Math.max(...ys)) / 2;
-    return n.y;
+  // Target is left or overlapping: go around underneath.
+  const ay2 = a.y + a.h, by2 = b.y + b.h / 2;
+  const drop = Math.max(ay2, b.y + b.h) + 26;
+  const sx = a.x + a.w / 2, ex = b.x + b.w / 2;
+  return {
+    d: `M ${sx} ${ay2} V ${drop} H ${ex} V ${b.y + b.h}`,
+    mx: (sx + ex) / 2,
+    my: drop,
   };
-
-  const seen = new Set();
-  for (const r of roots) {
-    place(r.id, 0, seen);
-    cursorY += ROW_GAP * 1.5;
-  }
-  // Anything unreachable (shouldn't happen) still gets a slot.
-  for (const n of nodes) {
-    if (n.x == null) { n.x = 0; n.y = cursorY; cursorY += n._h + ROW_GAP; }
-  }
-
-  // Column x needs the widest node in each preceding column.
-  const cols = new Map();
-  for (const n of nodes) {
-    const c = Math.round(n.x / COL_GAP);
-    n._col = c;
-    cols.set(c, Math.max(cols.get(c) || 0, n._w));
-  }
-  let x = 0;
-  const colX = new Map();
-  for (const c of [...cols.keys()].sort((a, b) => a - b)) {
-    colX.set(c, x);
-    x += cols.get(c) + COL_GAP;
-  }
-  for (const n of nodes) n.x = colX.get(n._col);
-
-  // A pinned node keeps exactly where the user put it. Re-laying it out every
-  // pass would silently undo the placement they deliberately made.
-  for (const n of nodes) {
-    if (n.locked && Number.isFinite(n.pinX) && Number.isFinite(n.pinY)) {
-      n.x = n.pinX;
-      n.y = n.pinY;
-    }
-  }
-
-  return { byId, kids };
-}
-
-/** Horizontal-first bezier: leaves the parent right, arrives from the left. */
-function branchPath(a, b) {
-  const x1 = a.x + a._w + 10;
-  const y1 = a.y;
-  const x2 = b.x - 10;
-  const y2 = b.y;
-  const dx = Math.max(30, (x2 - x1) * 0.5);
-  return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
 
 export function renderScene(svg, scene, view) {
   svg.replaceChildren();
+
+  // Arrowheads are defined once and reused. WAF guidance is explicit that every
+  // relationship must be directional, so no connector is drawn without one.
+  const defs = el("defs");
+  const marker = el("marker", {
+    id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5,
+    markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse",
+  });
+  marker.appendChild(el("path", { class: "arrow-head", d: "M 0 1 L 9 5 L 0 9 z" }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
   const root = el("g", { id: "viewport" });
   svg.appendChild(root);
 
   const nodes = scene.nodes || [];
   if (nodes.length === 0) {
-    const hint = el("text", { class: "empty-hint", x: 0, y: 0 });
+    // Placed OUTSIDE the pan/zoom group and centred on the SVG itself. Inside the
+    // viewport it inherits the current translate, which pushes it off-panel and
+    // clips it mid-word.
+    const hint = el("text", {
+      class: "empty-hint",
+      x: svg.clientWidth / 2,
+      y: svg.clientHeight / 2,
+    });
     hint.textContent = "Listening — the map will draw itself as people talk.";
-    root.appendChild(hint);
-    root.setAttribute("transform", `translate(${svg.clientWidth / 2},${svg.clientHeight / 2})`);
+    svg.appendChild(hint);
     return;
   }
 
-  const { byId } = layoutTree(nodes, scene.edges || []);
+  const { groups } = layoutArchitecture(scene, textWidth);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
 
-  // group captions: a hairline rule, never a heavy frame
+  // ---- containers, outermost first so nesting reads correctly ----------------
   const gLayer = el("g");
   root.appendChild(gLayer);
-  for (const g of scene.groups || []) {
-    const members = nodes.filter((n) => n.group === g.id);
-    if (members.length === 0) continue;
-    const minX = Math.min(...members.map((n) => n.x)) - 18;
-    const maxX = Math.max(...members.map((n) => n.x + n._w)) + 18;
-    const topY = Math.min(...members.map((n) => n.y)) - 30;
-    gLayer.appendChild(el("line", { class: "group-rule", x1: minX, y1: topY, x2: maxX, y2: topY }));
-    const t = el("text", { class: "group-name", x: minX, y: topY - 9 });
-    t.textContent = g.label || "";
-    gLayer.appendChild(t);
+  for (const g of groups) {
+    const box = el("g", { class: `container depth-${Math.min(g.depth, 3)}` });
+    box.appendChild(el("rect", {
+      class: "container-box",
+      x: g.x, y: g.y, width: g.w, height: g.h, rx: 10,
+    }));
+
+    const title = el("text", { class: "container-name", x: g.x + 14, y: g.y + 21 });
+    title.textContent = g.label || "";
+    box.appendChild(title);
+
+    if (g.subtitle) {
+      const sub = el("text", {
+        class: "container-subtitle",
+        x: g.x + 16 + textWidth(g.label || "", 12, 700),
+        y: g.y + 21,
+      });
+      sub.textContent = g.subtitle;
+      box.appendChild(sub);
+    }
+    gLayer.appendChild(box);
   }
 
-  // branches
+  // ---- connectors ------------------------------------------------------------
   const eLayer = el("g");
   root.appendChild(eLayer);
+
+  /** True when a point lands on a node card, where a label would be unreadable. */
+  const overlapsNode = (x, y) =>
+    nodes.some((n) => x > n.x - 6 && x < n.x + n.w + 6 && y > n.y - 6 && y < n.y + n.h + 6);
+
   for (const e of scene.edges || []) {
     const a = byId.get(e.from), b = byId.get(e.to);
     if (!a || !b) continue;
 
-    // Tree branches carry the structure and get a label. Cross-links are context,
-    // not structure: hairline, no label, so they never compete with the reading.
-    const cls = e._tree
-      ? "edge" + (e.kind === "dependency" || e.kind === "association" ? " soft" : "")
-      : "edge cross";
-    eLayer.appendChild(el("path", { class: cls, d: branchPath(a, b) }));
+    const soft = e.kind === "dependency" || e.kind === "association";
+    const { d, mx, my } = routePath(a, b);
+    eLayer.appendChild(el("path", {
+      class: "edge" + (soft ? " soft" : ""),
+      d,
+      "marker-end": "url(#arrow)",
+    }));
 
-    if (e.label && e._tree) {
-      const mx = (a.x + a._w + b.x) / 2, my = (a.y + b.y) / 2;
+    // A numbered step badge is what turns a picture into a walkthrough. A step and
+    // a label at the same point would collide, so the badge wins.
+    if (e.step) {
+      eLayer.appendChild(el("circle", { class: "step-badge", cx: mx, cy: my, r: 11 }));
+      const num = el("text", { class: "step-num", x: mx, y: my });
+      num.textContent = String(e.step);
+      const tip = el("title");
+      tip.textContent = e.label ? `Step ${e.step}: ${e.label}` : `Step ${e.step}`;
+      num.appendChild(tip);
+      eLayer.appendChild(num);
+    } else if (e.label && !overlapsNode(mx, my)) {
       const w = textWidth(e.label, 11, 450) + 12;
       eLayer.appendChild(el("rect", {
-        class: "edge-label-bg", x: mx - w / 2, y: my - 8, width: w, height: 16, rx: 4,
+        class: "edge-label-bg", x: mx - w / 2, y: my - 9, width: w, height: 18, rx: 4,
       }));
       const t = el("text", { class: "edge-label", x: mx, y: my });
       t.textContent = e.label;
@@ -256,54 +256,63 @@ export function renderScene(svg, scene, view) {
     }
   }
 
-  // nodes
+  // ---- node cards ------------------------------------------------------------
   const nLayer = el("g");
   root.appendChild(nLayer);
   for (const n of nodes) {
     const tone = toneFor(n.kind);
     const g = el("g", {
-      class: ["node", n.root && "root", tone, n.locked && "pinned"].filter(Boolean).join(" "),
+      class: ["node", tone, n.locked && "pinned"].filter(Boolean).join(" "),
       "data-id": n.id,
     });
 
     g.appendChild(el("rect", {
-      class: "node-plate",
-      x: n.x - 7, y: n.y - n._h / 2 - 3,
-      width: n._w + 14, height: n._h + 6, rx: 7,
+      class: "node-card", x: n.x, y: n.y, width: n.w, height: n.h, rx: 8,
     }));
 
-    // Small dot marking a user-pinned node.
-    g.appendChild(el("circle", {
-      class: "node-pin", cx: n.x + n._w + 11, cy: n.y - n._h / 2 + 1, r: 2.5,
-    }));
-
-    const ic = el("g", { transform: `translate(${n.x}, ${n.y - 8}) scale(0.66)` });
+    const ic = el("g", { transform: `translate(${n.x + 12}, ${n.y + n.h / 2 - 11}) scale(0.92)` });
     ic.appendChild(el("path", { class: "node-icon", d: ICONS[iconFor(n.label, n.kind)] || ICONS.box }));
     g.appendChild(ic);
 
+    const tx = n.x + 40;
     const label = el("text", {
-      class: "node-label", x: n.x + ICON_W, y: n.desc ? n.y - 7 : n.y,
+      class: "node-label", x: tx, y: n.desc ? n.y + n.h / 2 - 7 : n.y + n.h / 2,
     });
-    label.textContent = n.label;
+    label.textContent = n.labelText ?? n.label;
+    // Full text on hover, since the card may have truncated it.
+    const tip = el("title");
+    tip.textContent = n.desc ? `${n.label} — ${n.desc}` : n.label;
+    g.appendChild(tip);
     g.appendChild(label);
 
     if (n.desc) {
-      const d = el("text", { class: "node-desc", x: n.x + ICON_W, y: n.y + 11 });
-      d.textContent = n.desc;
+      const d = el("text", { class: "node-desc", x: tx, y: n.y + n.h / 2 + 11 });
+      d.textContent = n.descText ?? n.desc;
       g.appendChild(d);
     }
+
+    // Small dot marking a user-pinned node.
+    g.appendChild(el("circle", {
+      class: "node-pin", cx: n.x + n.w - 9, cy: n.y + 9, r: 3,
+    }));
+
     nLayer.appendChild(g);
   }
 
   root.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
-  return { bounds: bounds(nodes) };
+  return { bounds: bounds(nodes, groups) };
 }
 
-export function bounds(nodes) {
-  if (!nodes.length) return { x: 0, y: 0, w: 0, h: 0 };
-  const minX = Math.min(...nodes.map((n) => n.x));
-  const maxX = Math.max(...nodes.map((n) => n.x + n._w));
-  const minY = Math.min(...nodes.map((n) => n.y - n._h / 2));
-  const maxY = Math.max(...nodes.map((n) => n.y + n._h / 2));
+export function bounds(nodes, groups = []) {
+  const boxes = [
+    ...nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })),
+    ...groups.map((g) => ({ x: g.x, y: g.y, w: g.w, h: g.h })),
+  ].filter((b) => Number.isFinite(b.x) && Number.isFinite(b.y));
+
+  if (boxes.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+  const minX = Math.min(...boxes.map((b) => b.x));
+  const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+  const minY = Math.min(...boxes.map((b) => b.y));
+  const maxY = Math.max(...boxes.map((b) => b.y + b.h));
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }

@@ -167,6 +167,7 @@ public sealed class ScenePatchApplier
                     ToNodeId = to,
                     Kind = conn.Kind,
                     Label = conn.Label is null ? null : CleanLabel(conn.Label),
+                    Step = conn.Step is > 0 ? conn.Step : null,
                 });
                 // Both endpoints are part of the live discussion again.
                 graph.TouchNode(from);
@@ -197,9 +198,32 @@ public sealed class ScenePatchApplier
             }
 
             case GroupOp g:
+            {
                 Validate.NonEmpty(index, "group.id", g.Id);
-                if (graph.ContainsGroup(g.Id)) break;
-                graph.AddGroup(new SceneGroup { Id = g.Id, Label = CleanLabel(g.Label) });
+                // Upsert rather than short-circuit: an architecture boundary is
+                // discovered incrementally as people talk, so a later pass must be
+                // able to add members to a container that already exists.
+                if (!graph.Groups.TryGetValue(g.Id, out var group))
+                {
+                    group = new SceneGroup { Id = g.Id, Label = CleanLabel(g.Label) };
+                    graph.AddGroup(group);
+                }
+                else if (!string.IsNullOrWhiteSpace(g.Label))
+                {
+                    group.Label = CleanLabel(g.Label);
+                }
+
+                if (!string.IsNullOrWhiteSpace(g.Subtitle))
+                    group.Subtitle = CleanLabel(g.Subtitle);
+
+                // Nesting, guarded against cycles (a container cannot contain itself).
+                if (!string.IsNullOrWhiteSpace(g.ParentGroupId) &&
+                    graph.ContainsGroup(g.ParentGroupId) &&
+                    !CreatesGroupCycle(graph, g.Id, g.ParentGroupId))
+                {
+                    group.ParentGroupId = g.ParentGroupId;
+                }
+
                 foreach (var nid in g.NodeIds ?? Array.Empty<string>())
                 {
                     if (string.IsNullOrEmpty(nid)) continue;
@@ -207,6 +231,7 @@ public sealed class ScenePatchApplier
                     if (graph.ContainsNode(rid)) graph.Nodes[rid].GroupId = g.Id;
                 }
                 break;
+            }
 
             case UngroupOp ug:
                 Validate.NonEmpty(index, "ungroup.id", ug.Id);
@@ -327,6 +352,22 @@ public sealed class ScenePatchApplier
 
     /// <summary>Normalised key for fuzzy label/text identity: lower-cased,
     /// punctuation removed, whitespace collapsed.</summary>
+    /// <summary>
+    /// True when making <paramref name="parentId"/> the parent of
+    /// <paramref name="groupId"/> would close a containment loop.
+    /// </summary>
+    private static bool CreatesGroupCycle(SceneGraph graph, string groupId, string parentId)
+    {
+        var cursor = parentId;
+        var guard = 0;
+        while (cursor is not null && guard++ < 64)
+        {
+            if (string.Equals(cursor, groupId, StringComparison.Ordinal)) return true;
+            cursor = graph.Groups.TryGetValue(cursor, out var g) ? g.ParentGroupId : null;
+        }
+        return false;
+    }
+
     internal static string Normalize(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return string.Empty;
