@@ -29,6 +29,12 @@ public sealed class ExcalidrawCanvas : UserControl
     private bool _initFailed;
 
     public SceneGraph? Scene { get; set; }
+
+    /// <summary>
+    /// Optional official Azure icon set. Null or empty falls back to bundled icons.
+    /// </summary>
+    public AzureIconLibrary? AzureIcons { get; set; }
+
     public event EventHandler<ExcalidrawSceneChangedEventArgs>? UserSceneChanged;
 
     public ExcalidrawCanvas()
@@ -137,7 +143,7 @@ public sealed class ExcalidrawCanvas : UserControl
                 // The canvas renderer does its own layout, so it receives the graph's
                 // meaning rather than drawing instructions — a far smaller payload to
                 // push across the bridge several times a minute during a meeting.
-                json = SceneToCanvasJson.Serialize(Scene, Scene.Revision);
+                json = SceneToCanvasJson.Serialize(Scene, Scene.Revision, AzureIcons);
             }
         }
         catch

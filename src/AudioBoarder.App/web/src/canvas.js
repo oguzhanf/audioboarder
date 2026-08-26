@@ -270,9 +270,28 @@ export function renderScene(svg, scene, view) {
       class: "node-card", x: n.x, y: n.y, width: n.w, height: n.h, rx: 8,
     }));
 
-    const ic = el("g", { transform: `translate(${n.x + 12}, ${n.y + n.h / 2 - 11}) scale(0.92)` });
-    ic.appendChild(el("path", { class: "node-icon", d: ICONS[iconFor(n.label, n.kind)] || ICONS.box }));
-    g.appendChild(ic);
+    // Official Azure artwork when the user has the icon set; otherwise a bundled
+    // generic icon. Official icons are inserted verbatim and never recoloured,
+    // cropped or rotated, per Microsoft's icon terms.
+    if (n.svg) {
+      const holder = el("g", {
+        class: "node-art",
+        transform: `translate(${n.x + 10}, ${n.y + n.h / 2 - 13})`,
+      });
+      // Parsed rather than assigned as innerHTML so the SVG root is scaled to fit.
+      const parsed = new DOMParser().parseFromString(n.svg, "image/svg+xml");
+      const art = parsed.documentElement;
+      if (art && art.nodeName.toLowerCase() === "svg") {
+        art.setAttribute("width", "26");
+        art.setAttribute("height", "26");
+        holder.appendChild(document.importNode(art, true));
+        g.appendChild(holder);
+      }
+    } else {
+      const ic = el("g", { transform: `translate(${n.x + 12}, ${n.y + n.h / 2 - 11}) scale(0.92)` });
+      ic.appendChild(el("path", { class: "node-icon", d: ICONS[iconFor(n.label, n.kind)] || ICONS.box }));
+      g.appendChild(ic);
+    }
 
     const tx = n.x + 40;
     const label = el("text", {

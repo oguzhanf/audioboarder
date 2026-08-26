@@ -291,6 +291,16 @@ public partial class App : Application
         builder.Services.AddSingleton(_ => new SceneBudget(
             settings.Realtime.MaxNodes, settings.Realtime.MaxNotes));
 
+        // Official Azure artwork, if the user has downloaded the icon set and pointed
+        // us at it. Absent that, nodes use the bundled generic icons.
+        builder.Services.AddSingleton(sp =>
+        {
+            var library = AzureIconLibrary.Load(settings.Realtime.AzureIconsPath);
+            if (library.Count > 0)
+                Log.Information("Loaded {Count} official Azure icons from {Path}", library.Count, library.Root);
+            return library;
+        });
+
         builder.Services.AddSingleton<DiagramTheme>(_ =>
             string.Equals(settings.Theme, "Dark", StringComparison.OrdinalIgnoreCase)
                 ? DiagramTheme.Dark : DiagramTheme.Light);

@@ -159,7 +159,10 @@ sibling of the same family (e.g. `gpt-5-6-luna`) rather than an older small mode
 
 ## Diagram richness
 
-Four mechanisms keep the board from degenerating into identical rectangles:
+AudioBoarder aims at the visual language of the
+[Azure Architecture Center](https://learn.microsoft.com/azure/architecture/browse/):
+named products inside nested boundaries, with a numbered path a reader can follow. Four
+mechanisms keep the board from degenerating into identical rectangles:
 
 **Icons.** Every node carries a vector icon drawn inside its shape. `IconRegistry`
 resolves one from the label for ~140 known technologies and concepts — Purview, Fabric,
@@ -168,8 +171,36 @@ Icons are embedded [Lucide](https://lucide.dev) SVG paths (ISC licence), so they
 crisply at any zoom, take the node's own colour, and work fully offline with no network
 fetch. Matching is whole-word, so "Staging environment" doesn't pick up a price tag.
 
-**System boundaries.** A `group` op draws a tinted, dashed, labelled container behind its
-members, so a platform or team reads as a box you can point at.
+### Official Azure icons (optional)
+
+For diagrams of Azure workloads you can have AudioBoarder draw nodes with Microsoft's
+real product artwork instead of the generic icons.
+
+The icon set is **not** shipped with AudioBoarder. Microsoft's terms permit copying and
+displaying the icons *only* for architectural diagrams, training material and
+documentation, so you download the set yourself — which is where you accept those terms
+— and point the app at it:
+
+1. Download the SVG icons from
+   [Azure architecture icons](https://learn.microsoft.com/azure/architecture/icons/).
+2. Extract the archive anywhere.
+3. Set the folder in `appsettings.Local.json`:
+
+```json
+{ "AudioBoarder": { "Realtime": { "AzureIconsPath": "C:\\azure-icons" } } }
+```
+
+Icons are rendered verbatim — never cropped, flipped, rotated or recoloured — per those
+terms. If the path is missing or unreadable the app silently uses its bundled icons.
+
+**System boundaries.** Containers nest the way real topologies do — subscription >
+virtual network > subnet > resource — each drawn as a labelled box with an optional
+qualifier such as an address range. Nesting is what makes a board read as an
+architecture rather than a flat bag of components.
+
+**Numbered request paths.** When the discussion walks through a flow, each connection
+carries a step number and the board draws the badges, so a reader can follow the path in
+order. This mirrors the Dataflow sections in the Azure Architecture Center.
 
 **Labelled interactions.** Connections between distinct things carry a descriptive label
 in the speakers' own terms — "classifies data in", "blocks access when", "owns

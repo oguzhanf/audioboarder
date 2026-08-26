@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
+using AudioBoarder.Core.Scene;
 using AudioBoarder.Services.Rendering;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
@@ -22,7 +23,7 @@ public partial class MainWindow : FluentWindow
     private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
 
-    public MainWindow(MainViewModel viewModel, SceneRenderer renderer)
+    public MainWindow(MainViewModel viewModel, SceneRenderer renderer, AzureIconLibrary azureIcons)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -34,6 +35,7 @@ public partial class MainWindow : FluentWindow
         Canvas.Scene = viewModel.Scene;
         Canvas.Renderer = renderer;
         Whiteboard.Scene = viewModel.Scene;
+        Whiteboard.AzureIcons = azureIcons;
         Whiteboard.UserSceneChanged += OnWhiteboardUserSceneChanged;
         Whiteboard.Refresh();
         viewModel.SceneInvalidated += (_, _) =>

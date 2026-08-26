@@ -26,9 +26,10 @@ public static class SceneToCanvasJson
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static string Serialize(SceneGraph graph, int revision)
+    public static string Serialize(SceneGraph graph, int revision, AzureIconLibrary? icons = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
+        icons ??= AzureIconLibrary.Empty;
 
         CanvasScene payload;
         lock (graph.SyncRoot)
@@ -50,6 +51,9 @@ public static class SceneToCanvasJson
                         // the user's placement instead of re-laying them out every pass.
                         X = n.Locked ? n.X : null,
                         Y = n.Locked ? n.Y : null,
+                        // Official Azure artwork when the user has pointed us at the
+                        // icon set; the renderer falls back to a bundled icon otherwise.
+                        Svg = ResolveOfficialIcon(icons, n.Label),
                     })
                     .ToArray(),
                 Edges = graph.Edges.Values
@@ -76,6 +80,16 @@ public static class SceneToCanvasJson
         }
 
         return JsonSerializer.Serialize(payload, Options);
+    }
+
+    /// <summary>
+    /// Official Azure icon markup for a label, or null to fall back. Icons are sent
+    /// verbatim: Microsoft's terms forbid cropping, flipping, rotating or recolouring.
+    /// </summary>
+    private static string? ResolveOfficialIcon(AzureIconLibrary icons, string? label)
+    {
+        var path = icons.FindPath(label);
+        return path is null ? null : icons.ReadSvg(path);
     }
 
     /// <summary>NodeKind.DataStore -> "data_store", matching the LLM DSL vocabulary.</summary>
@@ -108,6 +122,9 @@ public static class SceneToCanvasJson
         public bool? Locked { get; init; }
         public double? X { get; init; }
         public double? Y { get; init; }
+
+        /// <summary>Official Azure icon markup, when the user has the icon set.</summary>
+        public string? Svg { get; init; }
     }
 
     private sealed class CanvasEdge

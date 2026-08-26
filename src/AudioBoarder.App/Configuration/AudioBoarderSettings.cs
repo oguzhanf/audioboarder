@@ -86,6 +86,19 @@ public sealed class RealtimeSettings
     /// <summary>Maximum notes kept in the rail. General commentary is dropped before
     /// decisions, action items, risks and questions. Negative disables the cap.</summary>
     public int MaxNotes { get; set; } = 24;
+
+    /// <summary>
+    /// Folder containing Microsoft's official Azure architecture icons, used to draw
+    /// nodes with real product artwork instead of the bundled generic icons.
+    /// <para>
+    /// The icons are not shipped with AudioBoarder: Microsoft's terms permit copying
+    /// and displaying them only for architectural diagrams, training material and
+    /// documentation. Download the set from
+    /// https://learn.microsoft.com/azure/architecture/icons/ (which is where you
+    /// accept those terms), extract it, and point this at the folder.
+    /// </para>
+    /// </summary>
+    public string? AzureIconsPath { get; set; }
 }
 
 public sealed class ImageGenerationSettings
