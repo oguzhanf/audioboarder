@@ -44,17 +44,23 @@ public sealed class GitHubUpdateService
         if (!IsMsiInstallation())
             return null;
 
+        // The check now gates startup, so it must never hang it. The shared HttpClient
+        // has no timeout (the installer download needs that), so bound this call here.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        var ct = timeout.Token;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUrl);
         request.Headers.UserAgent.ParseAdd($"AudioBoarder/{CurrentVersion}");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
         using var response = await _httpClient.SendAsync(
-            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         var release = ParseRelease(document.RootElement, CurrentVersion);
         return release is not null && ShouldOffer(release.TagName) ? release : null;
     }

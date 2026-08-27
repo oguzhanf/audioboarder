@@ -42,7 +42,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<AudioDeviceInfo> InputDevices { get; } = new();
     public SceneGraph Scene => _orchestrator.Scene;
 
-    [ObservableProperty] private string statusMessage = "Initializing…";
+    [ObservableProperty] private string statusMessage = "Checking for updates…";
     [ObservableProperty] private bool isListening;
     [ObservableProperty] private bool isGenerating;
     [ObservableProperty] private string? refinementInstruction;

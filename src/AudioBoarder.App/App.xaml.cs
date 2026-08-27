@@ -67,29 +67,45 @@ public partial class App : Application
 
     private static async Task RunStartupSequenceAsync(Window owner, IServiceProvider services)
     {
+        // Update check FIRST. Health probes sign in to Azure, discover deployments and
+        // warm the transcription backend — tens of seconds of work whose results are
+        // thrown away if the user then accepts an update and the app restarts. Asking
+        // about the update before that work begins avoids the waste, and means a user
+        // never spends time in a build that is about to be replaced.
+        var updating = await CheckForUpdatesAsync(owner, services);
+        if (updating) return;
+
         await RunStartupTasksAsync(services);
-        await CheckForUpdatesAsync(owner, services);
     }
 
-    private static async Task CheckForUpdatesAsync(Window owner, IServiceProvider services)
+    /// <summary>
+    /// Offers any newer release. Returns true when the update window is showing, so
+    /// the caller can skip startup work the restart would discard.
+    /// </summary>
+    private static async Task<bool> CheckForUpdatesAsync(Window owner, IServiceProvider services)
     {
         try
         {
             var updateService = services.GetRequiredService<GitHubUpdateService>();
             var release = await updateService.CheckAsync();
             if (release is null || !owner.IsVisible)
-                return;
+                return false;
 
             await owner.Dispatcher.InvokeAsync(() =>
             {
                 var viewModel = services.GetRequiredService<MainViewModel>();
                 var updateWindow = new UpdateWindow(updateService, release, viewModel) { Owner = owner };
+                // If the user defers or the download fails, the app carries on as a
+                // normal session — so health probes must still run.
+                updateWindow.Closed += (_, _) => _ = RunStartupTasksAsync(services);
                 updateWindow.Show();
             });
+            return true;
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "GitHub update check failed");
+            return false;
         }
     }
 
