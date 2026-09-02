@@ -166,4 +166,56 @@ public class AudioPipelineContinuityTests
         sink.ForceFlushObservedCount.Should().Be(20,
             "the final flush must run only after all queued chunks reach the transcriber");
     }
+
+    [Fact]
+    public async Task DiagnosticsAggregateBackendRuntimeState()
+    {
+        var sink = new DiagnosticsTranscription();
+        await using var pipe = new AudioPipeline(
+            Array.Empty<IAudioCaptureSource>(),
+            () => sink,
+            new PassThroughVoiceActivityDetector(),
+            new TranscriptBuffer(TimeSpan.FromMinutes(1)));
+
+        await pipe.StartAsync(CancellationToken.None);
+        pipe.Diagnostics.State.Should().Be(AudioPipelineRuntimeState.Running);
+
+        var retryAt = DateTimeOffset.UtcNow.AddSeconds(2);
+        sink.Publish(new TranscriptionDiagnostics(
+            TranscriptionRuntimeState.RateLimited,
+            TimeSpan.FromSeconds(3),
+            retryAt,
+            SafeErrorCode: "rate_limited"));
+
+        pipe.Diagnostics.State.Should().Be(AudioPipelineRuntimeState.Degraded);
+        pipe.Diagnostics.PendingBackendAudio.Should().Be(TimeSpan.FromSeconds(3));
+        pipe.Diagnostics.RetryAt.Should().Be(retryAt);
+        pipe.Diagnostics.SafeErrorCode.Should().Be("rate_limited");
+
+        await pipe.StopAsync(CancellationToken.None);
+        pipe.Diagnostics.State.Should().Be(AudioPipelineRuntimeState.Stopped);
+    }
+
+    private sealed class DiagnosticsTranscription :
+        ITranscriptionService, ITranscriptionDiagnosticsSource
+    {
+        public string Name => "diagnostics";
+        public bool IsReady => true;
+        public TranscriptionDiagnostics Diagnostics { get; private set; } =
+            TranscriptionDiagnostics.Healthy;
+        public event EventHandler<TranscriptionDiagnostics>? DiagnosticsChanged;
+        public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(
+            AudioChunk chunk, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(
+            CancellationToken ct, bool force = false) =>
+            Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public void Publish(TranscriptionDiagnostics diagnostics)
+        {
+            Diagnostics = diagnostics;
+            DiagnosticsChanged?.Invoke(this, diagnostics);
+        }
+    }
 }

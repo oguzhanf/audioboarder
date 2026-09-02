@@ -14,6 +14,7 @@ namespace AudioBoarder.App.Controls;
 /// </summary>
 public class SceneCanvas : SKElement
 {
+    public event EventHandler? UserGeometryChanged;
     public static readonly DependencyProperty SceneProperty = DependencyProperty.Register(
         nameof(Scene), typeof(SceneGraph), typeof(SceneCanvas),
         new PropertyMetadata(null, (d, _) => ((SceneCanvas)d).InvalidateVisual()));
@@ -166,11 +167,15 @@ public class SceneCanvas : SKElement
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
     {
         if (_draggingNode is null) return;
-        _draggingNode.Locked = true;
+        var node = _draggingNode;
+        if (Scene is not null && node.X.HasValue && node.Y.HasValue)
+            Scene.TryUpdateNodeGeometry(
+                node.Id, node.X.Value, node.Y.Value, node.Width, node.Height, locked: true);
         _draggingNode = null;
         ReleaseMouseCapture();
         Cursor = Cursors.Arrow;
         InvalidateVisual();
+        UserGeometryChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private SceneNode? HitTest(double wx, double wy)

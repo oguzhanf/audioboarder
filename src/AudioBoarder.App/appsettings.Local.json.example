@@ -43,8 +43,15 @@
     },
 
     "Diagnostics": {
-      // KEEP FALSE unless debugging: true writes transcripts and prompts to disk.
-      "VerbosePayloadLogging": false
+      // Shipped logging does not emit transcript/model bodies.
+      "VerbosePayloadLogging": false,
+      // Local numeric EventSource timing/count metrics only; no external telemetry.
+      "EnableLocalPerformanceTelemetry": false
+    },
+
+    "ImageGeneration": {
+      // Optional and off by default. The live SVG canvas does not require images.
+      "Enabled": false
     }
   }
 }

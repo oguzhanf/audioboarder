@@ -17,6 +17,7 @@ public sealed record LayoutOptions(
     double CanvasHeight = 800,
     double HorizontalSpacing = 60,
     double VerticalSpacing = 80,
-    double Padding = 40);
+    double Padding = 40,
+    bool ReflowPinned = false);
 
 public sealed record LayoutResult(int NodesPositioned, double BoundsWidth, double BoundsHeight);

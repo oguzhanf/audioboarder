@@ -78,7 +78,8 @@ public sealed class FoundryDiscovery
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Could not enumerate deployments for account {Name}; skipping", account.Data.Name);
+                    _logger.LogWarning("Could not enumerate deployments for one account; category={Category}",
+                        ex.GetType().Name);
                 }
             }
 
@@ -136,12 +137,12 @@ public sealed class FoundryDiscovery
             var transcribeEndpoint = transcribePrimary is not null ? EndpointFor(transcribePrimary.Account) : null;
 
             _logger.LogInformation(
-                "Discovered across {AccountCount} account(s); chat={Chat}@{ChatAcct} fast={Fast} image={Image}@{ImageAcct} transcribe={Transcribe}@{TransAcct}",
+                "Discovered across {AccountCount} account(s); chat={Chat} fast={Fast} image={Image} transcribe={Transcribe}",
                 accounts.Count,
-                primaryChat?.Deployment.Data.Name, primaryChat?.Account.Data.Name,
+                primaryChat?.Deployment.Data.Name,
                 fastChat?.Deployment.Data.Name,
-                imagePrimary?.Deployment.Data.Name, imagePrimary?.Account.Data.Name,
-                transcribePrimary?.Deployment.Data.Name, transcribePrimary?.Account.Data.Name);
+                imagePrimary?.Deployment.Data.Name,
+                transcribePrimary?.Deployment.Data.Name);
 
             return new DiscoveryResult(
                 Success: primaryChat is not null,

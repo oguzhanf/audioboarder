@@ -1,11 +1,7 @@
 using System.Windows;
-using System.Windows.Automation;
-using System.Collections.Specialized;
 using System.ComponentModel;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
-using AudioBoarder.Core.Scene;
-using AudioBoarder.Services.Rendering;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
 
@@ -13,17 +9,13 @@ namespace AudioBoarder.App;
 
 public partial class MainWindow : FluentWindow
 {
-    private const double TranscriptPaneMinWidth = 220d;
-    private const double NotesPaneMinWidth = 240d;
     private const double NumericTolerance = 0.5d;
 
     private readonly MainViewModel _viewModel;
-    private bool _isTranscriptPaneVisible = true;
-    private bool _isNotesPaneVisible = true;
     private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
 
-    public MainWindow(MainViewModel viewModel, SceneRenderer renderer, AzureIconLibrary azureIcons)
+    public MainWindow(MainViewModel viewModel, AudioBoarder.Core.Scene.AzureIconLibrary azureIcons)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -32,8 +24,6 @@ public partial class MainWindow : FluentWindow
         Loaded += OnLoaded;
         Closing += OnClosing;
 
-        Canvas.Scene = viewModel.Scene;
-        Canvas.Renderer = renderer;
         Whiteboard.Scene = viewModel.Scene;
         Whiteboard.AzureIcons = azureIcons;
         Whiteboard.UserSceneChanged += OnWhiteboardUserSceneChanged;
@@ -41,7 +31,6 @@ public partial class MainWindow : FluentWindow
         viewModel.SceneInvalidated += (_, _) =>
         {
             _activeWhiteboardRevision = null;
-            Canvas.Invalidate();
             Whiteboard.Refresh();
         };
 
@@ -51,8 +40,6 @@ public partial class MainWindow : FluentWindow
             if (e.PropertyName == nameof(MainViewModel.TranscriptDisplay))
                 Dispatcher.BeginInvoke(() => TranscriptBox.ScrollToEnd());
         };
-
-        UpdateSidePaneLayout();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -82,56 +69,8 @@ public partial class MainWindow : FluentWindow
         Whiteboard.UserSceneChanged -= OnWhiteboardUserSceneChanged;
     }
 
-    private void OnToggleTranscriptPane(object sender, RoutedEventArgs e)
-    {
-        _isTranscriptPaneVisible = !_isTranscriptPaneVisible;
-        UpdateSidePaneLayout();
-    }
-
-    private void OnToggleNotesPane(object sender, RoutedEventArgs e)
-    {
-        _isNotesPaneVisible = !_isNotesPaneVisible;
-        UpdateSidePaneLayout();
-    }
-
     private void OnShowWelcome(object sender, RoutedEventArgs e)
         => Onboarding.FirstRunExperience.Show(this, markComplete: false);
-
-    private void UpdateSidePaneLayout()
-    {
-        // Restore the proportional widths declared in XAML rather than fixed pixels,
-        // so an open rail still gives ground to the canvas as the window narrows.
-        // MinWidth has to be cleared when collapsing or the column can't reach zero.
-        TranscriptPane.Visibility = _isTranscriptPaneVisible ? Visibility.Visible : Visibility.Collapsed;
-        TranscriptColumn.MinWidth = _isTranscriptPaneVisible ? TranscriptPaneMinWidth : 0d;
-        TranscriptColumn.Width = _isTranscriptPaneVisible
-            ? new GridLength(0.22, GridUnitType.Star)
-            : new GridLength(0);
-
-        NotesPane.Visibility = _isNotesPaneVisible ? Visibility.Visible : Visibility.Collapsed;
-        NotesColumn.MinWidth = _isNotesPaneVisible ? NotesPaneMinWidth : 0d;
-        NotesColumn.Width = _isNotesPaneVisible
-            ? new GridLength(0.24, GridUnitType.Star)
-            : new GridLength(0);
-
-        SetPaneButtonState(TranscriptPaneButton, "transcript", _isTranscriptPaneVisible);
-        SetPaneButtonState(NotesPaneButton, "notes", _isNotesPaneVisible);
-    }
-
-    /// <summary>
-    /// Updates a pane toggle's affordance. The buttons are icon-only, so state is
-    /// conveyed by appearance (filled while the pane is open) plus tooltip and
-    /// automation name — setting Content here would replace the icon with text.
-    /// </summary>
-    private static void SetPaneButtonState(Button button, string paneName, bool isVisible)
-    {
-        button.Appearance = isVisible
-            ? Wpf.Ui.Controls.ControlAppearance.Secondary
-            : Wpf.Ui.Controls.ControlAppearance.Transparent;
-        var action = isVisible ? "Hide" : "Show";
-        button.ToolTip = $"{action} the {paneName} side panel.";
-        AutomationProperties.SetName(button, $"{action} {paneName} panel");
-    }
 
     private void OnWhiteboardUserSceneChanged(object? sender, ExcalidrawSceneChangedEventArgs e)
     {
@@ -143,6 +82,7 @@ public partial class MainWindow : FluentWindow
                 return;
             _activeWhiteboardRevision = revision;
         }
+
         var updated = false;
 
         lock (scene.SyncRoot)
@@ -171,7 +111,6 @@ public partial class MainWindow : FluentWindow
 
         if (updated)
         {
-            Canvas.Invalidate();
             _viewModel.NotifyUserSceneEdited();
         }
     }

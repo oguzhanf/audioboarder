@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Http;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.LLM;
@@ -105,7 +106,7 @@ public sealed class StartupHealthService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Audio probe failed");
+            _logger.LogError("Audio probe failed; category={Category}", SafeCategory(ex));
             SetIfLatest(AudioKey, gen, Failed("Audio devices", ex));
         }
     }
@@ -121,7 +122,7 @@ public sealed class StartupHealthService
         try { svc = factory(); }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Transcription factory failed");
+            _logger.LogError("Transcription factory failed; category={Category}", SafeCategory(ex));
             SetIfLatest(TranscriptionKey, gen, Failed("Transcription", ex));
             return;
         }
@@ -145,7 +146,9 @@ public sealed class StartupHealthService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Transcription probe failed for {Name}", svc.Name);
+            _logger.LogError(
+                "Transcription probe failed for {Name}; category={Category}",
+                svc.Name, SafeCategory(ex));
             SetIfLatest(TranscriptionKey, gen, Failed(title, ex));
         }
     }
@@ -205,9 +208,10 @@ public sealed class StartupHealthService
                     ctOpts.DeploymentName = result.TranscribeDeploymentName;
                 ctOpts.Endpoint = result.TranscribeEndpoint ?? result.Endpoint;
 
-                var detail = $"{result.Endpoint} / {result.DeploymentName}";
+                var detail = $"Ready ({result.DeploymentName})";
                 if (result.FallbackDeploymentName is not null) detail += $" (fast: {result.FallbackDeploymentName})";
-                if (result.ImageDeploymentName is not null) detail += $" · image: {result.ImageDeploymentName}";
+                if (!imgSection.Enabled) detail += " · image: disabled";
+                else if (result.ImageDeploymentName is not null) detail += $" · image: {result.ImageDeploymentName}";
                 if (result.TranscribeDeploymentName is not null) detail += $" · transcribe: {result.TranscribeDeploymentName}";
 
                 SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Ready, "Azure OpenAI", detail, DateTimeOffset.UtcNow));
@@ -221,7 +225,12 @@ public sealed class StartupHealthService
                     _ = Task.Run(async () =>
                     {
                         try { await RunTranscriptionAsync(ct).ConfigureAwait(false); }
-                        catch (Exception ex) { _logger.LogWarning(ex, "Post-discovery transcription re-probe failed"); }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(
+                                "Post-discovery transcription re-probe failed; category={Category}",
+                                SafeCategory(ex));
+                        }
                     }, ct);
                 }
             }
@@ -237,12 +246,13 @@ public sealed class StartupHealthService
                     return;
                 }
                 SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Ready, "Azure OpenAI",
-                    $"{endpoint} / {deployment}", DateTimeOffset.UtcNow));
+                    $"Ready ({deployment}) · image: {(imgSection.Enabled ? "enabled" : "disabled")}",
+                    DateTimeOffset.UtcNow));
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Azure probe failed");
+            _logger.LogError("Azure probe failed; category={Category}", SafeCategory(ex));
             SetIfLatest(LlmKey, gen, Failed("Azure OpenAI", ex));
         }
     }
@@ -268,5 +278,17 @@ public sealed class StartupHealthService
         => new(ComponentStatus.Checking, title, detail, DateTimeOffset.UtcNow);
 
     private static HealthState Failed(string title, Exception ex)
-        => new(ComponentStatus.Failed, title, ex.Message, DateTimeOffset.UtcNow);
+        => new(ComponentStatus.Failed, title,
+            $"Unavailable ({SafeCategory(ex)}).", DateTimeOffset.UtcNow);
+
+    private static string SafeCategory(Exception ex) => ex switch
+    {
+        OperationCanceledException => "cancelled",
+        TimeoutException => "timeout",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "rate_limited",
+        HttpRequestException { StatusCode: { } status } when (int)status >= 500 => "service_failure",
+        HttpRequestException => "network",
+        UnauthorizedAccessException => "access_denied",
+        _ => "unavailable",
+    };
 }

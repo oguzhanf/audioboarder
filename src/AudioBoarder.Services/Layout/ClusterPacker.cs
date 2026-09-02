@@ -170,7 +170,10 @@ internal static class ClusterPacker
 
     /// <summary>Writes global positions onto the graph, leaving pinned nodes alone.</summary>
     public static int Commit(
-        SceneGraph graph, Dictionary<string, (double X, double Y)> global, double padding)
+        SceneGraph graph,
+        Dictionary<string, (double X, double Y)> global,
+        double padding,
+        bool reflowPinned = false)
     {
         if (global.Count == 0) return 0;
         var offX = padding - global.Values.Min(p => p.X);
@@ -180,7 +183,7 @@ internal static class ClusterPacker
         foreach (var node in graph.Nodes.Values)
         {
             if (!global.TryGetValue(node.Id, out var p)) continue;
-            if (node.Locked && node.X.HasValue && node.Y.HasValue) continue;
+            if (node.Locked && !reflowPinned && node.X.HasValue && node.Y.HasValue) continue;
             node.X = p.X + offX;
             node.Y = p.Y + offY;
             positioned++;

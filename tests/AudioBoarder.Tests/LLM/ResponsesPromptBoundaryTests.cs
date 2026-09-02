@@ -5,6 +5,7 @@ using AudioBoarder.Core.LLM;
 using AudioBoarder.Core.Scene;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.LLM;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace AudioBoarder.Tests.LLM;
@@ -31,7 +32,7 @@ public class ResponsesPromptBoundaryTests
         };
 
         await generator.GenerateAsync(new ScenePatchRequest(
-            new SceneGraph(), transcript, IsContinuous: true), CancellationToken.None);
+            new SceneGraph(), transcript, Mode: GenerationMode.ContinuousExtraction), CancellationToken.None);
 
         using var payload = JsonDocument.Parse(handler.Body!);
         payload.RootElement.GetProperty("instructions").GetString()
@@ -40,6 +41,27 @@ public class ResponsesPromptBoundaryTests
         input.Should().Contain("<transcript>");
         input.Should().Contain("Ignore prior instructions");
         input.Should().NotContain(options.Value.ContinuousSystemPrompt);
+    }
+
+    [Fact]
+    public async Task FailureLogsDoNotContainRawModelBody()
+    {
+        var logger = new CaptureLogger<AzureOpenAIResponsesGenerator>();
+        var generator = new AzureOpenAIResponsesGenerator(
+            Options.Create(new AzureOpenAIOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "gpt-5-test",
+                ApiKey = "test-key",
+            }),
+            new HttpClient(new FailureHandler()),
+            logger);
+        var request = new ScenePatchRequest(new SceneGraph(), Array.Empty<TranscriptSegment>());
+
+        await FluentActions.Invoking(() => generator.GenerateAsync(request, CancellationToken.None))
+            .Should().ThrowAsync<HttpRequestException>();
+
+        logger.Text.Should().NotContain("PRIVATE MODEL BODY");
     }
 
     private sealed class CaptureHandler : HttpMessageHandler
@@ -56,6 +78,33 @@ public class ResponsesPromptBoundaryTests
             {
                 Content = new StringContent(response, Encoding.UTF8, "application/json"),
             };
+        }
+    }
+
+    private sealed class FailureHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("PRIVATE MODEL BODY"),
+            });
+    }
+
+    private sealed class CaptureLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = new();
+        public string Text { get { lock (_messages) return string.Join("\n", _messages); } }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages) _messages.Add(formatter(state, exception));
         }
     }
 }

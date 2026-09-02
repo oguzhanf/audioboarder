@@ -167,7 +167,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
                 $"Whisper model not found at {modelPath} and AutoDownload=false. Download a ggml model and set Whisper.ModelPath.",
                 modelPath);
 
-        _logger.LogInformation("Downloading Whisper model {Type} -> {Path}", ggmlType, modelPath);
+        _logger.LogInformation("Downloading Whisper model {Type}", ggmlType);
         // Whisper.net 1.9 made the downloader instance-based; the shared instance is
         // exposed as WhisperGgmlDownloader.Default.
         using var stream = await WhisperGgmlDownloader.Default

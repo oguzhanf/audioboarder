@@ -133,7 +133,12 @@ public sealed class MaiTranscribeService : ITranscriptionService
         catch (Exception ex)
         {
             Requeue(batch);
-            _logger.LogWarning(ex, "MAI transcribe failed; audio retained for retry");
+            _logger.LogWarning(
+                "MAI transcribe failed; category={Category} audioBytes={Bytes} retained=true",
+                ex is HttpRequestException { StatusCode: { } status } && (int)status >= 500
+                    ? "service_failure"
+                    : "transcription_failure",
+                batch.Pcm.Length);
             return Array.Empty<TranscriptSegment>();
         }
     }
@@ -166,7 +171,7 @@ public sealed class MaiTranscribeService : ITranscriptionService
         if (!resp.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"MAI transcribe HTTP {(int)resp.StatusCode}: {body[..Math.Min(body.Length, 300)]}",
+                $"MAI transcription request failed with status {(int)resp.StatusCode}.",
                 null,
                 resp.StatusCode);
         }

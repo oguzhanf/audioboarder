@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/AudioBoarder.App/web/package-lock.json
+      - name: Build SVG canvas
+        working-directory: src/AudioBoarder.App/web
+        run: |
+          npm ci
+          npm run build
+      - name: Verify SVG canvas in Edge
+        working-directory: src/AudioBoarder.App/web
+        shell: pwsh
+        run: |
+          $preview = Start-Process node -ArgumentList @("node_modules\vite\bin\vite.js", "preview", "--host", "127.0.0.1", "--port", "5566", "--strictPort") -PassThru
+          try {
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              try {
+                Invoke-WebRequest "http://127.0.0.1:5566/" -UseBasicParsing -TimeoutSec 2 | Out-Null
+                break
+              } catch {
+                if ($attempt -eq 29) { throw }
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            node verify.cjs "http://127.0.0.1:5566/" "" "${{ runner.temp }}\svg-verify.png"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            if (!$preview.HasExited) { Stop-Process -Id $preview.Id -Force }
+          }
+      - name: Restore
+        run: dotnet restore AudioBoarder.sln
+      - name: Build
+        run: dotnet build AudioBoarder.sln --configuration Release --no-restore
+      - name: Test
+        run: dotnet test AudioBoarder.sln --configuration Release --no-build --filter "Category!=LiveModel" --logger "trx;LogFileName=ci-results.trx"
+      - name: Repository privacy scan
+        shell: pwsh
+        run: .\scripts\scan-repository.ps1
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-results
+          path: "**/TestResults/*.trx"
+          if-no-files-found: warn

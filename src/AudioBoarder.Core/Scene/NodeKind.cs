@@ -23,6 +23,9 @@ public enum NodeKind
     /// <summary>A control, policy, or protective capability.</summary>
     Security,
 
+    /// <summary>An identity, principal, credential issuer, or identity provider.</summary>
+    Identity,
+
     /// <summary>A cloud service or hosted platform boundary.</summary>
     Cloud,
 

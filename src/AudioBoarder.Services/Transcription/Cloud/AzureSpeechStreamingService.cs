@@ -160,8 +160,9 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         recognizer.Canceled += (_, e) =>
         {
             if (e.Reason == CancellationReason.Error)
-                _logger.LogWarning("Speech recognizer cancelled: code={Code} details={Details}",
-                    e.ErrorCode, e.ErrorDetails);
+                _logger.LogWarning(
+                    "Speech recognizer cancelled: code={Code} category={Category}",
+                    e.ErrorCode, "speech_service_failure");
         };
         recognizer.SessionStopped += (_, _) => _logger.LogInformation("Speech session stopped for {Role}", role);
 

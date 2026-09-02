@@ -45,10 +45,12 @@ public class SceneBudgetTests
         foreach (var node in graph.Nodes.Values.OrderBy(n => n.Sequence).Take(25))
             node.Locked = true;
 
-        SceneBudgetEnforcer.Enforce(graph, new SceneBudget(MaxNodes: 20));
+        var result = SceneBudgetEnforcer.Enforce(graph, new SceneBudget(MaxNodes: 20));
 
         graph.Nodes.Values.Count(n => n.Locked).Should().Be(25);
         graph.Nodes.Values.Should().OnlyContain(n => n.Locked);
+        result.IsWithinBudget.Should().BeFalse();
+        result.RemainingNodeOverage.Should().Be(5);
     }
 
     [Fact]
@@ -95,10 +97,52 @@ public class SceneBudgetTests
     }
 
     [Fact]
-    public void Enforce_KeepsAFreshlyCreatedGroupWhenNothingWasEvicted()
+    public void Enforce_KeepsParentOnlyNestedBoundariesContainingDescendantNodes()
     {
-        // A group whose member ids did not resolve yet must survive: the applier never
-        // re-populates an existing group, so reaping it here would churn permanently.
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(
+        [
+            new GroupOp("outer", "Outer", Array.Empty<string>()),
+            new GroupOp("middle", "Middle", Array.Empty<string>(), ParentGroupId: "outer"),
+            new GroupOp("inner", "Inner", ["kept"], ParentGroupId: "middle"),
+            new AddNode("kept", NodeKind.Process, "Kept", "inner"),
+            new AddNode("evicted", NodeKind.Process, "Evicted"),
+        ]));
+        graph.Nodes["kept"].Locked = true;
+
+        var result = SceneBudgetEnforcer.Enforce(graph, new SceneBudget(MaxNodes: 1));
+
+        result.NodesEvicted.Should().Be(1);
+        graph.Nodes.Should().ContainKey("kept");
+        graph.Groups.Should().ContainKeys("outer", "middle", "inner");
+        graph.Groups["middle"].ParentGroupId.Should().Be("outer");
+        graph.Groups["inner"].ParentGroupId.Should().Be("middle");
+    }
+
+    [Fact]
+    public void RemovingParentGroupDetachesNestedChildBoundary()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(
+        [
+            new GroupOp("parent", "Parent", Array.Empty<string>()),
+            new GroupOp("child", "Child", Array.Empty<string>(), ParentGroupId: "parent"),
+        ]));
+
+        _applier.Apply(graph, new ScenePatch(
+        [
+            new UngroupOp("parent"),
+        ]));
+
+        graph.Groups.Should().NotContainKey("parent");
+        graph.Groups["child"].ParentGroupId.Should().BeNull();
+    }
+
+    [Fact]
+    public void Enforce_RemovesEmptyGeneratedGroupWhenNothingWasEvicted()
+    {
+        // Patch application is dependency-ordered now. Once the complete patch has
+        // applied, a boundary with no real member or child is genuinely empty.
         var graph = new SceneGraph();
         _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
         {
@@ -108,7 +152,46 @@ public class SceneBudgetTests
 
         var result = SceneBudgetEnforcer.Enforce(graph, new SceneBudget(MaxNodes: 42));
 
-        graph.Groups.Should().ContainKey("fresh");
+        graph.Groups.Should().NotContainKey("fresh");
+        result.GroupsRemoved.Should().Be(1);
+    }
+
+    [Fact]
+    public void ProvisionalOnlyModeStillEnforcesNoteBudget()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(
+            Enumerable.Range(0, 12)
+                .Select(i => (ScenePatchOperation)new NoteUpsert(
+                    $"n{i}", NoteKind.General, $"note {i}"))
+                .ToArray()));
+
+        var result = SceneBudgetEnforcer.Enforce(
+            graph,
+            new SceneBudget(MaxNodes: 80, MaxNotes: 3),
+            provisionalOnly: true);
+
+        graph.Notes.Should().HaveCount(3);
+        result.NotesEvicted.Should().Be(9);
+        result.IsWithinBudget.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ProvisionalOnlyModePreservesUserEditedEmptyBoundary()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch(
+        [
+            new GroupOp("curated", "Curated boundary", Array.Empty<string>()),
+        ]));
+        graph.Groups["curated"].LifecycleState = ElementLifecycleState.UserEdited;
+
+        var result = SceneBudgetEnforcer.Enforce(
+            graph,
+            SceneBudget.Default,
+            provisionalOnly: true);
+
+        graph.Groups.Should().ContainKey("curated");
         result.GroupsRemoved.Should().Be(0);
     }
 
@@ -133,6 +216,18 @@ public class SceneBudgetTests
 
         graph.Nodes.Should().ContainKey("active");
         graph.Nodes.Should().NotContainKey("stale");
+    }
+
+    [Fact]
+    public void Enforce_NegativeCapRemainsDisabled()
+    {
+        var graph = BuildGraph(12);
+
+        var result = SceneBudgetEnforcer.Enforce(graph, new SceneBudget(MaxNodes: -1));
+
+        graph.Nodes.Should().HaveCount(12);
+        result.IsWithinBudget.Should().BeTrue();
+        result.RemainingNodeOverage.Should().Be(0);
     }
 
     [Fact]

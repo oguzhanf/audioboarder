@@ -27,4 +27,8 @@
     <Using Include="FluentAssertions" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Semantic\Fixtures\semantic-golden-cases.json" />
+  </ItemGroup>
+
 </Project>

@@ -1,3 +1,4 @@
+using System.Net.Http;
 using AudioBoarder.Core.Imaging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -44,7 +45,11 @@ public sealed class SmartImageGenerator : IImageGenerator
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Image generator {First} failed; trying {Second}", first.Name, second.Name);
+            _logger.LogWarning(
+                "Image generator {First} failed; category={Category}; trying {Second}",
+                first.Name,
+                ex is HttpRequestException ? "image_request_failure" : "image_generation_failure",
+                second.Name);
             var resp = await second.GenerateAsync(request, ct).ConfigureAwait(false);
             _preferred = second;
             return resp;

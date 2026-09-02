@@ -76,16 +76,15 @@ public sealed class AzureCredentialProvider
                 Directory.CreateDirectory(Path.GetDirectoryName(AuthRecordPath)!);
                 await using var fs = File.Create(AuthRecordPath);
                 await record.SerializeAsync(fs, ct).ConfigureAwait(false);
-                _logger.LogInformation("Persisted AuthenticationRecord for {Account} → {Path}",
-                    record.Username, AuthRecordPath);
+                _logger.LogInformation("Persisted AuthenticationRecord");
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to persist AuthenticationRecord; silent restore will not work next launch");
             }
 
-            _logger.LogInformation("Interactive sign-in succeeded for {Account} (expires {Exp:HH:mm:ss})",
-                record.Username, token.ExpiresOn);
+            _logger.LogInformation("Interactive sign-in succeeded (expires {Exp:HH:mm:ss})",
+                token.ExpiresOn);
 
             lock (_gate)
             {
@@ -123,7 +122,7 @@ public sealed class AzureCredentialProvider
     {
         if (!File.Exists(AuthRecordPath))
         {
-            _logger.LogInformation("No persisted AuthenticationRecord at {Path} — interactive sign-in required", AuthRecordPath);
+            _logger.LogInformation("No persisted AuthenticationRecord; interactive sign-in required");
             return false;
         }
         AuthenticationRecord record;
@@ -163,14 +162,14 @@ public sealed class AzureCredentialProvider
                     _signedInAs = record.Username;
                     _userObjectId = ExtractObjectId(record.HomeAccountId);
                 }
-                _logger.LogInformation("Restored persisted Azure sign-in for {Account} (expires {Exp:HH:mm:ss})",
-                    record.Username, token.ExpiresOn);
+                _logger.LogInformation("Restored persisted Azure sign-in (expires {Exp:HH:mm:ss})",
+                    token.ExpiresOn);
                 return true;
             }
         }
         catch (AuthenticationRequiredException)
         {
-            _logger.LogInformation("Cached token for {Account} expired — sign in again", record.Username);
+            _logger.LogInformation("Cached token expired; sign in again");
         }
         catch (OperationCanceledException) { _logger.LogWarning("Silent token restore timed out after 8s"); }
         catch (Exception ex) { _logger.LogWarning(ex, "Silent token restore failed"); }

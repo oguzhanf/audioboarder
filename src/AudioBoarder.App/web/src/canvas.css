@@ -108,7 +108,7 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--ink);
-  font-family: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "calt";
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -137,6 +137,14 @@ svg { width: 100%; height: 100%; display: block; }
   fill: var(--ink-mid);
   dominant-baseline: middle;
 }
+.container-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  fill: var(--accent);
+  dominant-baseline: middle;
+}
 .container-subtitle {
   font-size: 11px;
   font-weight: 450;
@@ -151,6 +159,7 @@ svg { width: 100%; height: 100%; display: block; }
   stroke-width: 1;
 }
 .node:hover .node-card { stroke: var(--accent); }
+.node:focus .node-card { stroke: var(--accent); stroke-width: 2; }
 .node.risk .node-card { stroke: var(--risk); }
 
 .node-label {
@@ -192,16 +201,40 @@ svg { width: 100%; height: 100%; display: block; }
 /* Dashed = asynchronous / dependency, paired with meaning rather than colour
    alone so the distinction survives greyscale and colour-blindness. */
 .edge.soft { stroke: var(--ink-dim); stroke-dasharray: 5 4; }
+.boundary-crossing .edge { stroke-width: 2.5; }
+.boundary-crossing .edge-metadata { font-weight: 700; }
 .arrow-head { fill: var(--line); }
 
 .edge-label {
   font-size: 11px;
   font-weight: 450;
   fill: var(--ink-mid);
-  text-anchor: middle;
+  text-anchor: start;
   dominant-baseline: middle;
 }
 .edge-label-bg { fill: var(--bg); }
+.edge-metadata {
+  font-size: 9px;
+  font-weight: 500;
+  fill: var(--ink-dim);
+  text-anchor: start;
+  dominant-baseline: middle;
+}
+
+/* Lifecycle is conveyed with line style and motion, not colour alone. */
+.lifecycle-provisional { opacity: 0.78; }
+.lifecycle-provisional .node-card,
+.lifecycle-provisional .container-box { stroke-dasharray: 4 3; }
+.entering { animation: element-enter 850ms ease-out; }
+@keyframes element-enter {
+  0% { opacity: 0; filter: drop-shadow(0 0 8px var(--accent)); }
+  35% { opacity: 1; filter: drop-shadow(0 0 5px var(--accent)); }
+  100% { filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entering { animation: none; }
+}
 
 /* ---- numbered step badges ------------------------------------------------- */
 /* The convention that turns a picture into a walkthrough. */
@@ -255,6 +288,3 @@ svg { width: 100%; height: 100%; display: block; }
 .zoom button:hover { background: var(--plate); color: var(--ink); }
 .zoom #zoomLevel { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
 .zoom #zoomFit { width: auto; padding: 0 7px; font-size: 11px; font-weight: 500; }
-
-
-

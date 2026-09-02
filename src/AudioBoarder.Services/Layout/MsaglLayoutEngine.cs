@@ -107,7 +107,7 @@ public sealed class MsaglLayoutEngine : ILayoutEngine
 
             // Mirror LayeredLayoutEngine: never move a locked node that already has a
             // position; everything else (incl. locked-but-unplaced) is laid out.
-            if (!n.Locked || n.X is null || n.Y is null)
+            if (options.ReflowPinned || !n.Locked || n.X is null || n.Y is null)
             {
                 n.X = sx;
                 n.Y = sy;

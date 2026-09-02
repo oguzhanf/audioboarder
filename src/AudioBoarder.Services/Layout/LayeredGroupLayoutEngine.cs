@@ -22,14 +22,12 @@ namespace AudioBoarder.Services.Layout;
 /// real flowchart and arrows can be routed as elbows.
 /// </para>
 /// <para>
-/// Falls back to <see cref="MindMapLayoutEngine"/> if MSAGL cannot lay a cluster out,
-/// so a pathological graph degrades instead of leaving nodes unpositioned.
+/// Falls back to a deterministic cluster-local grid if MSAGL cannot lay a cluster
+/// out, preserving architecture groups instead of switching to a mind map.
 /// </para>
 /// </summary>
 public sealed class LayeredGroupLayoutEngine : ILayoutEngine
 {
-    private readonly MindMapLayoutEngine _fallback = new();
-
     public string Name => "LayeredGroupLayoutEngine";
 
     public LayoutResult Apply(SceneGraph graph, LayoutOptions options)
@@ -48,7 +46,7 @@ public sealed class LayeredGroupLayoutEngine : ILayoutEngine
         foreach (var cluster in clusters)
         {
             if (!TryLayoutCluster(graph, cluster, options, local))
-                return _fallback.Apply(graph, options);
+                LayoutClusterGrid(graph, cluster, options, local);
             boxes.Add(ClusterPacker.Measure(cluster, graph, local));
         }
 
@@ -56,11 +54,26 @@ public sealed class LayeredGroupLayoutEngine : ILayoutEngine
 
         var global = ClusterPacker.Pack(
             boxes, local, options.HorizontalSpacing, options.VerticalSpacing);
-        var positioned = ClusterPacker.Commit(graph, global, options.Padding);
+        var positioned = ClusterPacker.Commit(
+            graph, global, options.Padding, options.ReflowPinned);
 
         var width = global.Values.Max(p => p.X) - global.Values.Min(p => p.X) + options.Padding * 2;
         var height = global.Values.Max(p => p.Y) - global.Values.Min(p => p.Y) + options.Padding * 2;
         return new LayoutResult(positioned, width, height);
+    }
+
+    private static void LayoutClusterGrid(
+        SceneGraph graph,
+        List<string> cluster,
+        LayoutOptions options,
+        Dictionary<string, (double X, double Y)> local)
+    {
+        var ordered = cluster.OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(ordered.Length)));
+        var cellWidth = ordered.Max(id => graph.Nodes[id].Width) + options.HorizontalSpacing;
+        var cellHeight = ordered.Max(id => graph.Nodes[id].Height) + options.VerticalSpacing;
+        for (var i = 0; i < ordered.Length; i++)
+            local[ordered[i]] = (i % columns * cellWidth, i / columns * cellHeight);
     }
 
     private static bool TryLayoutCluster(

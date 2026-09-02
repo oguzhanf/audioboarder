@@ -4,17 +4,25 @@ using AudioBoarder.Core.Transcript;
 
 namespace AudioBoarder.Core.LLM;
 
+public enum GenerationMode
+{
+    ContinuousExtraction,
+    DeepSynthesis,
+    ManualRefine,
+}
+
 public sealed record ScenePatchRequest(
     SceneGraph CurrentScene,
     IReadOnlyList<TranscriptSegment> TranscriptWindow,
     string? UserInstruction = null,
     int MaxNodes = 60,
-    /// <summary>
-    /// True when this call is part of the continuous mid-meeting summarizer.
-    /// Generators should prefer a fast deployment, use the continuous system
-    /// prompt, and never wipe the scene.
-    /// </summary>
-    bool IsContinuous = false);
+    GenerationMode Mode = GenerationMode.DeepSynthesis,
+    DiagramIntent DiagramIntent = DiagramIntent.SoftwareSystemArchitecture,
+    DiagramIntentState? IntentState = null,
+    long GenerationEpoch = 0)
+{
+    public bool IsContinuous => Mode == GenerationMode.ContinuousExtraction;
+}
 
 public sealed record ScenePatchResponse(
     ScenePatch Patch,

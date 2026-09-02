@@ -1,14 +1,17 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Net.Http;
 using System.Windows.Threading;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Continuous;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.Sessions;
+using AudioBoarder.Core.LLM;
 using AudioBoarder.Core.Scene;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services;
 using AudioBoarder.Services.Audio;
+using AudioBoarder.Services.Intent;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
@@ -30,19 +33,42 @@ public partial class MainViewModel : ObservableObject
     private readonly AudioDeviceService _devices;
     private readonly ILogger<MainViewModel> _logger;
     private readonly bool _autoSave;
+    private readonly DiagramIntentCoordinator _intentCoordinator;
+    private readonly IUiStateStore _uiStateStore;
     private DispatcherTimer? _captureTimer;
     private DateTimeOffset _listenStartedAt;
+    private DateTimeOffset? _latestCaptionTimestamp;
     private double _maxPeakObserved;
     private long _lastInterimUpdateAt;
     private CancellationTokenSource? _userEditSaveCts;
+    private bool _syncingIntentSelection;
 
     public ObservableCollection<CaptionViewModel> Captions { get; } = new();
     public ObservableCollection<NoteViewModel> Notes { get; } = new();
     public ObservableCollection<HealthState> HealthStates { get; } = new();
     public ObservableCollection<AudioDeviceInfo> InputDevices { get; } = new();
     public SceneGraph Scene => _orchestrator.Scene;
+    public DiagramIntent AppliedDiagramIntent => Scene.IntentState.AppliedIntent;
+    public DiagramIntentSelectionMode IntentSelectionMode => Scene.IntentState.SelectionMode;
+    public double IntentConfidence => Scene.IntentState.Confidence;
+    public string IntentReason => Scene.IntentState.Reason;
+    public DiagramIntent? SuggestedDiagramIntent => Scene.SuggestedIntentState?.AppliedIntent;
+    public bool HasIntentSuggestion => Scene.SuggestedIntentState is not null;
+    public string SuggestedIntentDisplay => SuggestedDiagramIntent is { } intent
+        ? IntentOption.DisplayName(intent)
+        : string.Empty;
+    public string AppliedIntentDisplay => IntentOption.DisplayName(AppliedDiagramIntent);
+    public string IntentModeDisplay => IntentSelectionMode == DiagramIntentSelectionMode.Auto
+        ? IntentConfidence > 0
+            ? $"Auto · {IntentConfidence:P0}"
+            : "Auto"
+        : "Pinned";
+    public IReadOnlyList<IntentOption> IntentOptions { get; } = IntentOption.All;
+    public int NoteCount => Notes.Count;
+    public int CaptionCount => Captions.Count;
 
     [ObservableProperty] private string statusMessage = "Checking for updates…";
+    [ObservableProperty] private UiRuntimeStatus runtimeStatus = UiRuntimeStatus.Initializing();
     [ObservableProperty] private bool isListening;
     [ObservableProperty] private bool isGenerating;
     [ObservableProperty] private string? refinementInstruction;
@@ -56,12 +82,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private AudioDeviceInfo? selectedInputDevice;
     [ObservableProperty] private string liveTranscript = "";
     [ObservableProperty] private string interimText = "";
+    [ObservableProperty] private bool isTranscriptPaneOpen;
+    [ObservableProperty] private bool isNotesPaneOpen;
+    [ObservableProperty] private bool isReflowAllConfirmationVisible;
+    [ObservableProperty] private IntentOption? selectedIntentOption;
 
-    /// <summary>When true the central canvas is the live Excalidraw whiteboard;
-    /// when false it falls back to the classic SkiaSharp renderer.</summary>
-    [ObservableProperty] private bool showWhiteboard = true;
-    public bool ShowClassicView => !ShowWhiteboard;
-    partial void OnShowWhiteboardChanged(bool value) => OnPropertyChanged(nameof(ShowClassicView));
+    public bool IsRuntimeWarning => RuntimeStatus.IsWarning;
+    public bool IsRuntimeError => RuntimeStatus.IsError;
+    public bool IsRuntimeFaultVisible => RuntimeStatus.IsWarning || RuntimeStatus.IsError;
 
     /// <summary>Committed transcript plus the live in-progress hypothesis, so the
     /// caption panel updates word-by-word as you speak (Teams-style).</summary>
@@ -69,8 +97,44 @@ public partial class MainViewModel : ObservableObject
         string.IsNullOrEmpty(InterimText) ? LiveTranscript
         : (string.IsNullOrEmpty(LiveTranscript) ? InterimText : LiveTranscript + " " + InterimText);
 
-    partial void OnLiveTranscriptChanged(string value) => OnPropertyChanged(nameof(TranscriptDisplay));
-    partial void OnInterimTextChanged(string value) => OnPropertyChanged(nameof(TranscriptDisplay));
+    public string LiveCaptionDisplay
+    {
+        get
+        {
+            var lines = Captions.TakeLast(2).Select(c => c.Text).ToList();
+            if (!string.IsNullOrWhiteSpace(InterimText)) lines.Add(InterimText);
+            return string.Join(Environment.NewLine, lines.TakeLast(3));
+        }
+    }
+
+    partial void OnLiveTranscriptChanged(string value)
+    {
+        OnPropertyChanged(nameof(TranscriptDisplay));
+        OnPropertyChanged(nameof(LiveCaptionDisplay));
+    }
+
+    partial void OnInterimTextChanged(string value)
+    {
+        OnPropertyChanged(nameof(TranscriptDisplay));
+        OnPropertyChanged(nameof(LiveCaptionDisplay));
+    }
+
+    partial void OnRuntimeStatusChanged(UiRuntimeStatus value)
+    {
+        OnPropertyChanged(nameof(IsRuntimeWarning));
+        OnPropertyChanged(nameof(IsRuntimeError));
+        OnPropertyChanged(nameof(IsRuntimeFaultVisible));
+    }
+
+    partial void OnIsTranscriptPaneOpenChanged(bool value) => SaveUiState();
+    partial void OnIsNotesPaneOpenChanged(bool value) => SaveUiState();
+
+    partial void OnSelectedIntentOptionChanged(IntentOption? value)
+    {
+        if (_syncingIntentSelection || value is null) return;
+        if (value.Intent is { } intent) PinDiagramIntent(intent);
+        else UseAutomaticDiagramIntent();
+    }
 
     public event EventHandler? SceneInvalidated;
 
@@ -85,6 +149,8 @@ public partial class MainViewModel : ObservableObject
         ContinuousDiagrammer continuous,
         Auth.AzureCredentialProvider credentials,
         AudioDeviceService devices,
+        DiagramIntentCoordinator intentCoordinator,
+        IUiStateStore uiStateStore,
         IOptions<AudioBoarderSettings> settings,
         ILogger<MainViewModel> logger)
     {
@@ -98,30 +164,70 @@ public partial class MainViewModel : ObservableObject
         _continuous = continuous;
         _credentials = credentials;
         _devices = devices;
+        _intentCoordinator = intentCoordinator;
+        _uiStateStore = uiStateStore;
         _autoSave = settings.Value.Sessions.AutoSave;
         _logger = logger;
+
+        if (settings.Value.DiagramIntent.SelectionMode == DiagramIntentSelectionMode.PinnedByUser)
+            _intentCoordinator.Pin(Scene, settings.Value.DiagramIntent.PinnedIntent, "Pinned in app settings");
+
+        var uiState = _uiStateStore.Load();
+        isTranscriptPaneOpen = uiState.IsTranscriptPaneOpen;
+        isNotesPaneOpen = uiState.IsNotesPaneOpen;
+        SyncSelectedIntentOption();
 
         RefreshInputDevices();
         _pipeline.SegmentEmitted += (_, seg) => UiInvoke(() => OnSegment(seg));
         _pipeline.InterimEmitted += (_, seg) => OnInterim(seg);
-        _pipeline.CaptureFailed += (_, err) => UiInvoke(() => StatusMessage = $"Capture error ({err.Role}): {err.Message}");
+        _pipeline.CaptureFailed += (_, err) => UiInvoke(() =>
+        {
+            RuntimeStatus = new UiRuntimeStatus(
+                UiRuntimeState.Error,
+                "Error",
+                $"Capture fault ({err.Role}). Check the selected audio device.",
+                IsWarning: true,
+                IsError: true);
+            StatusMessage = RuntimeStatus.Details;
+        });
+        _pipeline.DiagnosticsChanged += (_, diagnostics) => UiInvoke(() =>
+        {
+            if (IsListening) RefreshRuntimeStatus();
+        });
 
         _orchestrator.GenerationStarted += (_, e) => UiInvoke(() =>
         {
             IsGenerating = true;
-            StatusMessage = $"Updating diagram via {e.GeneratorName}…";
+            SetRuntimeActivity(e.Mode == GenerationMode.ContinuousExtraction
+                ? new UiRuntimeStatus(
+                    UiRuntimeState.Analyzing,
+                    $"Analyzing {Math.Max(1, _continuous.PendingNewSegments)} statements",
+                    "Applying the next safe incremental update.")
+                : new UiRuntimeStatus(
+                    UiRuntimeState.DeepRefining,
+                    "Deep refining",
+                    "Consolidating the current architecture."));
+            StatusMessage = e.Mode == GenerationMode.ContinuousExtraction
+                ? $"Extracting diagram changes via {e.GeneratorName}…"
+                : $"Deeply synthesizing diagram via {e.GeneratorName}…";
             ToggleListenCommand.NotifyCanExecuteChanged();
             RefineDiagramCommand.NotifyCanExecuteChanged();
         });
         _orchestrator.GenerationCompleted += (_, e) => UiInvoke(() =>
         {
-            IsGenerating = false;
+            IsGenerating = _orchestrator.RuntimeSnapshot.FastInFlight > 0 ||
+                           _orchestrator.RuntimeSnapshot.DeepInFlight > 0;
             var skipped = e.Result.ApplyResult.OperationsSkipped;
-            StatusMessage = skipped == 0
-                ? $"Updated: {e.Result.ApplyResult.OperationsApplied} ops in {e.Result.Response.Elapsed.TotalMilliseconds:F0} ms."
-                : $"Updated with warnings: {e.Result.ApplyResult.OperationsApplied} ops, {skipped} rejected.";
+            var budget = e.Result.BudgetResult;
+            StatusMessage = budget is { IsWithinBudget: false }
+                ? $"Updated with budget warning: {budget.RemainingNodeOverage} locked node(s) and {budget.RemainingNoteOverage} note(s) remain over the configured cap."
+                : skipped == 0
+                    ? $"Updated: {e.Result.ApplyResult.OperationsApplied} ops in {e.Result.Response.Elapsed.TotalMilliseconds:F0} ms."
+                    : $"Updated with warnings: {e.Result.ApplyResult.OperationsApplied} ops, {skipped} rejected.";
             RefreshNotes();
             SceneRevision = Scene.Revision;
+            NotifyIntentStateChanged();
+            RefreshRuntimeStatus();
             SceneInvalidated?.Invoke(this, EventArgs.Empty);
             // Snapshot on the UI thread (Clone locks SyncRoot) then save off-thread,
             // so the serializer never enumerates the live graph while a background
@@ -129,7 +235,7 @@ public partial class MainViewModel : ObservableObject
             if (_autoSave)
             {
                 var snapshot = Scene.Clone();
-                _ = _sessions.SaveAsync(snapshot);
+                _ = SaveSnapshotAsync(snapshot);
             }
             RefineDiagramCommand.NotifyCanExecuteChanged();
             ExportPngCommand.NotifyCanExecuteChanged();
@@ -137,23 +243,56 @@ public partial class MainViewModel : ObservableObject
         });
         _orchestrator.GenerationFailed += (_, e) => UiInvoke(() =>
         {
-            IsGenerating = false;
+            IsGenerating = _orchestrator.RuntimeSnapshot.FastInFlight > 0 ||
+                           _orchestrator.RuntimeSnapshot.DeepInFlight > 0;
             StatusMessage = e.Error is OperationCanceledException
                 ? "Diagram update cancelled."
-                : $"Update failed: {e.Error.Message}";
+                : "Diagram update failed. The pending transcript will be retried safely.";
+            RuntimeStatus = e.Error is OperationCanceledException
+                ? new UiRuntimeStatus(UiRuntimeState.Degraded, "Degraded", StatusMessage, IsWarning: true)
+                : new UiRuntimeStatus(
+                    UiRuntimeState.Error, "Error", StatusMessage, IsWarning: true, IsError: true);
             ToggleListenCommand.NotifyCanExecuteChanged();
             RefineDiagramCommand.NotifyCanExecuteChanged();
         });
         _orchestrator.ImageUpdated += (_, _) => UiInvoke(() =>
         {
             SceneRevision = Scene.Revision;
+            NotifyIntentStateChanged();
             SceneInvalidated?.Invoke(this, EventArgs.Empty);
+            if (_autoSave)
+                _ = SaveSnapshotAsync(Scene.Clone());
+        });
+        _orchestrator.RuntimeChanged += (_, runtime) => UiInvoke(() =>
+        {
+            IsGenerating = runtime.Stage is GenerationRuntimeStage.Queued or
+                GenerationRuntimeStage.Extracting or GenerationRuntimeStage.DeepSynthesizing;
+            if (IsListening) RefreshRuntimeStatus();
+            ToggleListenCommand.NotifyCanExecuteChanged();
+            RefineDiagramCommand.NotifyCanExecuteChanged();
         });
 
         _continuous.GenerationTriggered += (_, e) => UiInvoke(() =>
-            StatusMessage = $"Continuous: triggering update after {e.SegmentsConsumed} new caption(s)…");
+        {
+            SetRuntimeActivity(e.Mode == GenerationMode.ContinuousExtraction
+                ? new UiRuntimeStatus(
+                    UiRuntimeState.Analyzing,
+                    $"Analyzing {e.SegmentsConsumed} statements",
+                    "Queued captions are being applied to the canvas.")
+                : new UiRuntimeStatus(
+                    UiRuntimeState.DeepRefining,
+                    "Deep refining",
+                    "Consolidating the current architecture."));
+            StatusMessage = RuntimeStatus.Details;
+        });
         _continuous.GenerationCompleted += (_, _) => UiInvoke(() => ContinuousUpdates = _continuous.TotalGenerations);
         _continuous.GenerationFailed += (_, _) => UiInvoke(() => { /* status set by orchestrator failed handler */ });
+        _continuous.RuntimeChanged += (_, runtime) => UiInvoke(() =>
+        {
+            if (!IsListening) return;
+            RefreshRuntimeStatus();
+            StatusMessage = RuntimeStatus.Details;
+        });
 
         _health.StateChanged += (_, state) => UiInvoke(() => UpdateHealth(state));
         foreach (var s in _health.States.Values) UpdateHealth(s);
@@ -185,9 +324,30 @@ public partial class MainViewModel : ObservableObject
 
         var anyChecking = _health.States.Values.Any(s => s.Status == ComponentStatus.Checking);
         var anyFailed = _health.States.Values.Any(s => s.Status == ComponentStatus.Failed);
-        if (anyChecking) StatusMessage = "Health checks running…";
-        else if (anyFailed) StatusMessage = "Some components unavailable — see the indicators below.";
-        else if (IsAudioReady && IsTranscriptionReady && IsAzureReady) StatusMessage = "Ready — click Listen to start.";
+        if (IsListening)
+        {
+            RefreshRuntimeStatus();
+            StatusMessage = RuntimeStatus.Details;
+        }
+        else if (anyChecking)
+        {
+            RuntimeStatus = UiRuntimeStatus.Initializing("Health checks running…");
+            StatusMessage = RuntimeStatus.Details;
+        }
+        else if (anyFailed)
+        {
+            RuntimeStatus = new UiRuntimeStatus(
+                UiRuntimeState.Degraded,
+                "Degraded",
+                "Some components are unavailable. Review component health.",
+                IsWarning: true);
+            StatusMessage = RuntimeStatus.Details;
+        }
+        else if (IsAudioReady && IsTranscriptionReady && IsAzureReady)
+        {
+            RuntimeStatus = UiRuntimeStatus.Ready();
+            StatusMessage = RuntimeStatus.Details;
+        }
 
         ToggleListenCommand.NotifyCanExecuteChanged();
         RefineDiagramCommand.NotifyCanExecuteChanged();
@@ -206,10 +366,12 @@ public partial class MainViewModel : ObservableObject
             if (IsListening)
             {
                 _captureTimer?.Stop();
-                await _continuous.StopAsync();
                 await _pipeline.StopAsync(CancellationToken.None);
+                await _continuous.StopAsync(synthesizeDeep: true);
                 IsListening = false;
                 InterimText = "";
+                RuntimeStatus = UiRuntimeStatus.Ready(
+                    $"{Captions.Count} captions · {ContinuousUpdates} canvas updates.");
                 StatusMessage = $"Stopped. {Captions.Count} captions · {ContinuousUpdates} auto-updates.";
             }
 
@@ -221,7 +383,11 @@ public partial class MainViewModel : ObservableObject
                 _listenStartedAt = DateTimeOffset.UtcNow;
                 _maxPeakObserved = 0;
                 _continuous.Start();
-                StatusMessage = "Listening — diagram will auto-update as the conversation progresses.";
+                RuntimeStatus = new UiRuntimeStatus(
+                    UiRuntimeState.Listening,
+                    "Listening",
+                    "Waiting for the first caption.");
+                StatusMessage = RuntimeStatus.Details;
                 _captureTimer ??= new DispatcherTimer(TimeSpan.FromSeconds(1),
                     DispatcherPriority.Background,
                     (_, _) => RefreshListenStatus(),
@@ -234,6 +400,8 @@ public partial class MainViewModel : ObservableObject
         {
             _logger.LogError(ex, "Toggle listen failed");
             StatusMessage = $"Listen failed: {ex.Message}";
+            RuntimeStatus = new UiRuntimeStatus(
+                UiRuntimeState.Error, "Error", StatusMessage, IsWarning: true, IsError: true);
             IsListening = false;
         }
     }
@@ -258,9 +426,7 @@ public partial class MainViewModel : ObservableObject
     {
         if (!IsListening) return;
         var chunks = _pipeline.ChunksReceived;
-        var transcribed = _pipeline.ChunksTranscribed;
         var segments = _pipeline.SegmentsEmitted;
-        var dropped = _pipeline.ChunksDropped;
         var pending = _continuous.PendingNewSegments;
         var totalUpdates = _continuous.TotalGenerations;
         var nextEligible = _continuous.TimeUntilNextEligible;
@@ -270,45 +436,86 @@ public partial class MainViewModel : ObservableObject
         // Live meter (0..100), gently amplified so normal speech fills the bar.
         MicLevel = Math.Min(100.0, peak * 400.0);
 
-        if (IsGenerating)
-            return; // GenerationStarted set the status
+        RefreshRuntimeStatus();
 
-        if (dropped > 0)
-        {
-            StatusMessage = $"Listening · degraded: {dropped} audio chunk(s) dropped because transcription fell behind.";
-            return;
-        }
-
-        // No-signal detection. Only the "no chunks at all" case is a hard error
-        // (mic muted or grabbed by another app). A quiet mic that simply hasn't
-        // heard speech yet gets a gentle hint — and once it has EVER registered
-        // a real peak, we stop nagging entirely.
         if (listeningFor > TimeSpan.FromSeconds(3) && chunks == 0)
         {
-            StatusMessage = $"⚠ No microphone signal. {DescribeSilentMic()}";
+            RuntimeStatus = new UiRuntimeStatus(
+                UiRuntimeState.Degraded,
+                "Degraded",
+                $"No microphone signal. {DescribeSilentMic()}",
+                IsWarning: true);
+            StatusMessage = RuntimeStatus.Details;
             return;
         }
 
         if (segments == 0)
         {
-            var lvl = $"mic level {peak:P0}";
             if (_maxPeakObserved >= 0.006)
-                StatusMessage = $"Listening · {lvl} · transcribing…";
+                StatusMessage = "Audio is active; waiting for a finalized caption.";
             else if (listeningFor > TimeSpan.FromSeconds(6))
-                StatusMessage = $"Listening · {lvl} · {DescribeSilentMic()}";
+                StatusMessage = DescribeSilentMic();
             else
-                StatusMessage = $"Listening · {lvl} · warming up…";
+                StatusMessage = "Capture is warming up.";
         }
         else
         {
             var nextStr = nextEligible.HasValue && nextEligible.Value > TimeSpan.Zero
                 ? $"next update in ~{nextEligible.Value.TotalSeconds:F0}s"
                 : $"next update when {Math.Max(0, 3 - pending)} more caption(s) arrive";
-            StatusMessage = $"Listening · mic {peak:P0} · {segments} captions · {totalUpdates} auto-updates · {nextStr}";
+            StatusMessage = $"{segments} captions · {totalUpdates} canvas updates · {nextStr}.";
         }
+
         RefineDiagramCommand.NotifyCanExecuteChanged();
         ExportPngCommand.NotifyCanExecuteChanged();
         ExportExcalidrawCommand.NotifyCanExecuteChanged();
+    }
+
+    private void RefreshRuntimeStatus()
+    {
+        RuntimeStatus = UiRuntimeStatusMapper.Map(
+            _pipeline.Diagnostics,
+            _continuous.RuntimeSnapshot,
+            IsListening,
+            DateTimeOffset.UtcNow,
+            _latestCaptionTimestamp);
+    }
+
+    private void SetRuntimeActivity(UiRuntimeStatus activity)
+    {
+        if (!IsListening)
+        {
+            RuntimeStatus = activity;
+            return;
+        }
+
+        var observed = UiRuntimeStatusMapper.Map(
+            _pipeline.Diagnostics,
+            _continuous.RuntimeSnapshot,
+            true,
+            DateTimeOffset.UtcNow,
+            _latestCaptionTimestamp);
+        RuntimeStatus = observed.State is
+            UiRuntimeState.Error or
+            UiRuntimeState.RateLimited or
+            UiRuntimeState.AudioGap or
+            UiRuntimeState.Retrying
+            ? observed
+            : activity;
+    }
+
+    private async Task SaveSnapshotAsync(SceneGraph snapshot)
+    {
+        try
+        {
+            await _sessions.SaveAsync(snapshot).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Autosave failed; category={Category}",
+                ex is UnauthorizedAccessException ? "access_denied" : "io_failure");
+            UiInvoke(() => StatusMessage = "Autosave failed. The current board is still open but was not written to disk.");
+        }
     }
 
     /// <summary>
@@ -359,7 +566,7 @@ public partial class MainViewModel : ObservableObject
     {
         if (value is null) return;
         _devices.SelectedMicrophoneId = value.Id;
-        _logger.LogInformation("Microphone selection set to {Name} ({Id})", value.Name, value.Id);
+        _logger.LogInformation("Microphone selection changed");
 
         // If we're already listening, restart capture so the new device takes
         // effect immediately without the user having to toggle Listen.
@@ -391,9 +598,15 @@ public partial class MainViewModel : ObservableObject
         try
         {
             // Explicit user-driven refine uses the PRIMARY (deep) deployment.
-            await _orchestrator.GenerateAsync(RefinementInstruction, isContinuous: false);
+            await _orchestrator.GenerateAsync(
+                RefinementInstruction,
+                mode: GenerationMode.ManualRefine);
         }
-        catch (Exception ex) { _logger.LogError(ex, "Refine failed"); }
+        catch (Exception ex)
+        {
+            _logger.LogError("Refine failed; category={Category}",
+                ex is HttpRequestException ? "model_request_failure" : "generation_failure");
+        }
     }
 
     public bool CanImportTranscript => !IsGenerating && !IsListening && IsAzureReady;
@@ -428,7 +641,9 @@ public partial class MainViewModel : ObservableObject
 
             // Replace rather than append: importing is "diagram THIS meeting", so
             // mixing it with whatever was already buffered would blur two meetings.
+            _orchestrator.Clear();
             _buffer.Clear();
+            _continuous.ResetTranscriptProgress();
             Captions.Clear();
             LiveTranscript = "";
             foreach (var segment in segments)
@@ -436,6 +651,9 @@ public partial class MainViewModel : ObservableObject
                 _buffer.Append(segment);
                 Captions.Add(new CaptionViewModel(segment));
             }
+            _latestCaptionTimestamp = segments[^1].End;
+            OnPropertyChanged(nameof(CaptionCount));
+            OnPropertyChanged(nameof(LiveCaptionDisplay));
             LiveTranscript = string.Join(" ", segments.Select(s => s.Text));
             if (LiveTranscript.Length > 40000) LiveTranscript = LiveTranscript[^40000..];
 
@@ -447,13 +665,16 @@ public partial class MainViewModel : ObservableObject
             // Deep pass: an imported transcript is complete, so there is no reason to
             // use the fast incremental path meant for live speech.
             await _orchestrator.GenerateAsync(
-                "Diagram this complete meeting transcript.", isContinuous: false);
+                "Diagram this complete meeting transcript.",
+                mode: GenerationMode.DeepSynthesis);
+            _continuous.ResetTranscriptProgress();
             StatusMessage = $"Diagram built from {name}.";
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Transcript import failed");
-            StatusMessage = $"Could not import that transcript: {ex.Message}";
+            _logger.LogError("Transcript import failed; category={Category}",
+                ex is HttpRequestException ? "model_request_failure" : "transcript_import_failure");
+            StatusMessage = "Could not import and diagram that transcript. Check the file and model connection.";
         }
         finally
         {
@@ -466,11 +687,17 @@ public partial class MainViewModel : ObservableObject
     public async Task ClearSceneAsync()
     {
         _orchestrator.Clear();
+        _buffer.Clear();
+        _continuous.ResetTranscriptProgress();
         Notes.Clear();
         Captions.Clear();
+        _latestCaptionTimestamp = null;
         LiveTranscript = "";
         InterimText = "";
+        OnPropertyChanged(nameof(CaptionCount));
+        OnPropertyChanged(nameof(NoteCount));
         SceneRevision = Scene.Revision;
+        NotifyIntentStateChanged();
         SceneInvalidated?.Invoke(this, EventArgs.Empty);
         StatusMessage = "Scene cleared.";
         await _sessions.ClearAsync();
@@ -483,15 +710,16 @@ public partial class MainViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(payload);
         _sessions.Apply(Scene, payload);
-        // Older sessions persisted the previous fixed 140x60 boxes and coordinates
-        // from the old radial engine. Re-size and re-lay out so a restored board is
-        // readable immediately rather than overlapping until the next generation.
-        _orchestrator.Relayout();
+        // Only legacy v0 sessions need geometry modernization. V1 geometry is an
+        // explicit user/session field and must round-trip without being overwritten.
+        if (payload.WasMigratedFromV0)
+            _orchestrator.Relayout();
         // The user explicitly chose to bring this board back, so the size cap must
         // not quietly delete most of it on the next automatic pass.
         _orchestrator.RaiseBudgetFloorToCurrentScene();
         RefreshNotes();
         SceneRevision = Scene.Revision;
+        NotifyIntentStateChanged();
         SceneInvalidated?.Invoke(this, EventArgs.Empty);
         ExportPngCommand.NotifyCanExecuteChanged();
         ExportExcalidrawCommand.NotifyCanExecuteChanged();
@@ -514,6 +742,120 @@ public partial class MainViewModel : ObservableObject
         _ = SaveUserEditAfterDelayAsync(next);
     }
 
+    [RelayCommand]
+    public void ReflowUnpinned()
+    {
+        _orchestrator.ReflowUnpinned();
+        SceneRevision = Scene.Revision;
+        SceneInvalidated?.Invoke(this, EventArgs.Empty);
+        NotifyUserSceneEdited();
+        StatusMessage = "Reflowed unpinned nodes.";
+    }
+
+    public void ReflowAll()
+    {
+        _orchestrator.ReflowAll();
+        SceneRevision = Scene.Revision;
+        SceneInvalidated?.Invoke(this, EventArgs.Empty);
+        NotifyUserSceneEdited();
+        StatusMessage = "Reflowed all nodes.";
+    }
+
+    [RelayCommand]
+    public void RequestReflowAll() => IsReflowAllConfirmationVisible = true;
+
+    [RelayCommand]
+    public void ConfirmReflowAll()
+    {
+        ReflowAll();
+        IsReflowAllConfirmationVisible = false;
+    }
+
+    [RelayCommand]
+    public void CancelReflowAll() => IsReflowAllConfirmationVisible = false;
+
+    [RelayCommand]
+    public void ToggleTranscriptPane() => IsTranscriptPaneOpen = !IsTranscriptPaneOpen;
+
+    [RelayCommand]
+    public void ToggleNotesPane() => IsNotesPaneOpen = !IsNotesPaneOpen;
+
+    [RelayCommand]
+    public void DismissRuntimeFault()
+    {
+        RuntimeStatus = IsListening
+            ? new UiRuntimeStatus(UiRuntimeState.Listening, "Listening", "Runtime notice dismissed.")
+            : UiRuntimeStatus.Ready();
+    }
+
+    public void PinDiagramIntent(DiagramIntent intent)
+    {
+        _intentCoordinator.Pin(Scene, intent);
+        NotifyIntentStateChanged();
+        NotifyUserSceneEdited();
+    }
+
+    public void UseAutomaticDiagramIntent()
+    {
+        _intentCoordinator.UseAuto(Scene);
+        NotifyIntentStateChanged();
+        NotifyUserSceneEdited();
+    }
+
+    public bool ApplyIntentSuggestion()
+    {
+        var applied = _intentCoordinator.ApplySuggestion(Scene);
+        if (applied)
+        {
+            NotifyIntentStateChanged();
+            NotifyUserSceneEdited();
+        }
+        return applied;
+    }
+
+    public bool RejectIntentSuggestion()
+    {
+        var rejected = _intentCoordinator.RejectSuggestion(Scene);
+        if (rejected)
+        {
+            NotifyIntentStateChanged();
+            NotifyUserSceneEdited();
+        }
+        return rejected;
+    }
+
+    [RelayCommand]
+    private void AcceptIntentSuggestion() => ApplyIntentSuggestion();
+
+    [RelayCommand]
+    private void DismissIntentSuggestion() => RejectIntentSuggestion();
+
+    private void NotifyIntentStateChanged()
+    {
+        OnPropertyChanged(nameof(AppliedDiagramIntent));
+        OnPropertyChanged(nameof(IntentSelectionMode));
+        OnPropertyChanged(nameof(IntentConfidence));
+        OnPropertyChanged(nameof(IntentReason));
+        OnPropertyChanged(nameof(SuggestedDiagramIntent));
+        OnPropertyChanged(nameof(HasIntentSuggestion));
+        OnPropertyChanged(nameof(SuggestedIntentDisplay));
+        OnPropertyChanged(nameof(AppliedIntentDisplay));
+        OnPropertyChanged(nameof(IntentModeDisplay));
+        SyncSelectedIntentOption();
+    }
+
+    private void SyncSelectedIntentOption()
+    {
+        _syncingIntentSelection = true;
+        SelectedIntentOption = IntentSelectionMode == DiagramIntentSelectionMode.Auto
+            ? IntentOptions[0]
+            : IntentOptions.First(option => option.Intent == AppliedDiagramIntent);
+        _syncingIntentSelection = false;
+    }
+
+    private void SaveUiState() =>
+        _uiStateStore.Save(new UiStateSnapshot(IsTranscriptPaneOpen, IsNotesPaneOpen));
+
     private async Task SaveUserEditAfterDelayAsync(CancellationTokenSource delayCts)
     {
         try
@@ -522,6 +864,12 @@ public partial class MainViewModel : ObservableObject
             await _sessions.SaveAsync(Scene.Clone(), delayCts.Token);
         }
         catch (OperationCanceledException) when (delayCts.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Autosave after edit failed; category={Category}",
+                ex is UnauthorizedAccessException ? "access_denied" : "io_failure");
+            UiInvoke(() => StatusMessage = "Autosave failed. The current board is still open but was not written to disk.");
+        }
         finally
         {
             Interlocked.CompareExchange(ref _userEditSaveCts, null, delayCts);
@@ -626,6 +974,10 @@ public partial class MainViewModel : ObservableObject
 
         Captions.Add(new CaptionViewModel(segment));
         while (Captions.Count > 200) Captions.RemoveAt(0);
+        _latestCaptionTimestamp = segment.End;
+        OnPropertyChanged(nameof(CaptionCount));
+        OnPropertyChanged(nameof(LiveCaptionDisplay));
+        RefreshRuntimeStatus();
     }
 
     private void OnInterim(TranscriptSegment segment)
@@ -651,6 +1003,7 @@ public partial class MainViewModel : ObservableObject
                 .ToList();
         }
         foreach (var nvm in snapshot) Notes.Add(nvm);
+        OnPropertyChanged(nameof(NoteCount));
     }
 
     private static void UiInvoke(Action action)
@@ -659,6 +1012,31 @@ public partial class MainViewModel : ObservableObject
         if (dispatcher is null || dispatcher.CheckAccess()) action();
         else dispatcher.BeginInvoke(action);
     }
+}
+
+public sealed record IntentOption(string Label, DiagramIntent? Intent)
+{
+    public static IReadOnlyList<IntentOption> All { get; } =
+    [
+        new("Auto", null),
+        new(DisplayName(DiagramIntent.SoftwareSystemArchitecture), DiagramIntent.SoftwareSystemArchitecture),
+        new(DisplayName(DiagramIntent.SaaSMultiTenantArchitecture), DiagramIntent.SaaSMultiTenantArchitecture),
+        new(DisplayName(DiagramIntent.SecurityZeroTrustArchitecture), DiagramIntent.SecurityZeroTrustArchitecture),
+        new(DisplayName(DiagramIntent.CloudNetworkArchitecture), DiagramIntent.CloudNetworkArchitecture),
+        new(DisplayName(DiagramIntent.IntegrationDataFlowArchitecture), DiagramIntent.IntegrationDataFlowArchitecture),
+        new(DisplayName(DiagramIntent.DiscussionSummary), DiagramIntent.DiscussionSummary),
+    ];
+
+    public static string DisplayName(DiagramIntent intent) => intent switch
+    {
+        DiagramIntent.SoftwareSystemArchitecture => "Software Architecture",
+        DiagramIntent.SaaSMultiTenantArchitecture => "SaaS Multi-tenant",
+        DiagramIntent.SecurityZeroTrustArchitecture => "Security Architecture",
+        DiagramIntent.CloudNetworkArchitecture => "Cloud Network",
+        DiagramIntent.IntegrationDataFlowArchitecture => "Integration Data Flow",
+        DiagramIntent.DiscussionSummary => "Discussion Summary",
+        _ => intent.ToString(),
+    };
 }
 
 public sealed class CaptionViewModel

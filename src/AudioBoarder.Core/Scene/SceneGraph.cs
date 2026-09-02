@@ -21,6 +21,9 @@ public sealed class SceneGraph
     public IReadOnlyDictionary<string, SceneImage> Images => _images;
 
     public int Revision { get; internal set; }
+    public long GenerationEpoch { get; private set; }
+    public DiagramIntentState IntentState { get; private set; } = DiagramIntentState.Default;
+    public DiagramIntentState? SuggestedIntentState { get; private set; }
 
     private long _sequence;
 
@@ -75,9 +78,17 @@ public sealed class SceneGraph
         foreach (var image in source._images.Values) _images[image.Id] = image;
         _sequence = Math.Max(_sequence, source._sequence);
         Revision = source.Revision;
+        GenerationEpoch = source.GenerationEpoch;
+        IntentState = source.IntentState;
+        SuggestedIntentState = source.SuggestedIntentState;
     }
 
     internal void AddEdge(SceneEdge edge) { _edges[edge.Id] = edge; Revision++; }
+    internal void NotifySemanticChanged() => Revision++;
+    public void NotifyGeometryChanged()
+    {
+        lock (SyncRoot) Revision++;
+    }
     internal void RemoveEdge(string id) { if (_edges.Remove(id)) Revision++; }
     internal void AddGroup(SceneGroup g) { _groups[g.Id] = g; Revision++; }
     internal void RemoveGroup(string id)
@@ -85,6 +96,8 @@ public sealed class SceneGraph
         if (!_groups.Remove(id)) return;
         foreach (var n in _nodes.Values)
             if (n.GroupId == id) n.GroupId = null;
+        foreach (var group in _groups.Values)
+            if (group.ParentGroupId == id) group.ParentGroupId = null;
         Revision++;
     }
     internal void AddNote(SceneNote note) { _notes[note.Id] = note; Revision++; }
@@ -108,6 +121,8 @@ public sealed class SceneGraph
         _groups.Clear();
         _notes.Clear();
         _images.Clear();
+        SuggestedIntentState = null;
+        GenerationEpoch++;
         Revision++;
     }
 
@@ -133,8 +148,168 @@ public sealed class SceneGraph
             node.Width = width;
             node.Height = height;
             node.Locked = locked;
+            if (locked) node.LifecycleState = ElementLifecycleState.UserEdited;
             Revision++;
             return true;
+        }
+    }
+
+    public bool TryMarkNodeUserEdited(string id)
+    {
+        lock (SyncRoot)
+        {
+            if (!_nodes.TryGetValue(id, out var node)) return false;
+            node.LifecycleState = ElementLifecycleState.UserEdited;
+            Revision++;
+            return true;
+        }
+    }
+
+    public bool TryMarkEdgeUserEdited(string id)
+    {
+        lock (SyncRoot)
+        {
+            if (!_edges.TryGetValue(id, out var edge)) return false;
+            edge.LifecycleState = ElementLifecycleState.UserEdited;
+            Revision++;
+            return true;
+        }
+    }
+
+    public bool TryMarkGroupUserEdited(string id)
+    {
+        lock (SyncRoot)
+        {
+            if (!_groups.TryGetValue(id, out var group)) return false;
+            group.LifecycleState = ElementLifecycleState.UserEdited;
+            Revision++;
+            return true;
+        }
+    }
+
+    public IReadOnlyList<ElementLifecycleChange> PromoteProvisionalElements(
+        IEnumerable<string> nodeIds,
+        IEnumerable<string> edgeIds,
+        IEnumerable<string> groupIds)
+    {
+        ArgumentNullException.ThrowIfNull(nodeIds);
+        ArgumentNullException.ThrowIfNull(edgeIds);
+        ArgumentNullException.ThrowIfNull(groupIds);
+        lock (SyncRoot)
+        {
+            var changes = new List<ElementLifecycleChange>();
+            foreach (var id in nodeIds.Distinct(StringComparer.Ordinal))
+            {
+                if (_nodes.TryGetValue(id, out var node) &&
+                    node.LifecycleState == ElementLifecycleState.Provisional)
+                {
+                    node.LifecycleState = ElementLifecycleState.Confirmed;
+                    changes.Add(new ElementLifecycleChange("node", id,
+                        ElementLifecycleState.Provisional, ElementLifecycleState.Confirmed));
+                }
+            }
+            foreach (var id in edgeIds.Distinct(StringComparer.Ordinal))
+            {
+                if (_edges.TryGetValue(id, out var edge) &&
+                    edge.LifecycleState == ElementLifecycleState.Provisional)
+                {
+                    edge.LifecycleState = ElementLifecycleState.Confirmed;
+                    changes.Add(new ElementLifecycleChange("edge", id,
+                        ElementLifecycleState.Provisional, ElementLifecycleState.Confirmed));
+                }
+            }
+            foreach (var id in groupIds.Distinct(StringComparer.Ordinal))
+            {
+                if (_groups.TryGetValue(id, out var group) &&
+                    group.LifecycleState == ElementLifecycleState.Provisional)
+                {
+                    group.LifecycleState = ElementLifecycleState.Confirmed;
+                    changes.Add(new ElementLifecycleChange("group", id,
+                        ElementLifecycleState.Provisional, ElementLifecycleState.Confirmed));
+                }
+            }
+            if (changes.Count > 0) Revision++;
+            return changes;
+        }
+    }
+
+    public void SetIntentState(DiagramIntentState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        lock (SyncRoot)
+        {
+            if (IntentState == state) return;
+            var appliedIntentChanged = IntentState.AppliedIntent != state.AppliedIntent;
+            IntentState = state;
+            if (appliedIntentChanged) GenerationEpoch++;
+            Revision++;
+        }
+    }
+
+    public void SetSuggestedIntentState(DiagramIntentState? state)
+    {
+        lock (SyncRoot)
+        {
+            if (SuggestedIntentState == state) return;
+            SuggestedIntentState = state;
+            Revision++;
+        }
+    }
+
+    /// <summary>
+    /// Restores a persisted recency stamp without allowing the graph's monotonic
+    /// sequence to move backwards.
+    /// </summary>
+    public bool TryRestoreNodeSequence(string id, long sequence)
+    {
+        if (sequence < 0) return false;
+        lock (SyncRoot)
+        {
+            if (!_nodes.TryGetValue(id, out var node)) return false;
+            node.Sequence = sequence;
+            _sequence = Math.Max(_sequence, sequence);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Replaces the graph with an already validated persistence snapshot. This
+    /// intentionally bypasses model-patch de-duplication so distinct saved IDs
+    /// and notes are restored without semantic loss.
+    /// </summary>
+    public void RestorePersistedState(
+        IEnumerable<SceneNode> nodes,
+        IEnumerable<SceneEdge> edges,
+        IEnumerable<SceneGroup> groups,
+        IEnumerable<SceneNote> notes,
+        IEnumerable<SceneImage> images,
+        int revision,
+        DiagramIntentState? intentState = null,
+        DiagramIntentState? suggestedIntentState = null)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+        ArgumentNullException.ThrowIfNull(edges);
+        ArgumentNullException.ThrowIfNull(groups);
+        ArgumentNullException.ThrowIfNull(notes);
+        ArgumentNullException.ThrowIfNull(images);
+        lock (SyncRoot)
+        {
+            var nextGenerationEpoch = GenerationEpoch + 1;
+            _nodes.Clear();
+            _edges.Clear();
+            _groups.Clear();
+            _notes.Clear();
+            _images.Clear();
+            foreach (var group in groups) _groups[group.Id] = group.Clone();
+            foreach (var node in nodes) _nodes[node.Id] = node.Clone();
+            foreach (var edge in edges) _edges[edge.Id] = edge.Clone();
+            foreach (var note in notes) _notes[note.Id] = note.Clone();
+            foreach (var image in images) _images[image.Id] = image.Clone();
+            _sequence = _nodes.Values.Select(n => n.Sequence).DefaultIfEmpty().Max();
+            Revision = Math.Max(0, revision);
+            GenerationEpoch = nextGenerationEpoch;
+            IntentState = intentState ?? DiagramIntentState.Default with { AppliedRevision = Math.Max(0, revision) };
+            SuggestedIntentState = suggestedIntentState;
         }
     }
 
@@ -142,7 +317,14 @@ public sealed class SceneGraph
     {
         lock (SyncRoot)
         {
-            var copy = new SceneGraph { Revision = Revision, _sequence = _sequence };
+            var copy = new SceneGraph
+            {
+                Revision = Revision,
+                GenerationEpoch = GenerationEpoch,
+                _sequence = _sequence,
+            };
+            copy.IntentState = IntentState;
+            copy.SuggestedIntentState = SuggestedIntentState;
             foreach (var n in _nodes.Values) copy._nodes[n.Id] = n.Clone();
             foreach (var e in _edges.Values) copy._edges[e.Id] = e.Clone();
             foreach (var g in _groups.Values) copy._groups[g.Id] = g.Clone();

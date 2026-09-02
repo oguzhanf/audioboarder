@@ -42,6 +42,7 @@ public static class ExcalidrawPalette
         NodeKind.System => Indigo,
         NodeKind.Technology => Teal,
         NodeKind.Security => Red,
+        NodeKind.Identity => Blue,
         NodeKind.Cloud => Indigo,
         NodeKind.Document => Gray,
         NodeKind.Milestone => Lime,

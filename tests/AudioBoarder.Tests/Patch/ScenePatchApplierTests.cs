@@ -8,6 +8,84 @@ public class ScenePatchApplierTests
     private readonly ScenePatchApplier _applier = new();
 
     [Fact]
+    public void ContinuousReassertionNeverDowngradesConfirmedLifecycle()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new GroupOp("g", "System", Array.Empty<string>()),
+                new AddNode("a", NodeKind.System, "API", "g"),
+                new AddNode("b", NodeKind.DataStore, "Database", "g"),
+                new Connect("e", "a", "b", Label: "writes"),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Confirmed);
+
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new GroupOp("g", "System", ["a", "b"]),
+                new AddNode("a", NodeKind.System, "API", "g"),
+                new UpdateNode("b", Description: "stores records"),
+                new Connect("e", "a", "b", Label: "writes records"),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Provisional);
+
+        graph.Nodes.Values.Should().OnlyContain(
+            node => node.LifecycleState == ElementLifecycleState.Confirmed);
+        graph.Edges.Values.Should().OnlyContain(
+            edge => edge.LifecycleState == ElementLifecycleState.Confirmed);
+        graph.Groups.Values.Should().OnlyContain(
+            group => group.LifecycleState == ElementLifecycleState.Confirmed);
+    }
+
+    [Fact]
+    public void GroupContainmentNeverChangesMemberLifecycle()
+    {
+        var graph = new SceneGraph();
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new AddNode("confirmed", NodeKind.System, "Confirmed API"),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Confirmed);
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new GroupOp("provisional-group", "Provisional group", ["confirmed"]),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Provisional);
+
+        graph.Nodes["confirmed"].GroupId.Should().Be("provisional-group");
+        graph.Nodes["confirmed"].LifecycleState.Should().Be(
+            ElementLifecycleState.Confirmed);
+
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new GroupOp("confirmed-group", "Confirmed group", Array.Empty<string>()),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Confirmed);
+        _applier.Apply(
+            graph,
+            new ScenePatch(
+            [
+                new AddNode("provisional", NodeKind.System, "Provisional worker"),
+                new GroupOp("confirmed-group", "Confirmed group", ["provisional"]),
+            ]),
+            incomingLifecycle: ElementLifecycleState.Provisional);
+
+        graph.Nodes["provisional"].GroupId.Should().Be("confirmed-group");
+        graph.Nodes["provisional"].LifecycleState.Should().Be(
+            ElementLifecycleState.Provisional);
+    }
+
+    [Fact]
     public void ApplyAddNode_AddsNode()
     {
         var graph = new SceneGraph();

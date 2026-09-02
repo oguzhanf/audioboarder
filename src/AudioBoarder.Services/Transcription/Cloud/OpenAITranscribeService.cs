@@ -17,7 +17,7 @@ namespace AudioBoarder.Services.Transcription.Cloud;
 /// PCM-16 audio PER ROLE so the mic and loopback streams are transcribed
 /// independently (mixing their bytes corrupts the audio sent to the model).
 /// </summary>
-public sealed class OpenAITranscribeService : ITranscriptionService
+public sealed class OpenAITranscribeService : ITranscriptionService, ITranscriptionDiagnosticsSource
 {
     private readonly CloudTranscriptionOptions _options;
     private readonly ILogger<OpenAITranscribeService> _logger;
@@ -28,6 +28,11 @@ public sealed class OpenAITranscribeService : ITranscriptionService
     private readonly object _bufferGate = new();
     private readonly SemaphoreSlim _flushGate = new(1, 1);
     private bool _ready;
+    private TranscriptionDiagnostics _diagnostics = TranscriptionDiagnostics.Healthy;
+    private long _droppedBytes;
+    private TimeSpan _droppedDuration;
+
+    public event EventHandler<TranscriptionDiagnostics>? DiagnosticsChanged;
 
     public OpenAITranscribeService(
         IOptions<CloudTranscriptionOptions> options,
@@ -43,13 +48,24 @@ public sealed class OpenAITranscribeService : ITranscriptionService
 
     public string Name => $"AzureOpenAI.Transcribe/{_options.DeploymentName ?? "?"}";
     public bool IsReady => _ready;
+    public TranscriptionDiagnostics Diagnostics
+    {
+        get
+        {
+            lock (_bufferGate) return _diagnostics;
+        }
+    }
 
     public Task InitializeAsync(CancellationToken ct)
     {
         if (!_options.IsConfigured)
+        {
+            PublishDiagnostics(TranscriptionRuntimeState.Fatal, "configuration");
             throw new InvalidOperationException("OpenAITranscribeService requires Endpoint + DeploymentName.");
+        }
         _ready = true;
         _logger.LogInformation("Cloud transcription ready: {Name}", Name);
+        PublishDiagnostics(TranscriptionRuntimeState.Healthy);
         return Task.CompletedTask;
     }
 
@@ -71,8 +87,16 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                 _buffers[chunk.Role] = rb;
             }
             if (rb.Stream.Length == 0) rb.WindowStart = chunk.CapturedAt;
-            rb.Stream.Write(chunk.Samples.Span);
+            var blockAlign = Math.Max(1, chunk.Format.Channels * chunk.Format.BytesPerSample);
+            var alignedLength = chunk.Samples.Length - (chunk.Samples.Length % blockAlign);
+            if (alignedLength == 0)
+                return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+            rb.Stream.Write(chunk.Samples.Span[..alignedLength]);
             rb.LastAppendAt = DateTimeOffset.UtcNow;
+            rb.WindowEnd = chunk.CapturedAt + TimeSpan.FromSeconds(
+                alignedLength / (double)chunk.Format.BytesPerSecond);
+            TrimToBacklogLimit(rb, chunk.Role);
+            PublishDiagnosticsLocked();
         }
         return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
     }
@@ -96,7 +120,12 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                 var maxBytes = (int)(AudioFormat.Mono16kPcm16.BytesPerSecond * effectiveWindow);
                 foreach (var (role, rb) in _buffers)
                 {
-                    if (rb.Stream.Length == 0 || (!force && now < rb.RetryNotBefore)) continue;
+                    // "force" may bypass our own short transient backoff during stop,
+                    // but never an authoritative Azure Retry-After deadline.
+                    var retryBlocked = now < rb.RetryNotBefore &&
+                        (!force || string.Equals(
+                            rb.SafeErrorCode, "rate_limited", StringComparison.Ordinal));
+                    if (rb.Stream.Length == 0 || retryBlocked) continue;
                     var quietMs = (now - rb.LastAppendAt).TotalMilliseconds;
                     var silencePassed = quietMs >= _options.SilenceFlushMs && rb.Stream.Length >= minBytes;
                     var windowFull = rb.Stream.Length >= maxBytes;
@@ -109,15 +138,31 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                         rb.Stream.ToArray(),
                         role == AudioStreamRole.Loopback ? TranscriptSpeaker.Remote : TranscriptSpeaker.Local,
                         rb.WindowStart,
-                        rb.LastAppendAt));
+                        rb.WindowEnd));
                     rb.Stream.SetLength(0);
                 }
+                PublishDiagnosticsLocked();
             }
 
             if (pending.Count == 0) return Array.Empty<TranscriptSegment>();
             var tasks = pending.Select(batch => TranscribeBatchAsync(batch, ct)).ToArray();
-            var batches = await Task.WhenAll(tasks).ConfigureAwait(false);
-            return batches.SelectMany(x => x).ToArray();
+            try
+            {
+                var batches = await Task.WhenAll(tasks).ConfigureAwait(false);
+                return batches.SelectMany(x => x).ToArray();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Mic and loopback are independent batches. If one completed while
+                // its sibling was canceled during Retry-After, preserve the completed
+                // transcript instead of losing it with the aggregate cancellation.
+                var completed = tasks
+                    .Where(task => task.IsCompletedSuccessfully)
+                    .SelectMany(task => task.Result)
+                    .ToArray();
+                if (completed.Length > 0) return completed;
+                throw;
+            }
         }
         finally
         {
@@ -142,7 +187,9 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                         {
                             rb.FailureCount = 0;
                             rb.RetryNotBefore = default;
+                            rb.SafeErrorCode = null;
                         }
+                        PublishDiagnosticsLocked();
                     }
                     // Recover toward the configured window once calls succeed again.
                     RelaxWindow();
@@ -153,36 +200,49 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                     // Widening the window is the only thing that actually reduces load;
                     // retrying at the same cadence just burns the quota again.
                     WidenWindow();
-                    var wait = Clamp(ex.RetryAfter ?? TimeSpan.FromMilliseconds(500 * attempt));
+                    var wait = NormalizeRetryDelay(
+                        ex.RetryAfter ?? TimeSpan.FromMilliseconds(500 * attempt));
+                    // Persist the authoritative deadline before awaiting it. If stop
+                    // cancels this first wait, the batch is requeued but a forced
+                    // final flush must still not bypass Azure's Retry-After.
+                    MarkRateLimited(batch.Role, wait);
                     if (attempt >= 2)
                     {
-                        MarkRateLimited(batch.Role, wait);
                         _logger.LogWarning(
-                            "Cloud transcribe rate limited; buffering {Window:F1}s per request and pausing {Wait:F1}s",
-                            _options.WindowSeconds * Volatile.Read(ref _windowScale), wait.TotalSeconds);
-                        Requeue(batch);
+                            "Cloud transcribe rate limited; category={Category} bufferedWindow={Window:F1}s retryIn={Wait:F1}s",
+                            "rate_limited", _options.WindowSeconds * Volatile.Read(ref _windowScale), wait.TotalSeconds);
+                        Requeue(batch, "rate_limited");
                         return Array.Empty<TranscriptSegment>();
                     }
+                    PublishDiagnostics(TranscriptionRuntimeState.RateLimited, "rate_limited",
+                        DateTimeOffset.UtcNow + wait);
                     await Task.Delay(wait, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (attempt < 3 && IsTransient(ex, ct))
                 {
                     var delay = TimeSpan.FromMilliseconds(250 * Math.Pow(2, attempt - 1));
-                    _logger.LogWarning(ex, "Cloud transcribe attempt {Attempt} failed; retrying in {Delay}ms",
-                        attempt, delay.TotalMilliseconds);
+                    var code = SafeErrorCode(ex);
+                    _logger.LogWarning(
+                        "Cloud transcribe attempt failed; attempt={Attempt} category={Category} retryInMs={Delay}",
+                        attempt, code, delay.TotalMilliseconds);
+                    PublishDiagnostics(TranscriptionRuntimeState.Retrying, code,
+                        DateTimeOffset.UtcNow + delay);
                     await Task.Delay(delay, ct).ConfigureAwait(false);
                 }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            Requeue(batch);
+            Requeue(batch, "cancelled");
             throw;
         }
         catch (Exception ex)
         {
-            Requeue(batch);
-            _logger.LogWarning(ex, "Cloud transcribe failed; audio retained for retry");
+            var code = SafeErrorCode(ex);
+            Requeue(batch, code);
+            _logger.LogWarning(
+                "Cloud transcribe failed; category={Category} audioBytes={Bytes} durationMs={DurationMs:F0} retained=true",
+                code, batch.Pcm.Length, (batch.End - batch.Start).TotalMilliseconds);
             return Array.Empty<TranscriptSegment>();
         }
     }
@@ -214,6 +274,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService
 
         using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var requestId = TryGetRequestId(resp);
         if (!resp.IsSuccessStatusCode)
         {
             if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
@@ -225,11 +286,11 @@ public sealed class OpenAITranscribeService : ITranscriptionService
                             ? d - DateTimeOffset.UtcNow
                             : (TimeSpan?)null);
                 throw new RateLimitedException(
-                    $"Cloud transcribe HTTP 429: {Truncate(body, 300)}", retryAfter);
+                    "Cloud transcription was rate limited.", retryAfter);
             }
 
             throw new HttpRequestException(
-                $"Cloud transcribe HTTP {(int)resp.StatusCode}: {Truncate(body, 300)}",
+                $"Cloud transcription request failed with status {(int)resp.StatusCode}.",
                 inner: null,
                 resp.StatusCode);
         }
@@ -246,11 +307,14 @@ public sealed class OpenAITranscribeService : ITranscriptionService
 
         if (IsLikelyHallucination(text))
         {
-            _logger.LogInformation("Dropped likely-hallucinated transcript: \"{Text}\"", Truncate(text, 80));
+            _logger.LogInformation(
+                "Dropped likely-hallucinated transcript; chars={Chars} requestId={RequestId}",
+                text.Length, requestId);
             return Array.Empty<TranscriptSegment>();
         }
-        _logger.LogInformation("Cloud transcript: speaker={Speaker} chars={Chars} window={Sec:F1}s text=\"{Text}\"",
-            speaker, text.Length, (end - start).TotalSeconds, Truncate(text, 120));
+        _logger.LogInformation(
+            "Cloud transcript completed: speaker={Speaker} chars={Chars} window={Sec:F1}s requestId={RequestId}",
+            speaker, text.Length, (end - start).TotalSeconds, requestId);
         return new[] { new TranscriptSegment(Guid.NewGuid(), speaker, text, start, end) };
     }
 
@@ -277,17 +341,24 @@ public sealed class OpenAITranscribeService : ITranscriptionService
         lock (_bufferGate)
         {
             if (_buffers.TryGetValue(role, out var rb))
-                rb.RetryNotBefore = DateTimeOffset.UtcNow + wait;
+            {
+                var serverDeadline = DateTimeOffset.UtcNow + wait;
+                if (serverDeadline > rb.RetryNotBefore)
+                    rb.RetryNotBefore = serverDeadline;
+                rb.SafeErrorCode = "rate_limited";
+            }
+            PublishDiagnosticsLocked("rate_limited");
         }
     }
 
-    /// <summary>A live transcript cannot wait a minute, whatever the header says.</summary>
-    private static TimeSpan Clamp(TimeSpan wait) =>
-        wait < TimeSpan.Zero ? TimeSpan.Zero
-        : wait > TimeSpan.FromSeconds(10) ? TimeSpan.FromSeconds(10)
-        : wait;
+    /// <summary>
+    /// A valid server Retry-After is authoritative. Shortening it creates a tight
+    /// 429 loop that prolongs throttling and eventually drops buffered speech.
+    /// </summary>
+    private static TimeSpan NormalizeRetryDelay(TimeSpan wait) =>
+        wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
 
-    private void Requeue(PendingBatch batch)
+    private void Requeue(PendingBatch batch, string safeErrorCode)
     {
         lock (_bufferGate)
         {
@@ -301,33 +372,33 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             rb.Stream.Write(batch.Pcm);
             rb.Stream.Write(newer);
             rb.WindowStart = batch.Start;
+            rb.WindowEnd = rb.WindowEnd > batch.End ? rb.WindowEnd : batch.End;
             if (rb.LastAppendAt == default) rb.LastAppendAt = batch.End;
             rb.FailureCount++;
+            var activeServerThrottle =
+                string.Equals(rb.SafeErrorCode, "rate_limited", StringComparison.Ordinal) &&
+                rb.RetryNotBefore > DateTimeOffset.UtcNow;
+            if (!activeServerThrottle)
+                rb.SafeErrorCode = safeErrorCode;
 
-            // Never let a backlog grow without bound: a long outage would otherwise
-            // build an ever-larger payload that is slower and likelier to fail again.
-            // Losing the oldest audio beats stalling the whole live transcript.
-            var maxBytes = (long)(AudioFormat.Mono16kPcm16.BytesPerSecond * _options.MaxBufferedSeconds);
-            if (rb.Stream.Length > maxBytes)
-            {
-                var all = rb.Stream.ToArray();
-                var keep = all.AsSpan((int)(all.Length - maxBytes));
-                rb.Stream.SetLength(0);
-                rb.Stream.Write(keep);
-                _logger.LogWarning(
-                    "Transcription backlog exceeded {Max}s for role={Role}; dropped {Dropped}B of the oldest audio",
-                    _options.MaxBufferedSeconds, batch.Role, all.Length - maxBytes);
-            }
+            TrimToBacklogLimit(rb, batch.Role);
 
             // Short, bounded backoff. This is a live transcript, not a durable queue.
             var backoff = Math.Min(
-                _options.MaxRetryBackoffSeconds, 0.25 * Math.Pow(2, rb.FailureCount));
-            rb.RetryNotBefore = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(backoff);
+                Math.Max(0, _options.MaxRetryBackoffSeconds),
+                0.25 * Math.Pow(2, rb.FailureCount));
+            var localRetryNotBefore =
+                DateTimeOffset.UtcNow + TimeSpan.FromSeconds(backoff);
+            if (localRetryNotBefore > rb.RetryNotBefore)
+                rb.RetryNotBefore = localRetryNotBefore;
+            PublishDiagnosticsLocked(
+                activeServerThrottle ? "rate_limited" : safeErrorCode);
         }
     }
 
     private static bool IsTransient(Exception ex, CancellationToken ct)
-    {        if (ex is OperationCanceledException) return !ct.IsCancellationRequested;
+    {
+        if (ex is OperationCanceledException) return !ct.IsCancellationRequested;
         if (ex is not HttpRequestException http) return false;
         return http.StatusCode is null
             or System.Net.HttpStatusCode.RequestTimeout
@@ -335,7 +406,120 @@ public sealed class OpenAITranscribeService : ITranscriptionService
             || (int)http.StatusCode.Value >= 500;
     }
 
-    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+    private void TrimToBacklogLimit(RoleBuffer rb, AudioStreamRole role)
+    {
+        var format = AudioFormat.Mono16kPcm16;
+        var blockAlign = format.Channels * format.BytesPerSample;
+        var configuredBytes = Math.Max(0L,
+            (long)Math.Floor(format.BytesPerSecond * Math.Max(0, _options.MaxBufferedSeconds)));
+        var maxBytes = configuredBytes - (configuredBytes % blockAlign);
+        if (rb.Stream.Length <= maxBytes) return;
+
+        var all = rb.Stream.ToArray();
+        var dropBytes = all.LongLength - maxBytes;
+        dropBytes -= dropBytes % blockAlign;
+        if (dropBytes <= 0) return;
+        rb.Stream.SetLength(0);
+        rb.Stream.Write(all.AsSpan((int)dropBytes));
+        var dropped = TimeSpan.FromSeconds(dropBytes / (double)format.BytesPerSecond);
+        rb.WindowStart += dropped;
+        _droppedBytes += dropBytes;
+        _droppedDuration += dropped;
+        _logger.LogWarning(
+            "Transcription audio dropped; role={Role} category={Category} droppedBytes={DroppedBytes} droppedMs={DroppedMs:F0} maxBacklogMs={MaxMs:F0}",
+            role, "backlog_limit", dropBytes, dropped.TotalMilliseconds,
+            Math.Max(0, _options.MaxBufferedSeconds) * 1000);
+    }
+
+    private void PublishDiagnostics(
+        TranscriptionRuntimeState requestedState,
+        string? safeErrorCode = null,
+        DateTimeOffset? retryAt = null)
+    {
+        TranscriptionDiagnostics? changed;
+        lock (_bufferGate)
+            changed = UpdateDiagnosticsLocked(requestedState, safeErrorCode, retryAt);
+        if (changed is not null) NotifyDiagnostics(changed);
+    }
+
+    private void PublishDiagnosticsLocked(string? safeErrorCode = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var retryAt = _buffers.Values
+            .Select(b => b.RetryNotBefore)
+            .Where(t => t > now)
+            .DefaultIfEmpty()
+            .Min();
+        safeErrorCode ??= _buffers.Values
+            .Where(b => b.RetryNotBefore > now)
+            .Select(b => b.SafeErrorCode)
+            .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code));
+        var pendingSeconds = _buffers.Values.Sum(
+            b => b.Stream.Length / (double)AudioFormat.Mono16kPcm16.BytesPerSecond);
+        var state = _droppedBytes > 0
+            ? TranscriptionRuntimeState.AudioDropped
+            : retryAt != default && string.Equals(safeErrorCode, "rate_limited", StringComparison.Ordinal)
+                ? TranscriptionRuntimeState.RateLimited
+                : retryAt != default
+                    ? TranscriptionRuntimeState.Retrying
+                    : pendingSeconds >= Math.Max(_options.WindowSeconds, _options.MaxBufferedSeconds * 0.5)
+                        ? TranscriptionRuntimeState.Backlogged
+                        : TranscriptionRuntimeState.Healthy;
+        var changed = UpdateDiagnosticsLocked(
+            state, safeErrorCode, retryAt == default ? null : retryAt);
+        if (changed is not null)
+            NotifyDiagnostics(changed);
+    }
+
+    private TranscriptionDiagnostics? UpdateDiagnosticsLocked(
+        TranscriptionRuntimeState state,
+        string? safeErrorCode,
+        DateTimeOffset? retryAt)
+    {
+        var pendingBytes = _buffers.Values.Sum(b => b.Stream.Length);
+        var pending = TimeSpan.FromSeconds(
+            pendingBytes / (double)AudioFormat.Mono16kPcm16.BytesPerSecond);
+        var next = new TranscriptionDiagnostics(
+            state,
+            pending,
+            retryAt,
+            _droppedDuration,
+            _droppedBytes,
+            safeErrorCode);
+        if (next == _diagnostics) return null;
+        _diagnostics = next;
+        return next;
+    }
+
+    private void NotifyDiagnostics(TranscriptionDiagnostics diagnostics)
+    {
+        try { DiagnosticsChanged?.Invoke(this, diagnostics); }
+        catch
+        {
+            _logger.LogWarning(
+                "Transcription diagnostics observer failed; category={Category}",
+                "diagnostics_observer");
+        }
+    }
+
+    private static string SafeErrorCode(Exception ex) => ex switch
+    {
+        RateLimitedException => "rate_limited",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.RequestTimeout } => "request_timeout",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.ServiceUnavailable } => "service_unavailable",
+        HttpRequestException { StatusCode: { } status } when (int)status >= 500 => "service_failure",
+        HttpRequestException => "network",
+        InvalidDataException => "invalid_response",
+        _ => "transcription_failure",
+    };
+
+    private static string? TryGetRequestId(HttpResponseMessage response)
+    {
+        foreach (var name in new[] { "x-request-id", "apim-request-id", "request-id" })
+            if (response.Headers.TryGetValues(name, out var values))
+                return values.FirstOrDefault();
+        return null;
+    }
 
     /// <summary>
     /// Whisper-family models (including gpt-4o-transcribe) emit stock phrases
@@ -452,9 +636,11 @@ public sealed class OpenAITranscribeService : ITranscriptionService
     {
         public MemoryStream Stream { get; } = new();
         public DateTimeOffset WindowStart { get; set; }
+        public DateTimeOffset WindowEnd { get; set; }
         public DateTimeOffset LastAppendAt { get; set; }
         public DateTimeOffset RetryNotBefore { get; set; }
         public int FailureCount { get; set; }
+        public string? SafeErrorCode { get; set; }
     }
 }
 

@@ -51,7 +51,12 @@ public sealed record Connect(
     string To,
     EdgeKind Kind = EdgeKind.Flow,
     string? Label = null,
-    int? Step = null) : ScenePatchOperation;
+    int? Step = null,
+    string? Protocol = null,
+    string? Payload = null,
+    string? DataClassification = null,
+    string? Authentication = null,
+    InteractionMode? InteractionMode = null) : ScenePatchOperation;
 
 public sealed record Disconnect(string Id) : ScenePatchOperation;
 
@@ -62,7 +67,8 @@ public sealed record GroupOp(
     string Label,
     IReadOnlyList<string> NodeIds,
     string? ParentGroupId = null,
-    string? Subtitle = null) : ScenePatchOperation;
+    string? Subtitle = null,
+    BoundaryKind BoundaryKind = BoundaryKind.Generic) : ScenePatchOperation;
 
 public sealed record UngroupOp(string Id) : ScenePatchOperation;
 

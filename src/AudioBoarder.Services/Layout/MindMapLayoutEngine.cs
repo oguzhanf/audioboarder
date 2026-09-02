@@ -133,14 +133,14 @@ public sealed class MindMapLayoutEngine : ILayoutEngine
         foreach (var node in graph.Nodes.Values)
         {
             // Emphasise the central idea so the hub reads as the main topic.
-            if (roots.Contains(node.Id) && !node.Locked)
+            if (roots.Contains(node.Id) && (options.ReflowPinned || !node.Locked))
             {
                 node.Width = Math.Max(node.Width, 184);
                 node.Height = Math.Max(node.Height, 78);
             }
 
             var (gx, gy) = global[node.Id];
-            if (!node.Locked || node.X is null || node.Y is null)
+            if (options.ReflowPinned || !node.Locked || node.X is null || node.Y is null)
             {
                 node.X = gx + offX;
                 node.Y = gy + offY;

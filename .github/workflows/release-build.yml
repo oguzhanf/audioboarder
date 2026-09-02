@@ -1,0 +1,372 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without leading v
+        required: true
+        default: 0.8.0-preview.1
+      source_commit:
+        description: Exact 40-character commit SHA to build
+        required: true
+      prerelease:
+        description: Build prerelease artifacts
+        required: true
+        type: boolean
+        default: true
+      unsigned:
+        description: Publish explicitly unsigned prerelease artifacts
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      source_commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+
+      - id: source
+        name: Validate immutable source
+        shell: pwsh
+        env:
+          REQUESTED_COMMIT: ${{ inputs.source_commit }}
+          UNSIGNED: ${{ inputs.unsigned }}
+        run: |
+          if ($env:REQUESTED_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "source_commit must be an exact 40-character commit SHA."
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ine $env:REQUESTED_COMMIT) {
+            throw "Checked-out commit does not match source_commit."
+          }
+          if (-not [Convert]::ToBoolean($env:UNSIGNED)) {
+            git fetch origin main --no-tags
+            git merge-base --is-ancestor $actual origin/main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Signed builds are restricted to commits reachable from protected main."
+            }
+          }
+          "commit=$actual" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/AudioBoarder.App/web/package-lock.json
+
+      - name: Build, test, and create unsigned artifacts
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          UNSIGNED: ${{ inputs.unsigned }}
+          ALLOWED_SIGNER_CERT_SHA256: ${{ vars.WINDOWS_ALLOWED_SIGNER_CERT_SHA256 }}
+        run: |
+          $pre = [Convert]::ToBoolean($env:PRERELEASE)
+          $unsigned = [Convert]::ToBoolean($env:UNSIGNED)
+          if (-not $pre -and $unsigned) {
+            throw "Stable artifacts must use the protected signing job."
+          }
+          $arguments = @{
+            Version = $env:VERSION
+            Unsigned = $true
+            AllowedSignerCertificateSha256 = $env:ALLOWED_SIGNER_CERT_SHA256
+          }
+          if ($pre) { $arguments.Prerelease = $true }
+          if ($unsigned) {
+            if (-not $env:VERSION.Contains("-")) {
+              throw "Unsigned prerelease versions require a prerelease identifier."
+            }
+          } else {
+            $arguments.StagingForSigning = $true
+          }
+          .\scripts\build-release.ps1 @arguments
+
+      - name: Create immutable signing-stage manifest
+        if: ${{ !inputs.unsigned }}
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $paths = @(
+            "artifacts\staging\v$env:VERSION",
+            "artifacts\release\v$env:VERSION",
+            "installer",
+            "src\AudioBoarder.App\Assets\AudioBoarder.ico"
+          )
+          $files = Get-ChildItem $paths -Recurse -File |
+            Where-Object FullName -NotMatch '\\(bin|obj)\\' |
+            Sort-Object FullName
+          $root = (Get-Location).Path
+          $files | ForEach-Object {
+            $relative = $_.FullName.Substring($root.Length + 1).Replace('\','/')
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash *$relative"
+          } | Set-Content SIGNING-STAGE-SHA256.txt -Encoding ascii
+
+      - name: Upload unsigned prerelease artifact set
+        if: ${{ inputs.unsigned }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBoarder-v${{ inputs.version }}-unsigned
+          path: artifacts/release/v${{ inputs.version }}/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload protected signing stage
+        if: ${{ !inputs.unsigned }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBoarder-v${{ inputs.version }}-signing-stage
+          path: |
+            artifacts/staging/v${{ inputs.version }}/
+            artifacts/release/v${{ inputs.version }}/
+            installer/AudioBoarder.Installer.wixproj
+            installer/Package.wxs
+            installer/License.rtf
+            src/AudioBoarder.App/Assets/AudioBoarder.ico
+            SIGNING-STAGE-SHA256.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    if: ${{ !inputs.unsigned }}
+    needs: build
+    runs-on: windows-latest
+    environment: release-signing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AudioBoarder-v${{ inputs.version }}-signing-stage
+          path: bundle
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify immutable signing-stage manifest
+        shell: pwsh
+        run: |
+          Push-Location bundle
+          try {
+            foreach ($line in Get-Content SIGNING-STAGE-SHA256.txt) {
+              if ($line -notmatch '^(?<hash>[0-9a-f]{64}) \*(?<path>.+)$') {
+                throw "Malformed signing-stage manifest entry."
+              }
+              $path = $Matches.path.Replace('/', '\')
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Missing signing-stage file: $path"
+              }
+              $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+              if ($actual -ine $Matches.hash) {
+                throw "Signing-stage hash mismatch: $path"
+              }
+            }
+          } finally { Pop-Location }
+
+      - name: Sign and verify application payload
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          ALLOWED_CERT_SHA256: ${{ vars.WINDOWS_ALLOWED_SIGNER_CERT_SHA256 }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:PFX_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:ALLOWED_CERT_SHA256)) {
+            throw "Protected signing credentials and exact signer allowlist are required."
+          }
+          $allowed = @($env:ALLOWED_CERT_SHA256 -split '[,;]' |
+            ForEach-Object { $_.Trim().Replace('sha256:','').ToUpperInvariant() } |
+            Where-Object { $_ -match '^[0-9A-F]{64}$' })
+          if ($allowed.Count -eq 0) { throw "Signer allowlist is invalid." }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found." }
+          $pfx = Join-Path $env:RUNNER_TEMP "audioboarder-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+            $publishRoots = @(
+              "bundle\artifacts\staging\v$env:VERSION\msi",
+              "bundle\artifacts\staging\v$env:VERSION\portable"
+            )
+            $files = Get-ChildItem $publishRoots -Recurse -File -Include *.exe,*.dll
+            foreach ($file in $files) {
+              & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+                /f $pfx /p $env:PFX_PASSWORD $file.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Signing failed: $($file.Name)" }
+              & $signtool.FullName verify /pa /all $file.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Signature verification failed: $($file.Name)" }
+              $signature = Get-AuthenticodeSignature $file.FullName
+              $hash = [Convert]::ToHexString(
+                [Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData))
+              if ($allowed -notcontains $hash) { throw "Signer identity mismatch: $($file.Name)" }
+            }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Finalize metadata and rebuild MSI without signing secrets
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          ALLOWED_CERT_SHA256: ${{ vars.WINDOWS_ALLOWED_SIGNER_CERT_SHA256 }}
+        run: |
+          $release = "bundle\artifacts\release\v$env:VERSION"
+          $staging = "bundle\artifacts\staging\v$env:VERSION"
+          $metadataPath = Join-Path $release RELEASE-METADATA.json
+          $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+          $metadata.signed = $true
+          $metadata.signingPending = $false
+          $metadata.allowedSignerCertificateSha256 = @(
+            $env:ALLOWED_CERT_SHA256 -split '[,;]' |
+            ForEach-Object { $_.Trim().Replace('sha256:','').ToUpperInvariant() } |
+            Where-Object { $_ })
+          $exe = Join-Path $staging "msi\AudioBoarder.exe"
+          $exeInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+          $metadata.publishExecutableFileVersion = $exeInfo.FileVersion
+          $metadata.publishExecutableProductVersion = $exeInfo.ProductVersion
+          $metadata.publishExecutableSha256 =
+            (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $metadata.publishExecutableLastWriteTimeUtc =
+            (Get-Item $exe).LastWriteTimeUtc.ToString("O")
+          $metadata | ConvertTo-Json -Depth 6 |
+            Set-Content $metadataPath -Encoding utf8NoBOM
+          Copy-Item $metadataPath (Join-Path $staging "msi\RELEASE-METADATA.json") -Force
+          Copy-Item $metadataPath (Join-Path $staging "portable\RELEASE-METADATA.json") -Force
+
+          Remove-Item "bundle\installer\bin","bundle\installer\obj" -Recurse -Force -ErrorAction SilentlyContinue
+          dotnet build "bundle\installer\AudioBoarder.Installer.wixproj" -c Release `
+            -p:Version=$env:VERSION -p:MsiVersion=$($metadata.msiVersion) `
+            -p:MsiOutputName="AudioBoarder-v$env:VERSION-win-x64" `
+            -p:PublishDir="$(Resolve-Path (Join-Path $staging msi))"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $msi = "bundle\installer\bin\x64\Release\AudioBoarder-v$env:VERSION-win-x64.msi"
+          if (-not (Test-Path $msi)) { throw "Expected signed-release MSI build output missing." }
+          Get-ChildItem $release -File |
+            Where-Object Name -Match 'unsigned-staging\.(msi|zip)$' |
+            Remove-Item -Force
+          Copy-Item $msi (Join-Path $release "AudioBoarder-v$env:VERSION-win-x64.msi") -Force
+
+      - name: Sign and verify final MSI
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          ALLOWED_CERT_SHA256: ${{ vars.WINDOWS_ALLOWED_SIGNER_CERT_SHA256 }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $allowed = @($env:ALLOWED_CERT_SHA256 -split '[,;]' |
+            ForEach-Object { $_.Trim().Replace('sha256:','').ToUpperInvariant() } |
+            Where-Object { $_ -match '^[0-9A-F]{64}$' })
+          if ($allowed.Count -eq 0) { throw "Signer allowlist is invalid." }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+            -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          $pfx = Join-Path $env:RUNNER_TEMP "audioboarder-msi-signing.pfx"
+          $msi = "bundle\artifacts\release\v$env:VERSION\AudioBoarder-v$env:VERSION-win-x64.msi"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+              /f $pfx /p $env:PFX_PASSWORD $msi
+            if ($LASTEXITCODE -ne 0) { throw "MSI signing failed." }
+            & $signtool.FullName verify /pa /all $msi
+            if ($LASTEXITCODE -ne 0) { throw "MSI signature verification failed." }
+            $signature = Get-AuthenticodeSignature $msi
+            $hash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData))
+            if ($allowed -notcontains $hash) { throw "MSI signer identity mismatch." }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Rebuild signed portable archive and checksums
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $release = "bundle\artifacts\release\v$env:VERSION"
+          $portable = "bundle\artifacts\staging\v$env:VERSION\portable"
+          $zip = Join-Path $release "AudioBoarder-v$env:VERSION-win-x64-portable.zip"
+          Remove-Item $zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$portable\*" -DestinationPath $zip -CompressionLevel Optimal
+          Get-ChildItem $release -File |
+            Where-Object Name -ne SHA256SUMS.txt |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash *$($_.Name)"
+            } | Set-Content (Join-Path $release SHA256SUMS.txt) -Encoding ascii
+
+      - name: Verify final signed artifact set without signing secrets
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          ALLOWED_CERT_SHA256: ${{ vars.WINDOWS_ALLOWED_SIGNER_CERT_SHA256 }}
+        run: |
+          $release = "bundle\artifacts\release\v$env:VERSION"
+          $allowed = @($env:ALLOWED_CERT_SHA256 -split '[,;]' |
+            ForEach-Object { $_.Trim().Replace('sha256:','').ToUpperInvariant() } |
+            Where-Object { $_ -match '^[0-9A-F]{64}$' })
+          $metadata = Get-Content (Join-Path $release RELEASE-METADATA.json) -Raw |
+            ConvertFrom-Json
+          if (-not $metadata.signed -or $metadata.signingPending) {
+            throw "Final metadata does not describe a completed signed build."
+          }
+          foreach ($line in Get-Content (Join-Path $release SHA256SUMS.txt)) {
+            if ($line -notmatch '^(?<hash>[0-9a-f]{64}) \*(?<name>.+)$') {
+              throw "Malformed final checksum entry."
+            }
+            $path = Join-Path $release $Matches.name
+            if ((Get-FileHash $path -Algorithm SHA256).Hash -ine $Matches.hash) {
+              throw "Final checksum mismatch: $($Matches.name)"
+            }
+          }
+          $inspect = Join-Path $env:RUNNER_TEMP "audioboarder-signed-portable"
+          Remove-Item $inspect -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive `
+            (Join-Path $release "AudioBoarder-v$env:VERSION-win-x64-portable.zip") `
+            $inspect
+          foreach ($path in @(
+            (Join-Path $release "AudioBoarder-v$env:VERSION-win-x64.msi"),
+            (Join-Path $inspect "AudioBoarder.exe")
+          )) {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
+              throw "Final signature invalid: $path"
+            }
+            $hash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData))
+            if ($allowed -notcontains $hash) {
+              throw "Final signer identity mismatch: $path"
+            }
+          }
+          Remove-Item $inspect -Recurse -Force
+
+      - name: Upload signed artifact set
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioBoarder-v${{ inputs.version }}-signed
+          path: bundle/artifacts/release/v${{ inputs.version }}/
+          if-no-files-found: error
+          retention-days: 14

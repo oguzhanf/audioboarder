@@ -50,8 +50,10 @@ public class ScenePatchJsonTests
             new ClearScene(),
             new AddNode("a", NodeKind.Process, "Alpha"),
             new AddNode("b", NodeKind.Decision, "?", Position: new PositionHint(PositionHintKind.Below, "a")),
-            new Connect("e1", "a", "b", EdgeKind.Flow, "yes"),
-            new GroupOp("g1", "g", new[] { "a", "b" }),
+            new Connect("e1", "a", "b", EdgeKind.Flow, "yes", 1,
+                "HTTPS", "request", "internal", "OAuth", InteractionMode.Synchronous),
+            new GroupOp("g1", "g", new[] { "a", "b" },
+                BoundaryKind: BoundaryKind.Environment),
             new NoteUpsert("n1", NoteKind.ActionItem, "Ship it",
                 Owner: "team", SourceTimestamp: new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero)),
         });
@@ -64,6 +66,10 @@ public class ScenePatchJsonTests
             .Which.Label.Should().Be("Alpha");
         roundTripped.Operations[3].Should().BeOfType<Connect>()
             .Which.From.Should().Be("a");
+        var connection = (Connect)roundTripped.Operations[3];
+        connection.Protocol.Should().Be("HTTPS");
+        connection.InteractionMode.Should().Be(InteractionMode.Synchronous);
+        ((GroupOp)roundTripped.Operations[4]).BoundaryKind.Should().Be(BoundaryKind.Environment);
     }
 
     [Fact]
@@ -165,5 +171,31 @@ public class ScenePatchJsonTests
         });
         var json = ScenePatchJson.Serialize(patch);
         json.Should().Contain("\"data_store\"");
+    }
+
+    [Theory]
+    [InlineData("async", InteractionMode.Asynchronous)]
+    [InlineData("scheduled", InteractionMode.Batch)]
+    [InlineData("streaming", InteractionMode.Stream)]
+    public void Deserialize_ToleratesInteractionModeSynonyms(string value, InteractionMode expected)
+    {
+        var json = $$"""
+        {"operations":[{"op":"connect","id":"e","from":"a","to":"b","interaction_mode":"{{value}}"}]}
+        """;
+        ((Connect)ScenePatchJson.Deserialize(json).Operations.Single())
+            .InteractionMode.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("vnet", BoundaryKind.Network)]
+    [InlineData("subscription", BoundaryKind.CloudScope)]
+    [InlineData("security zone", BoundaryKind.TrustZone)]
+    public void Deserialize_ToleratesBoundaryKindSynonyms(string value, BoundaryKind expected)
+    {
+        var json = $$"""
+        {"operations":[{"op":"group","id":"g","label":"G","node_ids":[],"boundary_kind":"{{value}}"}]}
+        """;
+        ((GroupOp)ScenePatchJson.Deserialize(json).Operations.Single())
+            .BoundaryKind.Should().Be(expected);
     }
 }

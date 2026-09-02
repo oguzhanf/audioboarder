@@ -1,4 +1,5 @@
 using AudioBoarder.App.Configuration;
+using AudioBoarder.Core.Scene;
 
 namespace AudioBoarder.Tests;
 
@@ -16,6 +17,12 @@ public class AudioBoarderSettingsTests
         s.Audio.CaptureLoopback.Should().BeTrue();
         s.Sessions.AutoSave.Should().BeTrue();
         s.Diagnostics.VerbosePayloadLogging.Should().BeFalse();
+        s.Diagnostics.EnableLocalPerformanceTelemetry.Should().BeFalse();
+        s.ImageGeneration.Enabled.Should().BeFalse();
+        s.DiagramIntent.SelectionMode.Should().Be(DiagramIntentSelectionMode.Auto);
+        s.DiagramIntent.PinnedIntent.Should().Be(DiagramIntent.SoftwareSystemArchitecture);
+        s.Realtime.DeepPassIntervalSeconds.Should().Be(0);
+        s.Realtime.DeepPauseSeconds.Should().BeInRange(20, 30);
     }
 
     [Fact]

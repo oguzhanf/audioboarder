@@ -2,11 +2,12 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="AudioBoarder"
            Manufacturer="Oguzhan Filizlibay"
-           Version="$(var.Version)"
+           Version="$(var.MsiVersion)"
            UpgradeCode="9F67C607-0E72-4EA2-8F36-26EB4251CA78"
            Scope="perMachine">
     <SummaryInformation Description="AudioBoarder realtime meeting whiteboard" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of AudioBoarder is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="no"
+                  DowngradeErrorMessage="A newer version of AudioBoarder is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <Icon Id="AudioBoarderIcon" SourceFile="..\src\AudioBoarder.App\Assets\AudioBoarder.ico" />
     <Property Id="ARPPRODUCTICON" Value="AudioBoarderIcon" />
@@ -57,7 +58,7 @@
                      Key="Software\AudioBoarder"
                      Name="Version"
                      Type="string"
-                     Value="$(var.Version)" />
+                     Value="$(var.ArtifactVersion)" />
     </Component>
   </Fragment>
 </Wix>

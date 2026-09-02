@@ -1,7 +1,7 @@
 /*
   WebView2 entry point for the AudioBoarder canvas.
 
-  Host contract is unchanged from the Excalidraw build:
+  Host contract:
     host -> js : postMessage(json)  /  window.loadScene(json)
     js -> host : { type: "ready" | "error" }
 */
@@ -78,7 +78,7 @@ window.loadScene = function (json) {
     if (!next) return;
     sceneRevision = Number.isInteger(next.sceneRevision) ? next.sceneRevision : null;
     scene = {
-      nodes: (next.nodes || []).map((n) => ({ ...n, pinX: n.x, pinY: n.y })),
+      nodes: (next.nodes || []).map((n) => ({ ...n })),
       edges: next.edges || [],
       groups: next.groups || [],
     };
@@ -141,14 +141,38 @@ function hitNode(ev) {
   return scene.nodes.find((n) => n.id === g.getAttribute("data-id")) || null;
 }
 
+function publishNodeLock(node) {
+  postToHost({
+    type: "scene-change",
+    sceneRevision,
+    elements: [{
+      id: node.id,
+      type: "rectangle",
+      x: node.centerX - node.width / 2,
+      y: node.centerY - node.height / 2,
+      width: node.width,
+      height: node.height,
+      locked: node.locked,
+      isDeleted: false,
+    }],
+  });
+}
+
+function toggleNodeLock(node) {
+  node.locked = !node.locked;
+  userTookControl = true;
+  draw();
+  publishNodeLock(node);
+}
+
 stage.addEventListener("pointerdown", (ev) => {
   const node = hitNode(ev);
   if (node) {
     // Dragging a node pins it: the layout stops moving it on later passes.
     nodeDrag = {
       node,
-      dx: node.x - (ev.clientX - view.x) / view.k,
-      dy: node.y - (ev.clientY - view.y) / view.k,
+      dx: node.centerX - (ev.clientX - view.x) / view.k,
+      dy: node.centerY - (ev.clientY - view.y) / view.k,
     };
     stage.setPointerCapture(ev.pointerId);
     return;
@@ -161,11 +185,9 @@ stage.addEventListener("pointerdown", (ev) => {
 stage.addEventListener("pointermove", (ev) => {
   if (nodeDrag) {
     const n = nodeDrag.node;
-    n.x = (ev.clientX - view.x) / view.k + nodeDrag.dx;
-    n.y = (ev.clientY - view.y) / view.k + nodeDrag.dy;
+    n.centerX = (ev.clientX - view.x) / view.k + nodeDrag.dx;
+    n.centerY = (ev.clientY - view.y) / view.k + nodeDrag.dy;
     n.locked = true;
-    n.pinX = n.x;
-    n.pinY = n.y;
     draw();
     return;
   }
@@ -179,22 +201,7 @@ stage.addEventListener("pointermove", (ev) => {
 function endDrag() {
   if (nodeDrag) {
     const n = nodeDrag.node;
-    // Report in the element shape the host already understands (top-left origin),
-    // so the existing pin/persist path in MainWindow keeps working unchanged.
-    postToHost({
-      type: "scene-change",
-      sceneRevision,
-      elements: [{
-        id: n.id,
-        type: "rectangle",
-        x: n.x,
-        y: n.y,
-        width: n.w || 168,
-        height: n.h || 56,
-        locked: true,
-        isDeleted: false,
-      }],
-    });
+    publishNodeLock(n);
     nodeDrag = null;
   }
   drag = null;
@@ -202,6 +209,17 @@ function endDrag() {
 }
 stage.addEventListener("pointerup", endDrag);
 stage.addEventListener("pointercancel", endDrag);
+stage.addEventListener("dblclick", (ev) => {
+  const node = hitNode(ev);
+  if (node) toggleNodeLock(node);
+});
+stage.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  const node = hitNode(ev);
+  if (!node) return;
+  ev.preventDefault();
+  toggleNodeLock(node);
+});
 
 document.getElementById("zoomIn").onclick = () => {
   userTookControl = true; view.k = Math.min(3, view.k * 1.15); applyView();

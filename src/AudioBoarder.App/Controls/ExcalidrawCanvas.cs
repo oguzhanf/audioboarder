@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using AudioBoarder.Core.Excalidraw;
@@ -12,17 +13,15 @@ using Debug = System.Diagnostics.Debug;
 namespace AudioBoarder.App.Controls;
 
 /// <summary>
-/// Hosts the real Excalidraw web app inside a <see cref="WebView2"/> and renders the
-/// current <see cref="SceneGraph"/> as a hand-drawn whiteboard. The vendored bundle in
-/// <c>Assets/web</c> is served via a virtual-host folder mapping (fully offline); scenes
-/// are pushed to it as <c>.excalidraw</c> JSON over the WebView2 message channel.
+/// Hosts the custom SVG architecture canvas inside <see cref="WebView2"/>. The
+/// vendored bundle in <c>Assets/web</c> is fully offline and receives authoritative
+/// scene geometry over the WebView2 message channel.
 /// </summary>
 public sealed class ExcalidrawCanvas : UserControl
 {
     private const string VirtualHost = "audioboarder.local";
 
     private readonly WebView2 _web = new();
-    private readonly SceneToExcalidrawConverter _converter = new();
     private bool _ready;
     private string? _pendingJson;
     private string _theme = "light";
@@ -136,25 +135,40 @@ public sealed class ExcalidrawCanvas : UserControl
         }
 
         string json;
+        var refresh = Stopwatch.StartNew();
+        var serialize = Stopwatch.StartNew();
+        var revision = Scene.Revision;
+        var nodeCount = 0;
         try
         {
             lock (Scene.SyncRoot)
             {
-                // The canvas renderer does its own layout, so it receives the graph's
-                // meaning rather than drawing instructions — a far smaller payload to
-                // push across the bridge several times a minute during a meeting.
-                json = SceneToCanvasJson.Serialize(Scene, Scene.Revision, AzureIcons);
+                revision = Scene.Revision;
+                nodeCount = Scene.Nodes.Count;
+                json = SceneToCanvasJson.Serialize(Scene, revision, AzureIcons);
             }
         }
         catch
         {
             return; // never let a transient scene state crash the UI
         }
+        finally
+        {
+            serialize.Stop();
+        }
+
+        var payloadBytes = Encoding.UTF8.GetByteCount(json);
+        UiPerformanceTelemetry.Log.BridgeSerialization(
+            serialize.Elapsed.TotalMilliseconds, revision, nodeCount, payloadBytes);
 
         if (_ready && _web.CoreWebView2 is not null)
             _web.CoreWebView2.PostWebMessageAsString(json);
         else
             _pendingJson = json;
+
+        refresh.Stop();
+        UiPerformanceTelemetry.Log.SceneRefresh(
+            refresh.Elapsed.TotalMilliseconds, revision, nodeCount, payloadBytes);
     }
 
     /// <summary>
@@ -181,8 +195,8 @@ public sealed class ExcalidrawCanvas : UserControl
         {
             Margin = new Thickness(24),
             TextWrapping = TextWrapping.Wrap,
-            Text = "The Excalidraw whiteboard could not start (WebView2 runtime issue). " +
-                   "Switch to Classic view from the toolbar.\n\nDetails: " + detail,
+            Text = "The live architecture canvas could not start because WebView2 is unavailable. " +
+                   "Restart the app after repairing the WebView2 Runtime.\n\nDetails: " + detail,
         };
     }
 

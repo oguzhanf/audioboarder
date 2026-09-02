@@ -1,0 +1,63 @@
+name: Semantic Live Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Comma-separated golden case IDs, or * for all cases
+        required: false
+        default: "*"
+
+jobs:
+  qualify:
+    runs-on: windows-latest
+    environment: semantic-live
+    env:
+      AUDIOBOARDER_LIVE_ENDPOINT: ${{ secrets.AUDIOBOARDER_LIVE_ENDPOINT }}
+      AUDIOBOARDER_LIVE_DEPLOYMENT: ${{ vars.AUDIOBOARDER_LIVE_DEPLOYMENT }}
+      AUDIOBOARDER_LIVE_API_KEY: ${{ secrets.AUDIOBOARDER_LIVE_API_KEY }}
+      AUDIOBOARDER_LIVE_CASES: ${{ inputs.cases }}
+      AUDIOBOARDER_LIVE_REQUIRED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore AudioBoarder.sln
+      - name: Preflight live qualification configuration
+        shell: pwsh
+        run: |
+          $required = @(
+            "AUDIOBOARDER_LIVE_ENDPOINT",
+            "AUDIOBOARDER_LIVE_DEPLOYMENT",
+            "AUDIOBOARDER_LIVE_API_KEY"
+          )
+          $missing = @($required | Where-Object {
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
+          })
+          if ($missing.Count -gt 0) {
+            throw "Missing required live qualification configuration: $($missing -join ', ')"
+          }
+      - name: Run live semantic qualification
+        run: dotnet test tests\AudioBoarder.Tests\AudioBoarder.Tests.csproj --configuration Release --filter "Category=LiveModel" --logger "trx;LogFileName=semantic-live.trx"
+      - name: Prove live qualification executed
+        shell: pwsh
+        run: |
+          $trx = Get-ChildItem -Recurse -Filter semantic-live.trx
+          if ($trx.Count -ne 1) { throw "Expected exactly one semantic-live.trx result file." }
+          [xml]$results = Get-Content -LiteralPath $trx[0].FullName -Raw
+          $executed = @($results.SelectNodes(
+            "//*[local-name()='UnitTestResult' and (@outcome='Passed' or @outcome='Failed')]"))
+          $passed = @($results.SelectNodes(
+            "//*[local-name()='UnitTestResult' and @outcome='Passed']"))
+          if ($executed.Count -lt 1 -or $passed.Count -lt 1) {
+            throw "No live semantic test completed successfully; skipped discovery is not qualification."
+          }
+      - name: Upload qualification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-live-results
+          path: "**/TestResults/*.trx"
+          if-no-files-found: error

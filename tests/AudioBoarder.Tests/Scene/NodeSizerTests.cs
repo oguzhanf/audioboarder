@@ -109,6 +109,29 @@ public class NodeSizerTests
     }
 
     [Fact]
+    public void ApplyToResizesUnlockedUserEditedNode()
+    {
+        var graph = new SceneGraph();
+        var applier = new Core.Patch.ScenePatchApplier();
+        applier.Apply(graph, new Core.Patch.ScenePatch(
+        [
+            new Core.Patch.AddNode(
+                "a", NodeKind.Process, "A very long user-edited label that needs a fitted box"),
+        ]));
+        graph.TryMarkNodeUserEdited("a");
+        graph.Nodes["a"].Width = 10;
+        graph.Nodes["a"].Height = 10;
+        graph.Nodes["a"].Locked = false;
+
+        NodeSizer.ApplyTo(graph);
+
+        graph.Nodes["a"].Width.Should().BeGreaterThan(10);
+        graph.Nodes["a"].Height.Should().BeGreaterThan(10);
+        graph.Nodes["a"].LifecycleState.Should().Be(ElementLifecycleState.UserEdited);
+        graph.Nodes["a"].Locked.Should().BeFalse();
+    }
+
+    [Fact]
     public void WidthIsClampedSoOneLabelCannotDominateTheBoard()
     {
         var (width, _) = NodeSizer.Measure(new string('x', 400), null, hasIcon: true);

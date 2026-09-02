@@ -30,6 +30,7 @@ coverage/
 ## Smoke / runtime artefacts
 smoke-output/
 artifacts/
+artifacts*/
 publish/
 
 ## Misc
@@ -46,4 +47,3 @@ appsettings.Local.json
 **/appsettings.Local.json
 *.local.json
 .env
-

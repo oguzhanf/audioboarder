@@ -42,7 +42,10 @@ public static class LlmProbe
                 line.Trim(), DateTimeOffset.UtcNow.AddSeconds(-30 + i), DateTimeOffset.UtcNow.AddSeconds(-29 + i)))
             .ToList();
 
-        var req = new ScenePatchRequest(new SceneGraph(), fakeTranscript, IsContinuous: continuous);
+        var req = new ScenePatchRequest(
+            new SceneGraph(),
+            fakeTranscript,
+            Mode: continuous ? GenerationMode.ContinuousExtraction : GenerationMode.DeepSynthesis);
         Console.WriteLine($"[llm] Calling Smart({endpoint} / {deployment}) continuous={continuous}…");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try

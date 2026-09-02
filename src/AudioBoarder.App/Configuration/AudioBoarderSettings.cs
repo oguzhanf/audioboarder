@@ -1,5 +1,7 @@
 namespace AudioBoarder.App.Configuration;
 
+using AudioBoarder.Core.Scene;
+
 public sealed class AudioBoarderSettings
 {
     public string Theme { get; set; } = "Light";
@@ -13,6 +15,7 @@ public sealed class AudioBoarderSettings
     public DiagnosticsSettings Diagnostics { get; set; } = new();
     public SessionSettings Sessions { get; set; } = new();
     public AzureSpeechAppSettings AzureSpeech { get; set; } = new();
+    public DiagramIntentSettings DiagramIntent { get; set; } = new();
 
     public IReadOnlyList<string> Validate()
     {
@@ -29,7 +32,20 @@ public sealed class AudioBoarderSettings
             problems.Add("Realtime.MinIntervalSeconds must be positive");
         if (Realtime.MinNewSegments <= 0)
             problems.Add("Realtime.MinNewSegments must be positive");
+        if (Realtime.DeepPauseSeconds < 0)
+            problems.Add("Realtime.DeepPauseSeconds cannot be negative");
+        if (!Enum.IsDefined(DiagramIntent.SelectionMode))
+            problems.Add("DiagramIntent.SelectionMode is invalid");
+        if (!Enum.IsDefined(DiagramIntent.PinnedIntent))
+            problems.Add("DiagramIntent.PinnedIntent is invalid");
         return problems;
+    }
+
+    public sealed class DiagramIntentSettings
+    {
+        public DiagramIntentSelectionMode SelectionMode { get; set; } = DiagramIntentSelectionMode.Auto;
+        public AudioBoarder.Core.Scene.DiagramIntent PinnedIntent { get; set; } =
+            AudioBoarder.Core.Scene.DiagramIntent.SoftwareSystemArchitecture;
     }
 }
 
@@ -72,10 +88,17 @@ public sealed class RealtimeSettings
     public double MinIntervalSeconds { get; set; } = 10;
     public int MinNewSegments { get; set; } = 3;
     public bool UseFastDeployment { get; set; } = true;
-    /// <summary>How often the continuous loop runs an automatic DEEP pass
-    /// (the smart model that groups + cleans up the diagram, like Deep Refine)
-    /// instead of a quick fast-model update. 0 disables automatic deep passes.</summary>
-    public double DeepPassIntervalSeconds { get; set; } = 30;
+    /// <summary>
+    /// Legacy fixed deep-pass interval. Timed deep passes are disabled; this remains
+    /// bindable for older configuration files and defaults to off.
+    /// </summary>
+    public double DeepPassIntervalSeconds { get; set; } = 0;
+
+    /// <summary>
+    /// Finalized-speech pause that triggers a coalesced deep synthesis when the board
+    /// contains provisional structure. 0 disables pause-triggered deep synthesis.
+    /// </summary>
+    public double DeepPauseSeconds { get; set; } = 25;
 
     /// <summary>Maximum nodes kept on the live board. Continuous passes only add, so
     /// without a cap a long meeting grows into an unreadable hairball. Architecture
@@ -103,7 +126,7 @@ public sealed class RealtimeSettings
 
 public sealed class ImageGenerationSettings
 {
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; set; }
     /// <summary>Deployment name. Auto-populated from FoundryDiscovery if blank.</summary>
     public string? DeploymentName { get; set; }
     public string OpenAIApiVersion { get; set; } = "2025-04-01-preview";
@@ -121,6 +144,8 @@ public sealed class CloudTranscriptionSettings
     public double WindowSeconds { get; set; } = 14.0;
     /// <summary>Trailing-silence gap that ends an utterance and triggers a flush (ms).</summary>
     public int SilenceFlushMs { get; set; } = 380;
+    public double MaxRetryBackoffSeconds { get; set; } = 2.0;
+    public double MaxBufferedSeconds { get; set; } = 20.0;
     /// <summary>Domain prompt biasing recognition toward expected vocabulary.</summary>
     public string? Prompt { get; set; }
     /// <summary>Transcription sampling temperature. 0 = most literal.</summary>
@@ -131,6 +156,7 @@ public sealed class CloudTranscriptionSettings
 public sealed class DiagnosticsSettings
 {
     public bool VerbosePayloadLogging { get; set; }
+    public bool EnableLocalPerformanceTelemetry { get; set; }
     public string LogLevel { get; set; } = "Information";
 }
 

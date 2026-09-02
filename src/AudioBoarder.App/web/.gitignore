@@ -1,9 +1,6 @@
-# Vite source for the embedded Excalidraw whiteboard.
+# Vite source for the embedded SVG canvas.
 # The BUILT bundle is committed at ../Assets/web (vendored, shipped with the app).
 # Everything below is local-only tooling and must not be committed.
 node_modules/
 preview.log
 *.tsbuildinfo
-
-# Local font staging — re-copied from the npm package by build-bundle.ps1.
-public/fonts/

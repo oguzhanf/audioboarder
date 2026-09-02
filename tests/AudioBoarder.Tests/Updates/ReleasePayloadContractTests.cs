@@ -14,32 +14,50 @@ namespace AudioBoarder.Tests.Updates;
 /// </summary>
 public class ReleasePayloadContractTests
 {
-    /// <summary>Trimmed to the fields the parser reads, matching the live v0.7.0 payload.</summary>
-    private const string LiveReleasePayload = """
+    /// <summary>Future signed stable payload contract produced by scripts/build-release.ps1.</summary>
+    private const string ReleasePayload = """
         {
-          "tag_name": "v0.7.0",
-          "name": "AudioBoarder v0.7.0",
+          "tag_name": "v0.8.0",
+          "name": "AudioBoarder v0.8.0",
           "draft": false,
           "prerelease": false,
           "body": "## What changed\n\nThe board looks like a diagram now.",
           "assets": [
             {
-              "name": "AudioBoarder-v0.7.0-win-x64-portable.zip",
+              "name": "AudioBoarder-v0.8.0-win-x64-portable.zip",
               "size": 101227554,
               "digest": "sha256:d6298cdd3c7dcff31b58dcd5b45424e165f00ff8fe19235cb1760230087cb302",
-              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.7.0/AudioBoarder-v0.7.0-win-x64-portable.zip"
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/AudioBoarder-v0.8.0-win-x64-portable.zip"
             },
             {
-              "name": "AudioBoarder-v0.7.0-win-x64.msi",
+              "name": "AudioBoarder-v0.8.0-win-x64.msi",
               "size": 78264260,
               "digest": "sha256:7aa3f575d75ad5eb89999a4496195e5059dc8bd7a7c8a878718a2ff097969e08",
-              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.7.0/AudioBoarder-v0.7.0-win-x64.msi"
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/AudioBoarder-v0.8.0-win-x64.msi"
             },
             {
               "name": "SHA256SUMS.txt",
               "size": 206,
               "digest": "sha256:0939e8e9baf291749f0fd25347ec69f0c8d1429a333cf7d3f9f0f0740bafff06",
-              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.7.0/SHA256SUMS.txt"
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/SHA256SUMS.txt"
+            },
+            {
+              "name": "AudioBoarder-v0.8.0.spdx.json",
+              "size": 4096,
+              "digest": "sha256:1939e8e9baf291749f0fd25347ec69f0c8d1429a333cf7d3f9f0f0740bafff07",
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/AudioBoarder-v0.8.0.spdx.json"
+            },
+            {
+              "name": "THIRD-PARTY-NOTICES.txt",
+              "size": 4096,
+              "digest": "sha256:2939e8e9baf291749f0fd25347ec69f0c8d1429a333cf7d3f9f0f0740bafff08",
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/THIRD-PARTY-NOTICES.txt"
+            },
+            {
+              "name": "RELEASE-METADATA.json",
+              "size": 512,
+              "digest": "sha256:3939e8e9baf291749f0fd25347ec69f0c8d1429a333cf7d3f9f0f0740bafff09",
+              "browser_download_url": "https://github.com/oguzhanf/audioboarder/releases/download/v0.8.0/RELEASE-METADATA.json"
             }
           ]
         }
@@ -50,13 +68,13 @@ public class ReleasePayloadContractTests
     [Fact]
     public void AnInstalledOlderBuildIsOfferedTheRelease()
     {
-        var release = GitHubUpdateService.ParseRelease(Payload(LiveReleasePayload), new Version(0, 6, 1));
+        var release = GitHubUpdateService.ParseRelease(Payload(ReleasePayload), new Version(0, 7, 0));
 
-        release.Should().NotBeNull("an installed v0.6.1 must be offered v0.7.0");
-        release!.TagName.Should().Be("v0.7.0");
-        release.Version.Should().Be(new Version(0, 7, 0));
+        release.Should().NotBeNull("an installed v0.7.0 must be offered signed v0.8.0");
+        release!.TagName.Should().Be("v0.8.0");
+        release.Version.Should().Be(SemanticVersion.Parse("0.8.0"));
         // It must pick the MSI, not the portable zip or the checksum file.
-        release.MsiUrl.AbsoluteUri.Should().EndWith("AudioBoarder-v0.7.0-win-x64.msi");
+        release.MsiUrl.AbsoluteUri.Should().EndWith("AudioBoarder-v0.8.0-win-x64.msi");
         release.Sha256.Should().Be("7aa3f575d75ad5eb89999a4496195e5059dc8bd7a7c8a878718a2ff097969e08");
         release.Size.Should().Be(78264260);
         release.ReleaseNotes.Should().NotBeEmpty("the notes are shown while the download runs");
@@ -65,9 +83,8 @@ public class ReleasePayloadContractTests
     [Fact]
     public void TheCurrentBuildIsNotOfferedAnUpdateToItself()
     {
-        // A 3-part tag parses with Revision -1, so it must not compare greater than
-        // the 4-part assembly version of the very build that is running.
-        GitHubUpdateService.ParseRelease(Payload(LiveReleasePayload), new Version(0, 7, 0, 0))
+        // Full SemVer comparison must treat an identical stable release as equal.
+        GitHubUpdateService.ParseRelease(Payload(ReleasePayload), new Version(0, 8, 0, 0))
             .Should().BeNull();
     }
 
@@ -76,31 +93,42 @@ public class ReleasePayloadContractTests
     {
         // GitHub only began returning `digest` recently; without it the updater has
         // no way to verify the download, so it must decline rather than trust it.
-        var noDigest = LiveReleasePayload.Replace(
+        var noDigest = ReleasePayload.Replace(
             "\"digest\": \"sha256:7aa3f575d75ad5eb89999a4496195e5059dc8bd7a7c8a878718a2ff097969e08\",",
             "");
 
-        GitHubUpdateService.ParseRelease(Payload(noDigest), new Version(0, 6, 1))
+        GitHubUpdateService.ParseRelease(Payload(noDigest), new Version(0, 7, 0))
             .Should().BeNull();
     }
 
     [Fact]
     public void AReleaseWithoutAWindowsMsiOffersNothing()
     {
-        var renamed = LiveReleasePayload.Replace("-win-x64.msi", "-win-arm64.msi");
+        var renamed = ReleasePayload.Replace("-win-x64.msi", "-win-arm64.msi");
 
-        GitHubUpdateService.ParseRelease(Payload(renamed), new Version(0, 6, 1))
+        GitHubUpdateService.ParseRelease(Payload(renamed), new Version(0, 7, 0))
             .Should().BeNull("the MSI naming convention is what the updater matches on");
     }
 
     [Fact]
     public void AnAssetHostedOffGitHubIsRejected()
     {
-        var offsite = LiveReleasePayload.Replace(
+        var offsite = ReleasePayload.Replace(
             "https://github.com/oguzhanf/audioboarder/releases/download",
             "https://cdn.example.com/downloads");
 
-        GitHubUpdateService.ParseRelease(Payload(offsite), new Version(0, 6, 1))
+        GitHubUpdateService.ParseRelease(Payload(offsite), new Version(0, 7, 0))
             .Should().BeNull("an installer must only ever come from the project's own releases");
+    }
+
+    [Fact]
+    public void UnsignedPrereleaseInstallerIsNeverSelectedForAutomaticUpdate()
+    {
+        var unsigned = ReleasePayload
+            .Replace("\"tag_name\": \"v0.8.0\"", "\"tag_name\": \"v0.8.0-preview.1\"")
+            .Replace("-win-x64.msi", "-win-x64-unsigned.msi");
+
+        GitHubUpdateService.ParseRelease(Payload(unsigned), new Version(0, 7, 0))
+            .Should().BeNull();
     }
 }

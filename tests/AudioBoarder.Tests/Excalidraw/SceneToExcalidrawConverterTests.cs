@@ -118,6 +118,7 @@ public class SceneToExcalidrawConverterTests
             new AddNode("d", NodeKind.Security, "DLP policy",
                 Description: "blocks confidential exports"),
         }));
+        NodeSizer.ApplyTo(graph);
         graph.Nodes["d"].X = 200; graph.Nodes["d"].Y = 200;
 
         var doc = _converter.Convert(graph);

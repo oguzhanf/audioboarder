@@ -1,3 +1,4 @@
+using AudioBoarder.Core.Layout;
 using AudioBoarder.Core.Scene;
 
 namespace AudioBoarder.Core.Excalidraw;
@@ -60,7 +61,15 @@ public sealed class SceneToExcalidrawConverter
 
         lock (graph.SyncRoot)
         {
-            var geom = ResolveGeometry(graph);
+            var layout = LayoutSnapshot.Capture(graph);
+            var geom = layout.Nodes.ToDictionary(
+                pair => pair.Key,
+                pair => new NodeBox(
+                    pair.Value.CenterX,
+                    pair.Value.CenterY,
+                    pair.Value.Width,
+                    pair.Value.Height),
+                StringComparer.Ordinal);
 
             // Arrows first so we can register each arrow on the nodes it binds to.
             var boundByNode = new Dictionary<string, List<ExcalidrawBoundElement>>(StringComparer.Ordinal);
@@ -70,12 +79,18 @@ public sealed class SceneToExcalidrawConverter
                     !geom.TryGetValue(edge.ToNodeId, out var to))
                     continue;
 
-                var arrow = BuildArrow(edge, from, to, options, now);
+                var boundaryCrossing =
+                    graph.IntentState.AppliedIntent == DiagramIntent.SecurityZeroTrustArchitecture &&
+                    graph.Nodes.TryGetValue(edge.FromNodeId, out var fromNode) &&
+                    graph.Nodes.TryGetValue(edge.ToNodeId, out var toNode) &&
+                    !string.Equals(fromNode.GroupId, toNode.GroupId, StringComparison.Ordinal);
+                var arrow = BuildArrow(edge, from, to, boundaryCrossing, options, now);
                 mid.Add(arrow);
 
-                if (!string.IsNullOrWhiteSpace(edge.Label))
+                var edgeText = ComposeEdgeText(edge);
+                if (!string.IsNullOrWhiteSpace(edgeText))
                 {
-                    var lbl = BuildArrowLabel(arrow, edge.Label!, from, to, options, now);
+                    var lbl = BuildArrowLabel(arrow, edgeText, from, to, options, now);
                     arrow.BoundElements = new() { new ExcalidrawBoundElement { Id = lbl.Id, Type = "text" } };
                     mid.Add(lbl);
                 }
@@ -89,15 +104,20 @@ public sealed class SceneToExcalidrawConverter
             // whereas the plain background rectangle we used to emit was just a
             // sibling shape that slid out from under the nodes when dragged.
             var frameByNode = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var group in graph.Groups.Values)
+            foreach (var group in graph.Groups.Values
+                         .OrderBy(g => layout.Groups[g.Id].Depth)
+                         .ThenBy(g => g.Id, StringComparer.Ordinal))
             {
                 var memberIds = graph.Nodes.Values
                     .Where(n => n.GroupId == group.Id && geom.ContainsKey(n.Id))
                     .Select(n => n.Id)
                     .ToList();
-                if (memberIds.Count == 0) continue;
                 foreach (var id in memberIds) frameByNode[id] = group.Id + "_frame";
-                back.Add(BuildGroupFrame(group, memberIds.Select(id => geom[id]).ToList(), options, now));
+                var frame = BuildGroupFrame(group, layout.Groups[group.Id], options, now);
+                if (!string.IsNullOrWhiteSpace(group.ParentGroupId) &&
+                    graph.Groups.ContainsKey(group.ParentGroupId))
+                    frame.FrameId = group.ParentGroupId + "_frame";
+                back.Add(frame);
             }
 
             foreach (var node in graph.Nodes.Values)
@@ -164,38 +184,6 @@ public sealed class SceneToExcalidrawConverter
         public double Top => Cy - H / 2;
     }
 
-    private static Dictionary<string, NodeBox> ResolveGeometry(SceneGraph graph)
-    {
-        var geom = new Dictionary<string, NodeBox>(StringComparer.Ordinal);
-        var auto = 0;
-        foreach (var node in graph.Nodes.Values)
-        {
-            // Size from the actual text so a long label can never spill outside its
-            // shape. NodeSizer is the single source of truth — the layout engine sizes
-            // nodes the same way, so reserved footprint and drawn box always agree.
-            var (measuredW, measuredH) = NodeSizer.Measure(
-                node.Label, node.Description, hasIcon: true, kind: node.Kind);
-            var w = node.Width > 0 ? Math.Max(node.Width, measuredW) : measuredW;
-            var h = node.Height > 0 ? Math.Max(node.Height, measuredH) : measuredH;
-
-            double cx, cy;
-            if (node.X.HasValue && node.Y.HasValue)
-            {
-                cx = node.X.Value;
-                cy = node.Y.Value;
-            }
-            else
-            {
-                // Unpositioned node — lay out on a fallback grid so export never drops it.
-                cx = 140 + auto % 4 * 240;
-                cy = 140 + auto / 4 * 160;
-                auto++;
-            }
-            geom[node.Id] = new NodeBox(cx, cy, w, h);
-        }
-        return geom;
-    }
-
     // ---- nodes --------------------------------------------------------------
 
     private ExcalidrawElement BuildNodeShape(SceneNode node, NodeBox box, ExcalidrawExportOptions o, long now)
@@ -235,6 +223,7 @@ public sealed class SceneToExcalidrawConverter
         NodeKind.System => ("rectangle", false),
         NodeKind.Technology => ("rectangle", true),
         NodeKind.Security => ("diamond", false),
+        NodeKind.Identity => ("rectangle", true),
         NodeKind.Cloud => ("ellipse", false),
         NodeKind.Document => ("rectangle", false),
         NodeKind.Milestone => ("diamond", false),
@@ -373,7 +362,13 @@ public sealed class SceneToExcalidrawConverter
 
     // ---- edges --------------------------------------------------------------
 
-    private ExcalidrawElement BuildArrow(SceneEdge edge, NodeBox from, NodeBox to, ExcalidrawExportOptions o, long now)
+    private ExcalidrawElement BuildArrow(
+        SceneEdge edge,
+        NodeBox from,
+        NodeBox to,
+        bool boundaryCrossing,
+        ExcalidrawExportOptions o,
+        long now)
     {
         var dx = to.Cx - from.Cx;
         var dy = to.Cy - from.Cy;
@@ -390,7 +385,7 @@ public sealed class SceneToExcalidrawConverter
             StrokeColor = ExcalidrawPalette.Edge,
             BackgroundColor = "transparent",
             FillStyle = o.FillStyle,
-            StrokeWidth = 2,
+            StrokeWidth = boundaryCrossing ? 3 : 2,
             StrokeStyle = dashed ? "dashed" : "solid",
             Roughness = o.Roughness,
             Points = points,
@@ -472,6 +467,38 @@ public sealed class SceneToExcalidrawConverter
         };
     }
 
+    private static string ComposeEdgeText(SceneEdge edge)
+    {
+        var heading = new List<string>();
+        if (edge.Step is > 0) heading.Add($"Step {edge.Step}");
+        if (!string.IsNullOrWhiteSpace(edge.Label)) heading.Add(edge.Label.Trim());
+
+        var metadata = new List<string>();
+        if (!string.IsNullOrWhiteSpace(edge.Protocol)) metadata.Add(edge.Protocol.Trim());
+        if (!string.IsNullOrWhiteSpace(edge.Payload)) metadata.Add(edge.Payload.Trim());
+        if (!string.IsNullOrWhiteSpace(edge.Authentication)) metadata.Add($"auth: {edge.Authentication.Trim()}");
+        if (!string.IsNullOrWhiteSpace(edge.DataClassification))
+            metadata.Add($"class: {edge.DataClassification.Trim()}");
+        if (edge.InteractionMode.HasValue) metadata.Add(ToDisplay(edge.InteractionMode.Value.ToString()));
+
+        return string.Join("\n", new[]
+        {
+            string.Join(" · ", heading),
+            string.Join(" · ", metadata),
+        }.Where(line => line.Length > 0));
+    }
+
+    private static string ToDisplay(string value)
+    {
+        var chars = new List<char>(value.Length + 4);
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (i > 0 && char.IsUpper(value[i])) chars.Add(' ');
+            chars.Add(char.ToLowerInvariant(value[i]));
+        }
+        return new string(chars.ToArray());
+    }
+
     // ---- groups -------------------------------------------------------------
 
     /// <summary>
@@ -483,24 +510,26 @@ public sealed class SceneToExcalidrawConverter
     /// nodes — dragging the boundary slid the box out from under its own contents.
     /// </para>
     /// </summary>
-    private ExcalidrawElement BuildGroupFrame(SceneGroup group, List<NodeBox> members,
+    private ExcalidrawElement BuildGroupFrame(SceneGroup group, GroupBounds bounds,
         ExcalidrawExportOptions o, long now)
     {
-        const double pad = 34;
-        var minX = members.Min(m => m.Left) - pad;
-        var minY = members.Min(m => m.Top) - pad;
-        var maxX = members.Max(m => m.Left + m.W) + pad;
-        var maxY = members.Max(m => m.Top + m.H) + pad;
+        var nameParts = new List<string>
+        {
+            string.IsNullOrWhiteSpace(group.Label) ? "Group" : group.Label,
+        };
+        if (!string.IsNullOrWhiteSpace(group.Subtitle)) nameParts.Add(group.Subtitle);
+        if (group.BoundaryKind != BoundaryKind.Generic)
+            nameParts.Add(ToDisplay(group.BoundaryKind.ToString()));
 
         return new ExcalidrawElement
         {
             Id = group.Id + "_frame",
             Type = "frame",
-            Name = string.IsNullOrWhiteSpace(group.Label) ? "Group" : group.Label,
-            X = minX,
-            Y = minY,
-            Width = maxX - minX,
-            Height = maxY - minY,
+            Name = string.Join(" — ", nameParts),
+            X = bounds.Left,
+            Y = bounds.Top,
+            Width = bounds.Width,
+            Height = bounds.Height,
             StrokeColor = "#5c7cfa",
             BackgroundColor = "transparent",
             FillStyle = "solid",

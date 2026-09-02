@@ -16,6 +16,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AudioBoarder.Tests" />
+    <AssemblyMetadata Include="SourceCommit" Value="$(SourceRevisionId)" />
+    <AssemblyMetadata Include="PackageVersion" Value="$(Version)" />
+    <AssemblyMetadata Include="UpdateAllowedSignerCertificateSha256" Value="$(UpdateAllowedSignerCertificateSha256)" />
+    <AssemblyMetadata Include="PortableBuild" Value="$(PortableBuild)" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,6 +49,7 @@
   <ItemGroup>
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
     <None Update="appsettings.Development.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -57,9 +62,10 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Resource>
-    <!-- Vendored, self-contained Excalidraw whiteboard bundle (offline). -->
+    <!-- Vendored, self-contained SVG canvas bundle (offline). -->
     <None Update="Assets\web\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 

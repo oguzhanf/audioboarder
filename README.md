@@ -1,7 +1,7 @@
 # AudioBoarder
 
-> Listens to a meeting on Windows and draws it — live — as an annotated Excalidraw
-> whiteboard, with structured notes and on-demand illustrations.
+> Listens to a meeting on Windows and draws it live on an interactive SVG
+> architecture canvas, with structured notes and on-demand illustrations.
 
 AudioBoarder captures your microphone and (optionally) system audio, transcribes the
 conversation, and asks an Azure OpenAI model to turn what it hears into a diagram:
@@ -10,7 +10,13 @@ actually flows between things, and callouts explaining the subtle parts. Decisio
 action items, risks and open questions are collected in a side panel. Everything can be
 exported as a `.excalidraw` file you can keep editing, or as a PNG.
 
-Built on WPF + SkiaSharp + WebView2 + a vendored offline [Excalidraw](https://github.com/excalidraw/excalidraw) bundle.
+Built on WPF + SkiaSharp + WebView2. The live editor is a vendored offline SVG
+surface; Excalidraw remains an editable export format.
+
+**Release status:** v0.7.0 is the current published release and its prerelease cycle is
+complete. The 0.8.0 work on `release-readiness` is still **pre-release** until the
+offline, semantic, installer, privacy, artifact, and signing gates documented below
+pass. Do not treat a branch build as a published release.
 
 ---
 
@@ -41,12 +47,17 @@ The portable ZIP contains the same self-contained application for environments w
 software installation is restricted. Extract the complete folder before running
 `AudioBoarder.exe`—the executable depends on the adjacent `Assets` and runtime files.
 
-Release binaries are currently unsigned, so Windows SmartScreen may ask you to confirm
-the download before installation. SHA-256 checksums are published with every release.
+The current v0.7.0 binaries predate the Phase 6 signing gate and may trigger Windows
+SmartScreen. New stable/non-prerelease artifacts must be Authenticode-signed and
+timestamped; the release build fails closed without signing credentials. Explicit
+unsigned prerelease builds carry `-unsigned` in their filenames. Every artifact set
+also includes SHA-256 checksums, SPDX SBOM, third-party notices, and source metadata.
 
 MSI installations check the repository's latest GitHub release when AudioBoarder starts.
-When a newer version is available, the app shows its release notes, downloads and verifies
-the installer using GitHub's SHA-256 digest, installs the update, and restarts automatically.
+When a newer signed version is available, the app shows its release notes, downloads and
+verifies both the GitHub SHA-256 digest and the MSI's Authenticode chain, then requires an
+exact SHA-256 signer-certificate identity match before install and restart. Missing,
+invalid, unsigned, or unpinned-signature installers fail closed.
 Windows may request administrator approval because the MSI installs for all users. Portable
 installations remain manually updated so the app never replaces files in an extracted folder.
 
@@ -85,6 +96,61 @@ Then **Listen** → talk, and the board grows on its own as the conversation dev
 **Refine** runs a deeper pass (optionally with an instruction like "group the security
 controls"), the export buttons save a PNG or an editable `.excalidraw` file, and dragging
 a node pins it so later passes leave it where you put it.
+
+Live extraction reads only finalized captions after the committed transcript cursor.
+Deep synthesis is event-driven rather than periodic: it runs on **Refine**, after a
+flushed meeting stop, or after the configured speech pause (25 seconds by default) when
+provisional diagram changes exist. Fixed timed deep passes are disabled.
+
+### Diagram intents and switching
+
+The six supported intents are:
+
+1. **Software system architecture** — services, components, dependencies and boundaries.
+2. **SaaS multi-tenant architecture** — tenants, control/data planes and isolation.
+3. **Security / Zero Trust architecture** — identities, trust boundaries, controls and risks.
+4. **Cloud network architecture** — network scopes, subnets, ingress/egress and flows.
+5. **Integration / data-flow architecture** — producers, consumers, stores and payload paths.
+6. **Discussion summary** — topics, decisions, actions, risks and questions.
+
+In **Auto**, the intent coordinator can suggest and apply an intent as evidence accumulates.
+The status shows the applied and suggested intent. Choosing an intent pins
+`PinnedByUser`; automatic classification may continue to make a suggestion but cannot
+replace the pinned choice. Returning to Auto allows later evidence to switch the intent.
+Intent changes affect semantic defaults and layout selection, not the source transcript.
+
+### Model roles, latency, and runtime states
+
+- The transcription backend produces interim captions where supported and commits only
+  finalized segments. Streaming Speech is normally sub-second to a few seconds; windowed
+  cloud/local transcription completes after an utterance pause and model processing.
+- The fast chat deployment performs safe incremental extraction. It is rate-limited by
+  `Realtime.MinIntervalSeconds` (10 seconds by default) and adapts upward when observed
+  inference takes longer.
+- The primary frontier deployment performs deep synthesis on Refine, stop, or the
+  configured pause. Fast tiers are often several seconds; reasoning `pro`/`sol` tiers may
+  take 30–120 seconds. Azure load and throttling can increase either figure.
+- Image generation is a separate optional model path and is **disabled by default**.
+  It may take tens of seconds or minutes and is never required for the live SVG canvas.
+
+The visible runtime state distinguishes Initializing, Ready, Listening, Captions current,
+Analyzing, Deep refining, Current, Behind, Rate limited, Retrying, Audio gap, Degraded,
+and Error. Captions continue while diagram work is queued. On HTTP 429 the backend exposes
+its retry time and buffered duration; retries use bounded backoff. Audio queues are bounded:
+under sustained overload the oldest unprocessed audio is dropped rather than allowing
+unbounded memory growth, and the UI reports **Audio gap** plus dropped duration/count.
+Pending finalized statements are retained across diagram-generation retries.
+
+### Semantic contract and limits
+
+The model emits typed ScenePatch operations, never pixel coordinates. Patches are schema
+validated and applied transactionally; invalid operations are skipped and reported rather
+than trusted. The live canvas renders the resulting SceneGraph and deterministic layout.
+Grounding is limited to the finalized transcript window and restored scene state. The app
+does not prove that a design is complete, secure, compliant, or deployable; ambiguous,
+contradictory, late, or unheard speech can produce omissions. Node/note budgets (80/24 by
+default), the rolling transcript window, audio loss, and model context limits deliberately
+bound long meetings. User-pinned geometry and edits take precedence over later auto-layout.
 
 ### Diagramming a meeting that already happened
 
@@ -242,8 +308,8 @@ loop ─┘                                                    │
                                                   │
                                              SceneGraph  ── SessionStore (autosave)
                                              /        \
-                              ExcalidrawCanvas      SceneCanvas
-                              (WebView2, default)   (SkiaSharp classic)
+                         Live Architecture Canvas   SceneCanvas
+                          (custom SVG/WebView2)     (SkiaSharp classic)
 ```
 
 The model never emits pixel coordinates — it emits a **ScenePatch**, a small DSL of 13
@@ -257,7 +323,7 @@ than discarding the whole patch, then a layout engine positions anything unplace
 | `src/AudioBoarder.Core` | `net10.0` | SceneGraph, ScenePatch DSL, Excalidraw converter, icon registry, interfaces. No dependencies. |
 | `src/AudioBoarder.Services` | `net10.0-windows` | WASAPI capture, transcription backends, Azure OpenAI, layout, rendering, Foundry discovery |
 | `src/AudioBoarder.App` | `net10.0-windows` | WPF shell, MVVM, health probes, sessions, export, `healthcheck` CLI |
-| `tests/AudioBoarder.Tests` | `net10.0-windows` | xUnit + FluentAssertions — 158 tests |
+| `tests/AudioBoarder.Tests` | `net10.0-windows` | xUnit + FluentAssertions; test count is reported by the runner |
 | `tools/AzureProbe` | `net10.0-windows` | Developer CLI for discovery and live model probes |
 
 Dependency direction is `Core ← Services ← App`. No mock or demo services exist in any
@@ -265,13 +331,15 @@ production assembly; test doubles live in `tests/AudioBoarder.Tests/Fakes`.
 
 ### The live canvas
 
-The central canvas is a typography-first SVG renderer hosted in WebView2 — text and thin
-bezier branches rather than boxes, with secondary associations de-emphasised so the
-structure reads. The bundle lives in `src/AudioBoarder.App/Assets/web` (~14 KB) and is
+The central live surface is the custom **Live Architecture Canvas**, a typography-first
+SVG renderer hosted in WebView2 — it is not an embedded Excalidraw editor. Text, semantic
+cards, boundaries and bezier branches are rendered from authoritative .NET geometry, with
+secondary associations de-emphasised so the structure reads. The bundle lives in
+`src/AudioBoarder.App/Assets/web` and is
 rebuilt from the Vite source in `src/AudioBoarder.App/web` (see that folder's README).
 Drag any node to pin it; pinned nodes keep their position through later layout passes.
 
-**Export Excalidraw** is unchanged and still emits a real `.excalidraw` document via
+**Export Excalidraw** is an editable export only. It emits a real `.excalidraw` document via
 `SceneToExcalidrawConverter`, so the file you hand over opens in any Excalidraw instance.
 
 ---
@@ -282,6 +350,7 @@ Drag any node to pin it; pinned nodes keep their position through later layout p
 AudioBoarder.exe                            # launch the UI
 AudioBoarder.exe healthcheck                # probe audio + transcription + Azure
 AudioBoarder.exe healthcheck --llm --image  # add live model calls (slower)
+AudioBoarder.exe healthcheck --package      # offline packaged-file/version check
 ```
 
 | Exit code | Meaning |
@@ -291,21 +360,39 @@ AudioBoarder.exe healthcheck --llm --image  # add live model calls (slower)
 | 11 | Whisper init failed |
 | 12 | Azure auth/discovery failed |
 | 13 | `--llm` probe failed |
+| 14 | `--image` probe failed |
+| 15 | packaged files/version metadata invalid |
 | 99 | Unexpected error |
 
 ---
 
 ## Privacy
 
-- **Transcripts, prompts and model responses are never written to disk** unless you
-  explicitly set `Diagnostics.VerbosePayloadLogging: true`.
-- Logs contain component status, latency, model names and error categories only.
-- Logs rotate daily into `%LOCALAPPDATA%\AudioBoarder\logs` with 7-day retention.
-- Sessions autosave to `%LOCALAPPDATA%\AudioBoarder\sessions`.
-- Audio is streamed to your own Azure resources. Nothing is sent anywhere else.
+- No external product telemetry is sent. Local numeric UI performance EventSource metrics
+  are off by default (`Diagnostics.EnableLocalPerformanceTelemetry=false`) and, when
+  explicitly enabled, contain durations, revisions, counts and payload byte sizes only.
+- **Transcript text and raw model response bodies are not written to default logs.**
+  `Diagnostics.VerbosePayloadLogging` is false in shipped defaults; current production
+  logging paths do not emit those bodies.
+- Default log formatting redacts content-bearing identifiers and omits exception payloads.
+  Logs contain component status, latency, counts, model/backend names and safe error
+  categories. They rotate daily into `%LOCALAPPDATA%\AudioBoarder\logs`, retain at most
+  seven files, and cap each file at approximately 5 MB.
+- Sessions autosave to `%LOCALAPPDATA%\AudioBoarder\sessions` as portable plaintext JSON.
+  `current.json` contains derived nodes, edges, groups, labels/descriptions, notes/owners,
+  intent state, geometry, lifecycle state, generated-image prompts/bytes/metadata, revision
+  and save time. It contains no raw audio or raw transcript. The single current session is
+  retained until overwritten or deleted; there is no cloud session store.
+- Set `Sessions.AutoSave=false` to disable new saves. Run
+  `.\scripts\reset-local-data.ps1` and type `DELETE` (or use `-Force` for managed cleanup)
+  to remove sessions, logs, update downloads, UI state, auth record, and app-specific token
+  cache. The script only targets AudioBoarder-owned paths.
+- Audio/transcript/model requests go only to the Azure resources or local models you choose.
+  Azure SDK authentication itself communicates with Microsoft identity endpoints.
 
 Meetings often contain other people's words. Check your local recording-consent rules
-before using this.
+and organizational policy, notify participants where required, and do not capture meetings
+without the necessary consent.
 
 ---
 
@@ -326,24 +413,45 @@ before using this.
 ## Development
 
 ```powershell
-dotnet build                                   # build
-dotnet test                                    # 158 tests
-cd src\AudioBoarder.App\web; npm ci; npm run build   # rebuild the Excalidraw bundle
+dotnet restore AudioBoarder.sln
+dotnet build AudioBoarder.sln -c Release
+dotnet test AudioBoarder.sln -c Release --filter "Category!=LiveModel"
+cd src\AudioBoarder.App\web
+npm ci
+npm run build
+# Start `npm run preview` in one terminal, then:
+node verify.cjs "http://127.0.0.1:5566/"
 ```
 
-### Build the Windows installer
+The browser verifier runs the committed custom SVG canvas in headless Edge, the same engine
+family used by WebView2. Offline semantic qualification is:
 
 ```powershell
-dotnet publish src\AudioBoarder.App\AudioBoarder.App.csproj `
-  -c Release -r win-x64 --self-contained true -o artifacts\publish\win-x64
-
-$publishDir = (Resolve-Path artifacts\publish\win-x64).Path
-dotnet build installer\AudioBoarder.Installer.wixproj -c Release `
-  -p:PublishDir="$publishDir"
+dotnet test tests\AudioBoarder.Tests\AudioBoarder.Tests.csproj -c Release `
+  --filter "FullyQualifiedName~SemanticReleaseGateTests"
 ```
 
-For a GitHub release, publish the MSI, portable ZIP, and `SHA256SUMS.txt` together
-under the matching version tag.
+Live-model qualification is intentionally separate and opt-in through
+`.github/workflows/semantic-live.yml`; ordinary CI never calls Azure models.
+
+### Build release artifacts
+
+Use the single fail-fast pipeline; do not assemble releases by hand:
+
+```powershell
+.\scripts\build-release.ps1 -Version 0.8.0-preview.1 -Prerelease -Unsigned -DryRun
+```
+
+It restores, builds/verifies the web canvas, builds/tests .NET excluding `LiveModel`, runs
+offline semantic and session-schema compatibility gates, scans tracked files, publishes
+separate self-contained MSI/portable payloads, builds WiX, creates the ZIP, SPDX SBOM,
+third-party notices, source metadata and checksums, then inspects the complete artifact
+contract. Signed builds additionally sign and verify every EXE/DLL and the MSI.
+
+See [`docs/RELEASE.md`](docs/RELEASE.md) for signing secrets and release rules and
+[`docs/CLEAN-VM-CHECKLIST.md`](docs/CLEAN-VM-CHECKLIST.md) for install/upgrade/uninstall
+qualification. `.github/workflows/release-build.yml` only builds and uploads workflow
+artifacts; it never creates a tag or GitHub release.
 
 ### Known follow-ups
 

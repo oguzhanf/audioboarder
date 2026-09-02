@@ -101,6 +101,8 @@ public sealed class TolerantEnumConverterFactory : JsonConverterFactory
         "EdgeKind" => "Flow",
         "NoteKind" => "General",
         "PositionHintKind" => "Auto",
+        "BoundaryKind" => "Generic",
+        "InteractionMode" => "Synchronous",
         _ => null,
     };
 
@@ -150,6 +152,23 @@ public sealed class TolerantEnumConverterFactory : JsonConverterFactory
             ("q", "Question"), ("open", "Question"), ("openquestion", "Question"), ("query", "Question"),
             ("concern", "Risk"), ("issue", "Risk"), ("blocker", "Risk"), ("warning", "Risk"),
             ("note", "General"), ("info", "General"), ("comment", "General"), ("fyi", "General"),
+        },
+        "BoundaryKind" => new[]
+        {
+            ("platform", "System"), ("application", "System"),
+            ("env", "Environment"), ("stage", "Environment"),
+            ("customer", "Tenant"), ("organization", "Tenant"),
+            ("vnet", "Network"), ("subnet", "Network"),
+            ("securityzone", "TrustZone"), ("zone", "TrustZone"),
+            ("subscription", "CloudScope"), ("resourcegroup", "CloudScope"), ("region", "CloudScope"),
+            ("thirdparty", "External"), ("outside", "External"),
+        },
+        "InteractionMode" => new[]
+        {
+            ("sync", "Synchronous"), ("requestresponse", "Synchronous"),
+            ("async", "Asynchronous"), ("queued", "Asynchronous"), ("event", "Asynchronous"),
+            ("scheduled", "Batch"), ("bulk", "Batch"),
+            ("streaming", "Stream"), ("realtime", "Stream"),
         },
         _ => Array.Empty<(string, string)>(),
     };

@@ -8,6 +8,7 @@ using AudioBoarder.Core.Scene;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.Audio;
 using AudioBoarder.Services.Imaging;
+using AudioBoarder.Services.Intent;
 using AudioBoarder.Services.Layout;
 using AudioBoarder.Services.LLM;
 using AudioBoarder.Services.Rendering;
@@ -28,9 +29,11 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddAudioBoarder(this IServiceCollection services)
     {
         services.AddSingleton<SceneGraph>();
+        services.AddSingleton<DiagramIntentDetector>();
+        services.AddSingleton<DiagramIntentCoordinator>();
         services.AddSingleton<TranscriptBuffer>(_ => new TranscriptBuffer(TimeSpan.FromMinutes(5)));
         services.AddSingleton<DiagramTheme>(_ => DiagramTheme.Light);
-        services.AddSingleton<ILayoutEngine, LayeredGroupLayoutEngine>();
+        services.AddSingleton<ILayoutEngine, IntentLayoutEngine>();
         services.AddSingleton<SceneRenderer>(sp => new SceneRenderer(sp.GetService<DiagramTheme>()));
 
         // Energy VAD is the reliable DEFAULT speech gate. The Silero ONNX model
@@ -48,7 +51,7 @@ public static class ServiceCollectionExtensions
                     logger: lf?.CreateLogger<SileroVoiceActivityDetector>());
                 if (silero is not null)
                 {
-                    lf?.CreateLogger("VAD")?.LogInformation("Using Silero neural VAD (opt-in) from {Path}", modelPath);
+                    lf?.CreateLogger("VAD")?.LogInformation("Using Silero neural VAD (opt-in)");
                     return silero;
                 }
                 lf?.CreateLogger("VAD")?.LogWarning("Silero opt-in requested but model not found; using energy VAD");
@@ -157,7 +160,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<SceneGraph>(),
             sp.GetService<IImageGenerator>(),
             sp.GetService<ILoggerFactory>()?.CreateLogger<DiagramOrchestrator>(),
-            sp.GetService<SceneBudget>()));
+            sp.GetService<SceneBudget>(),
+            sp.GetRequiredService<DiagramIntentCoordinator>()));
 
         services.AddSingleton<FoundryDiscovery>();
         return services;

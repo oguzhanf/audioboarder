@@ -1,5 +1,6 @@
 using AudioBoarder.Core.Rendering;
 using AudioBoarder.Core.Scene;
+using AudioBoarder.Core.Layout;
 using SkiaSharp;
 
 namespace AudioBoarder.Services.Rendering;
@@ -35,8 +36,17 @@ public sealed class SceneRenderer
         // mutate the collections mid-draw (which throws and blanks the diagram).
         lock (graph.SyncRoot)
         {
+            var layout = LayoutSnapshot.Capture(graph);
+            foreach (var geometry in layout.Nodes.Values)
+            {
+                var node = graph.Nodes[geometry.Id];
+                node.X ??= geometry.CenterX;
+                node.Y ??= geometry.CenterY;
+                if (!double.IsFinite(node.Width) || node.Width <= 0) node.Width = geometry.Width;
+                if (!double.IsFinite(node.Height) || node.Height <= 0) node.Height = geometry.Height;
+            }
             if (drawBackground) DrawDotGrid(canvas, graph, width, height);
-            DrawGroups(canvas, graph);
+            DrawGroups(canvas, graph, layout);
             DrawEdges(canvas, graph);
             DrawNodes(canvas, graph);
         }
@@ -76,7 +86,7 @@ public sealed class SceneRenderer
 
     // ---- groups -------------------------------------------------------------
 
-    private void DrawGroups(SKCanvas canvas, SceneGraph graph)
+    private void DrawGroups(SKCanvas canvas, SceneGraph graph, LayoutSnapshot layout)
     {
         if (graph.Groups.Count == 0) return;
 
@@ -94,13 +104,16 @@ public sealed class SceneRenderer
             IsAntialias = true,
         };
 
-        foreach (var group in graph.Groups.Values)
+        foreach (var group in graph.Groups.Values
+                     .OrderBy(g => layout.Groups[g.Id].Depth)
+                     .ThenBy(g => g.Id, StringComparer.Ordinal))
         {
-            var children = graph.Nodes.Values
-                .Where(n => n.GroupId == group.Id && n.X.HasValue && n.Y.HasValue).ToList();
-            if (children.Count == 0) continue;
-            var (x, y, w, h) = ComputeBoundingBox(children, padding: 26);
-            var rect = SKRect.Create((float)x, (float)y, (float)w, (float)h);
+            var bounds = layout.Groups[group.Id];
+            var rect = SKRect.Create(
+                (float)bounds.Left,
+                (float)bounds.Top,
+                (float)bounds.Width,
+                (float)bounds.Height);
             canvas.DrawRoundRect(rect, 18, 18, fill);
             canvas.DrawRoundRect(rect, 18, 18, stroke);
 
@@ -122,21 +135,6 @@ public sealed class SceneRenderer
                 canvas.DrawText(group.Label, pill.Left + 11, pill.MidY + 4, pillText);
             }
         }
-    }
-
-    private static (double X, double Y, double W, double H) ComputeBoundingBox(
-        IEnumerable<SceneNode> nodes, double padding)
-    {
-        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
-        foreach (var n in nodes)
-        {
-            if (!n.X.HasValue || !n.Y.HasValue) continue;
-            minX = Math.Min(minX, n.X.Value - n.Width / 2);
-            minY = Math.Min(minY, n.Y.Value - n.Height / 2);
-            maxX = Math.Max(maxX, n.X.Value + n.Width / 2);
-            maxY = Math.Max(maxY, n.Y.Value + n.Height / 2);
-        }
-        return (minX - padding, minY - padding, maxX - minX + 2 * padding, maxY - minY + 2 * padding);
     }
 
     // ---- edges --------------------------------------------------------------

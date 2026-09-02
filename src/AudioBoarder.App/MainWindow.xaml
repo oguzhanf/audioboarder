@@ -12,8 +12,8 @@
                  Icon="Assets/AudioBoarder.ico"
                  Height="760"
                  Width="1240"
-                 MinHeight="640"
-                 MinWidth="1180"
+                 MinHeight="620"
+                 MinWidth="960"
                  WindowStartupLocation="CenterScreen"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True"
@@ -25,19 +25,25 @@
         <ctrl:InverseBoolVisibilityConverter x:Key="InverseBoolVis" />
         <ctrl:BoolToStringConverter x:Key="BoolToString" />
         <ctrl:NoteKindBrushConverter x:Key="NoteKindBrush" />
-
-        <!-- Grouped so a long meeting reads as "Action items / Decisions / Risks"
-             instead of one undifferentiated column of tiny coloured rows. -->
         <CollectionViewSource x:Key="GroupedNotes" Source="{Binding Notes}">
             <CollectionViewSource.GroupDescriptions>
                 <PropertyGroupDescription PropertyName="KindDisplay" />
             </CollectionViewSource.GroupDescriptions>
         </CollectionViewSource>
+        <Style TargetType="Control">
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text" />
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text" />
+        </Style>
     </ui:FluentWindow.Resources>
 
     <ui:FluentWindow.InputBindings>
         <KeyBinding Key="L" Modifiers="Ctrl+Shift" Command="{Binding ToggleListenCommand}" />
+        <KeyBinding Key="I" Modifiers="Ctrl+Shift" Command="{Binding ToggleTranscriptPaneCommand}" />
+        <KeyBinding Key="N" Modifiers="Ctrl+Shift" Command="{Binding ToggleNotesPaneCommand}" />
         <KeyBinding Key="R" Modifiers="Ctrl+Shift" Command="{Binding RefineDiagramCommand}" />
+        <KeyBinding Key="R" Modifiers="Ctrl+Alt" Command="{Binding ReflowUnpinnedCommand}" />
         <KeyBinding Key="E" Modifiers="Ctrl+Shift" Command="{Binding ExportExcalidrawCommand}" />
         <KeyBinding Key="Delete" Modifiers="Ctrl+Shift" Command="{Binding ClearSceneCommand}" />
     </ui:FluentWindow.InputBindings>
@@ -53,301 +59,423 @@
         <ui:TitleBar Grid.Row="0" Title="AudioBoarder" />
 
         <Border Grid.Row="1"
+                Padding="12,8"
                 Background="{DynamicResource ApplicationBackgroundBrush}"
-                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="12,8">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <!-- Both groups shrink. Auto on the left let the action group
-                         claim whatever it wanted and push the mic/device group off
-                         the right edge; star lets each give ground under pressure. -->
-                    <ColumnDefinition Width="Auto" MinWidth="0" />
-                    <ColumnDefinition Width="*" MinWidth="0" />
-                </Grid.ColumnDefinitions>
-
-                <ScrollViewer Grid.Column="0"
-                              HorizontalScrollBarVisibility="Hidden"
-                              VerticalScrollBarVisibility="Disabled"
-                              VerticalAlignment="Center">
-                <StackPanel Orientation="Horizontal"
-                            VerticalAlignment="Center">
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,0,0,1">
+            <StackPanel>
+                <WrapPanel VerticalAlignment="Center">
                     <ui:Button Command="{Binding ToggleListenCommand}"
                                Content="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Listen|Stop'}"
                                Appearance="Primary"
                                MinWidth="104"
-                               Height="34"
-                               Padding="12,0"
-                               ToolTip="Start or stop live capture. Shortcut: Ctrl+Shift+L."
+                               Height="40"
+                               Padding="16,0"
+                               Margin="0,0,8,8"
+                               ToolTip="Start or stop listening. Ctrl+Shift+L."
                                AutomationProperties.Name="Start or stop listening">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="Mic24" />
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ui:Button Command="{Binding ImportTranscriptCommand}"
-                               Content="Import"
-                               Height="34"
-                               Padding="12,0"
-                               Margin="6,0,0,0"
-                               ToolTip="Build a diagram from an exported meeting transcript (Teams .vtt, .srt or plain text) — no audio needed."
-                               AutomationProperties.Name="Import a meeting transcript">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="DocumentArrowUp20" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <Rectangle Width="1"
-                               Height="20"
-                               Margin="10,0"
-                               Fill="{DynamicResource ControlElevationBorderBrush}" />
+                    <Border Height="40"
+                            Margin="0,0,8,8"
+                            Padding="8,0"
+                            CornerRadius="8"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            Background="{DynamicResource ControlFillColorDefaultBrush}">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="Intent"
+                                       Margin="0,0,8,0"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <ComboBox Width="190"
+                                      Height="32"
+                                      ItemsSource="{Binding IntentOptions}"
+                                      SelectedItem="{Binding SelectedIntentOption, Mode=TwoWay}"
+                                      DisplayMemberPath="Label"
+                                      ToolTip="Choose Auto or pin one of six diagram intents."
+                                      AutomationProperties.Name="Diagram intent selector" />
+                            <TextBlock Text="{Binding IntentModeDisplay}"
+                                       Margin="8,0,0,0"
+                                       VerticalAlignment="Center"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       AutomationProperties.Name="Diagram intent mode and confidence" />
+                        </StackPanel>
+                    </Border>
 
                     <ui:Button Command="{Binding RefineDiagramCommand}"
                                Content="Refine"
-                               Height="34"
-                               Padding="12,0"
-                               ToolTip="Run a thorough pass with the deep model. Shortcut: Ctrl+Shift+R."
-                               AutomationProperties.Name="Run deep refine">
+                               Height="40"
+                               Padding="14,0"
+                               Margin="0,0,6,8"
+                               ToolTip="Run a deep refinement pass. Ctrl+Shift+R."
+                               AutomationProperties.Name="Deep refine diagram">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="Sparkle24" />
                         </ui:Button.Icon>
                     </ui:Button>
-
                     <ui:TextBox Width="150"
-                                MinWidth="90"
-                                Height="34"
-                                Margin="6,0,0,0"
-                                VerticalContentAlignment="Center"
+                                Height="40"
+                                Margin="0,0,8,8"
                                 Text="{Binding RefinementInstruction, UpdateSourceTrigger=PropertyChanged}"
                                 PlaceholderText="Refine instruction…"
-                                ToolTip="Optional instruction for refine, for example 'group the database operations'."
+                                ToolTip="Optional instruction for the deep refinement pass."
                                 AutomationProperties.Name="Deep refine instruction" />
 
-                    <Rectangle Width="1"
-                               Height="20"
-                               Margin="10,0"
-                               Fill="{DynamicResource ControlElevationBorderBrush}" />
-
-                    <!-- Export and destructive actions are icon-only: the tooltip
-                         carries the meaning and the labels were crowding out the
-                         primary action. -->
-                    <ui:Button Command="{Binding ExportPngCommand}"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               ToolTip="Export the diagram as a PNG image."
-                               AutomationProperties.Name="Export PNG">
+                    <ui:Button Command="{Binding ReflowUnpinnedCommand}"
+                               Content="Reflow"
+                               Height="40"
+                               Padding="14,0"
+                               Margin="0,0,6,8"
+                               ToolTip="Reflow unpinned nodes only. Pinned nodes stay fixed. Ctrl+Alt+R."
+                               AutomationProperties.Name="Reflow unpinned nodes">
                         <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Image24" />
+                            <ui:SymbolIcon Symbol="ArrowSync24" />
                         </ui:Button.Icon>
                     </ui:Button>
-
-                    <ui:Button Command="{Binding ExportExcalidrawCommand}"
-                               Height="34"
-                               Width="38"
+                    <ui:Button Command="{Binding RequestReflowAllCommand}"
+                               Height="40"
+                               Width="40"
                                Padding="0"
-                               Margin="4,0,0,0"
-                               ToolTip="Save an editable .excalidraw file. Shortcut: Ctrl+Shift+E."
-                               AutomationProperties.Name="Export Excalidraw">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="DrawShape24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <ui:Button Command="{Binding ClearSceneCommand}"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               Margin="4,0,0,0"
-                               ToolTip="Clear the board. Shortcut: Ctrl+Shift+Delete."
-                               AutomationProperties.Name="Clear scene">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Delete24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <Rectangle Width="1"
-                               Height="20"
-                               Margin="10,0"
-                               Fill="{DynamicResource ControlElevationBorderBrush}" />
-
-                    <ui:Button x:Name="TranscriptPaneButton"
-                               Click="OnToggleTranscriptPane"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               ToolTip="Hide or show the transcript panel."
-                               AutomationProperties.Name="Toggle transcript panel">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="TextBulletListLtr24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <ui:Button x:Name="NotesPaneButton"
-                               Click="OnToggleNotesPane"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               Margin="4,0,0,0"
-                               ToolTip="Hide or show the notes panel."
-                               AutomationProperties.Name="Toggle notes panel">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Note24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <ui:Button Click="OnShowWelcome"
-                               Appearance="Transparent"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               Margin="4,0,0,0"
-                               ToolTip="Open the getting-started guide."
-                               AutomationProperties.Name="Open help and getting started">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="QuestionCircle24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-                </StackPanel>
-                </ScrollViewer>
-
-                <Grid Grid.Column="1"
-                      VerticalAlignment="Center"
-                      Margin="12,0,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <!-- Star so the device list absorbs slack and elides its own
-                             text rather than pushing the refresh button off-screen. -->
-                        <ColumnDefinition Width="*" MinWidth="110" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <!-- Sign in surfaces only while Azure is unavailable; the health
-                         panel that used to host it is gone, so this is now the only
-                         way in. -->
-                    <ui:Button Grid.Column="0"
-                               Command="{Binding SignInToAzureCommand}"
-                               Content="Sign in"
-                               Appearance="Primary"
-                               Height="34"
-                               Padding="12,0"
-                               Margin="0,0,6,0"
-                               Visibility="{Binding IsAzureReady, Converter={StaticResource InverseBoolVis}}"
-                               ToolTip="Sign in to your Azure tenant (opens a browser)."
-                               AutomationProperties.Name="Sign in to Azure">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="PersonKey24" />
-                        </ui:Button.Icon>
-                    </ui:Button>
-
-                    <ui:Button Grid.Column="1"
-                               Command="{Binding RetryHealthCommand}"
-                               Height="34"
-                               Width="38"
-                               Padding="0"
-                               Margin="0,0,10,0"
-                               ToolTip="Re-run the component health checks."
-                               AutomationProperties.Name="Retry health checks">
+                               Margin="0,0,8,8"
+                               ToolTip="Reflow every node, including pinned nodes. Confirmation required."
+                               AutomationProperties.Name="Reflow all nodes">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="ArrowClockwise24" />
                         </ui:Button.Icon>
                     </ui:Button>
 
-                    <ProgressBar Grid.Column="2"
-                                 Width="72"
+                    <ui:Button Command="{Binding ExportExcalidrawCommand}"
+                               Content="Export to Excalidraw"
+                               Height="40"
+                               Padding="14,0"
+                               Margin="0,0,8,8"
+                               ToolTip="Save an editable .excalidraw file. Ctrl+Shift+E."
+                               AutomationProperties.Name="Export to Excalidraw">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="DrawShape24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+
+                    <Rectangle Width="1"
+                               Height="24"
+                               Margin="0,8,8,16"
+                               Fill="{DynamicResource CardStrokeColorDefaultBrush}" />
+
+                    <ui:Button Command="{Binding ImportTranscriptCommand}"
+                               Height="40"
+                               Width="40"
+                               Padding="0"
+                               Margin="0,0,4,8"
+                               ToolTip="Import a meeting transcript."
+                               AutomationProperties.Name="Import a meeting transcript">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="DocumentArrowUp20" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding ExportPngCommand}"
+                               Height="40"
+                               Width="40"
+                               Padding="0"
+                               Margin="0,0,4,8"
+                               ToolTip="Export the canvas as a PNG image."
+                               AutomationProperties.Name="Export PNG">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="Image24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding ClearSceneCommand}"
+                               Height="40"
+                               Width="40"
+                               Padding="0"
+                               Margin="0,0,4,8"
+                               ToolTip="Clear the canvas. Ctrl+Shift+Delete."
+                               AutomationProperties.Name="Clear live architecture canvas">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="Delete24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding ToggleTranscriptPaneCommand}"
+                               Height="40"
+                               MinWidth="40"
+                               Padding="8,0"
+                               Margin="0,0,4,8"
+                               ToolTip="Show or hide the full transcript. Ctrl+Shift+I."
+                               AutomationProperties.Name="Toggle full transcript drawer">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="TextBulletListLtr24" />
+                            <TextBlock Text="{Binding CaptionCount, StringFormat=' {0}'}"
+                                       VerticalAlignment="Center"
+                                       FontSize="11" />
+                        </StackPanel>
+                    </ui:Button>
+                    <ui:Button Command="{Binding ToggleNotesPaneCommand}"
+                               Height="40"
+                               MinWidth="40"
+                               Padding="8,0"
+                               Margin="0,0,4,8"
+                               ToolTip="Show or hide notes. Ctrl+Shift+N."
+                               AutomationProperties.Name="Toggle notes drawer">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:SymbolIcon Symbol="Note24" />
+                            <TextBlock Text="{Binding NoteCount, StringFormat=' {0}'}"
+                                       VerticalAlignment="Center"
+                                       FontSize="11" />
+                        </StackPanel>
+                    </ui:Button>
+                    <ui:Button Click="OnShowWelcome"
+                               Appearance="Transparent"
+                               Height="40"
+                               Width="40"
+                               Padding="0"
+                               Margin="0,0,0,8"
+                               ToolTip="Open help. Drag nodes to pin; double-click a node to pin or unpin."
+                               AutomationProperties.Name="Open canvas keyboard and pinning help">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="QuestionCircle24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                </WrapPanel>
+
+                <WrapPanel VerticalAlignment="Center">
+                    <ui:Button Command="{Binding SignInToAzureCommand}"
+                               Content="Sign in"
+                               Appearance="Primary"
+                               Height="32"
+                               Padding="12,0"
+                               Margin="0,0,6,0"
+                               Visibility="{Binding IsAzureReady, Converter={StaticResource InverseBoolVis}}"
+                               ToolTip="Sign in to Azure in your browser."
+                               AutomationProperties.Name="Sign in to Azure">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="PersonKey24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ui:Button Command="{Binding RetryHealthCommand}"
+                               Height="32"
+                               Width="36"
+                               Padding="0"
+                               Margin="0,0,8,0"
+                               ToolTip="Re-run component health checks."
+                               AutomationProperties.Name="Retry health checks">
+                        <ui:Button.Icon>
+                            <ui:SymbolIcon Symbol="ArrowClockwise24" />
+                        </ui:Button.Icon>
+                    </ui:Button>
+                    <ProgressBar Width="72"
                                  Height="4"
                                  Margin="0,0,8,0"
                                  Minimum="0"
                                  Maximum="100"
-                                 Value="{Binding MicLevel, Mode=OneWay}"
+                                 Value="{Binding MicLevel}"
                                  Foreground="{DynamicResource SystemAccentBrush}"
                                  VerticalAlignment="Center"
-                                 ToolTip="Live microphone level. If this stays flat while you talk, pick another device."
+                                 ToolTip="Microphone input level."
                                  AutomationProperties.Name="Microphone input level" />
-
-                    <ComboBox Grid.Column="3"
-                              Height="34"
-                              MaxWidth="200"
-                              HorizontalAlignment="Stretch"
+                    <ComboBox Width="210"
+                              Height="32"
+                              Margin="0,0,4,0"
                               ItemsSource="{Binding InputDevices}"
                               SelectedItem="{Binding SelectedInputDevice, Mode=TwoWay}"
-                              VerticalContentAlignment="Center"
-                              ToolTip="Choose which microphone to capture. Shared mode — Teams keeps using it too."
-                              AutomationProperties.Name="Input device">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Name}"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding Name}" />
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
-
-                    <ui:Button Grid.Column="4"
-                               Command="{Binding RefreshInputDevicesCommand}"
+                              DisplayMemberPath="Name"
+                              ToolTip="Choose the microphone used for listening."
+                              AutomationProperties.Name="Input device" />
+                    <ui:Button Command="{Binding RefreshInputDevicesCommand}"
                                Appearance="Transparent"
-                               Height="34"
-                               Width="38"
+                               Height="32"
+                               Width="36"
                                Padding="0"
-                               Margin="4,0,0,0"
                                ToolTip="Rescan microphones."
                                AutomationProperties.Name="Refresh input devices">
                         <ui:Button.Icon>
                             <ui:SymbolIcon Symbol="ArrowSync24" />
                         </ui:Button.Icon>
                     </ui:Button>
-                </Grid>
-            </Grid>
+                </WrapPanel>
+            </StackPanel>
         </Border>
 
-
-
-        <Grid Grid.Row="2" Margin="8,8,8,10">
-            <Grid.ColumnDefinitions>
-                <!-- Proportional with a floor so the side rails give ground to the
-                     canvas as the window narrows, instead of holding a fixed width
-                     and squeezing the whiteboard to nothing. -->
-                <ColumnDefinition x:Name="TranscriptColumn" Width="0.22*" MinWidth="220" MaxWidth="360" />
-                <ColumnDefinition Width="*" MinWidth="320" />
-                <ColumnDefinition x:Name="NotesColumn" Width="0.24*" MinWidth="240" MaxWidth="380" />
-            </Grid.ColumnDefinitions>
-
-            <Border x:Name="TranscriptPane"
-                    Grid.Column="0"
-                    Margin="0,0,8,0"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+        <Grid Grid.Row="2" Margin="8">
+            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="12"
-                    AutomationProperties.Name="Transcript panel">
-                <DockPanel LastChildFill="True">
-                    <Border DockPanel.Dock="Top"
+                    AutomationProperties.Name="Live architecture canvas">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border Grid.Row="0"
+                            Padding="12,8"
                             Background="{DynamicResource ControlFillColorDefaultBrush}"
                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="0,0,0,1"
-                            Padding="12,10">
+                            BorderThickness="0,0,0,1">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Live transcript"
-                                           FontWeight="SemiBold"
+                                <TextBlock Text="Live architecture canvas"
                                            FontSize="14"
+                                           FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                <TextBlock Text="Rolling captions from the active microphone."
+                                <TextBlock Text="Drag to pin · double-click to pin or unpin · scroll to zoom"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           AutomationProperties.Name="Canvas interaction help" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Border Padding="8,4"
+                                        Margin="0,0,8,0"
+                                        CornerRadius="8"
+                                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1">
+                                    <TextBlock Text="{Binding AppliedIntentDisplay}"
+                                               FontSize="11"
+                                               AutomationProperties.Name="Current diagram intent" />
+                                </Border>
+                                <Border Padding="8,4"
+                                        CornerRadius="8"
+                                        Background="{DynamicResource SystemAccentBrush}">
+                                    <TextBlock Text="{Binding SceneRevision, StringFormat='rev {0}'}"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               Foreground="White"
+                                               AutomationProperties.Name="Scene revision" />
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <ctrl:ExcalidrawCanvas x:Name="Whiteboard"
+                                           Grid.Row="1"
+                                           AutomationProperties.Name="Interactive live architecture canvas"
+                                           AutomationProperties.HelpText="Drag nodes to pin them. Double-click a node to toggle its pinned state." />
+                </Grid>
+            </Border>
+
+            <Border VerticalAlignment="Top"
+                    HorizontalAlignment="Center"
+                    Margin="16,64,16,0"
+                    Padding="12,8"
+                    MaxWidth="720"
+                    CornerRadius="8"
+                    Background="{DynamicResource ControlFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource SystemAccentBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding HasIntentSuggestion, Converter={StaticResource BoolVis}}"
+                    AutomationProperties.Name="Suggested diagram intent">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding SuggestedIntentDisplay, StringFormat='Looks like {0} — switch?'}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0" />
+                    <ui:Button Command="{Binding AcceptIntentSuggestionCommand}"
+                               Content="Switch"
+                               Height="32"
+                               Padding="12,0"
+                               Appearance="Primary"
+                               Margin="0,0,4,0"
+                               AutomationProperties.Name="Accept suggested diagram intent" />
+                    <ui:Button Command="{Binding DismissIntentSuggestionCommand}"
+                               Content="Dismiss"
+                               Height="32"
+                               Padding="12,0"
+                               AutomationProperties.Name="Dismiss suggested diagram intent" />
+                </StackPanel>
+            </Border>
+
+            <Border VerticalAlignment="Top"
+                    HorizontalAlignment="Center"
+                    Margin="16,112,16,0"
+                    Padding="12,8"
+                    MaxWidth="760"
+                    CornerRadius="8"
+                    Background="{DynamicResource ControlFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding IsReflowAllConfirmationVisible, Converter={StaticResource BoolVis}}"
+                    AutomationProperties.Name="Confirm reflow all">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Reflow all will move pinned nodes. Continue?"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0" />
+                    <ui:Button Command="{Binding ConfirmReflowAllCommand}"
+                               Content="Reflow all"
+                               Height="32"
+                               Padding="12,0"
+                               Appearance="Primary"
+                               Margin="0,0,4,0"
+                               AutomationProperties.Name="Confirm reflow all nodes" />
+                    <ui:Button Command="{Binding CancelReflowAllCommand}"
+                               Content="Cancel"
+                               Height="32"
+                               Padding="12,0"
+                               AutomationProperties.Name="Cancel reflow all nodes" />
+                </StackPanel>
+            </Border>
+
+            <Border VerticalAlignment="Bottom"
+                    HorizontalAlignment="Center"
+                    Width="720"
+                    MaxWidth="720"
+                    Margin="16"
+                    Padding="12,8"
+                    CornerRadius="8"
+                    Background="{DynamicResource ControlFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding IsListening, Converter={StaticResource BoolVis}}"
+                    AutomationProperties.Name="Live caption strip">
+                <TextBlock Text="{Binding LiveCaptionDisplay}"
+                           TextWrapping="Wrap"
+                           MaxHeight="58"
+                           FontSize="14"
+                           LineHeight="19"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                           AutomationProperties.LiveSetting="Polite" />
+            </Border>
+
+            <Border x:Name="TranscriptPane"
+                    Width="380"
+                    HorizontalAlignment="Left"
+                    Margin="8"
+                    Padding="0"
+                    CornerRadius="12"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    Visibility="{Binding IsTranscriptPaneOpen, Converter={StaticResource BoolVis}}"
+                    Panel.ZIndex="10"
+                    AutomationProperties.Name="Full transcript drawer">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top"
+                            Padding="12,10"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="0,0,0,1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Full transcript" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding CaptionCount, StringFormat='Captions: {0}'}"
                                            FontSize="11"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
                             <ui:Button Grid.Column="1"
-                                       Click="OnToggleTranscriptPane"
-                                       Appearance="Transparent"
-                                       Padding="8,4"
-                                       ToolTip="Hide the transcript panel"
-                                       AutomationProperties.Name="Hide transcript panel">
+                                       Command="{Binding ToggleTranscriptPaneCommand}"
+                                       Height="32"
+                                       Width="32"
+                                       Padding="0"
+                                       ToolTip="Close full transcript."
+                                       AutomationProperties.Name="Close full transcript drawer">
                                 <ui:Button.Icon>
                                     <ui:SymbolIcon Symbol="Dismiss20" />
                                 </ui:Button.Icon>
@@ -357,188 +485,72 @@
                     <TextBox x:Name="TranscriptBox"
                              Text="{Binding TranscriptDisplay, Mode=OneWay}"
                              IsReadOnly="True"
-                             IsTabStop="False"
+                             IsTabStop="True"
                              BorderThickness="0"
                              Background="Transparent"
-                             Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                             Padding="12"
                              TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto"
                              FontSize="14"
-                             Padding="12,10"
-                             AutomationProperties.Name="Live transcript"
-                             ToolTip="Read-only live transcript." />
+                             AutomationProperties.Name="Full live transcript" />
                 </DockPanel>
             </Border>
 
-            <Border Grid.Column="1"
-                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource ControlElevationBorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="14"
-                    AutomationProperties.Name="Diagram canvas">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <Border Grid.Row="0"
-                            Background="{DynamicResource ControlFillColorDefaultBrush}"
-                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="0,0,0,1"
-                            Padding="12,10">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" MinWidth="120" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
-                                <TextBlock Text="{Binding ShowWhiteboard, Converter={StaticResource BoolToString}, ConverterParameter='Classic canvas|Live whiteboard'}"
-                                           FontWeight="SemiBold"
-                                           FontSize="14"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                <TextBlock Text="Scroll to zoom. Drag any node to pin it where you want."
-                                           FontSize="11"
-                                           TextTrimming="CharacterEllipsis"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="1"
-                                        Orientation="Horizontal"
-                                        VerticalAlignment="Center">
-                                <Border Margin="0,0,8,0"
-                                        Padding="10,4"
-                                        CornerRadius="999"
-                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="1">
-                                    <StackPanel Orientation="Horizontal">
-                                        <Ellipse Width="8"
-                                                 Height="8"
-                                                 Margin="0,4,6,0">
-                                            <Ellipse.Style>
-                                                <Style TargetType="Ellipse">
-                                                    <Setter Property="Fill" Value="{DynamicResource SystemFillColorCautionBrush}" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding IsListening}" Value="True">
-                                                            <Setter Property="Fill" Value="{DynamicResource SystemFillColorSuccessBrush}" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </Ellipse.Style>
-                                        </Ellipse>
-                                        <TextBlock Text="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Standby|Listening'}"
-                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                                   FontWeight="SemiBold" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Margin="0,0,8,0"
-                                        Padding="10,4"
-                                        CornerRadius="999"
-                                        Background="{DynamicResource ControlFillColorDefaultBrush}"
-                                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="1">
-                                    <StackPanel Orientation="Horizontal">
-                                        <ui:ProgressRing Width="14"
-                                                         Height="14"
-                                                         Margin="0,0,6,0"
-                                                         IsIndeterminate="True"
-                                                         Visibility="{Binding IsGenerating, Converter={StaticResource BoolVis}}" />
-                                        <TextBlock Text="{Binding IsGenerating, Converter={StaticResource BoolToString}, ConverterParameter='Ready|Updating'}"
-                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                                   FontWeight="SemiBold" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Padding="10,4"
-                                        CornerRadius="999"
-                                        Background="{DynamicResource SystemAccentBrush}">
-                                    <TextBlock Text="{Binding SceneRevision, StringFormat='rev {0}'}"
-                                               FontWeight="SemiBold"
-                                               Foreground="White"
-                                               AutomationProperties.Name="Scene revision" />
-                                </Border>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                    <Grid Grid.Row="1" ClipToBounds="True">
-                        <ctrl:ExcalidrawCanvas x:Name="Whiteboard"
-                                               Visibility="{Binding ShowWhiteboard, Converter={StaticResource BoolVis}}" />
-                        <ctrl:SceneCanvas x:Name="Canvas"
-                                          Visibility="{Binding ShowClassicView, Converter={StaticResource BoolVis}}" />
-                    </Grid>
-                </Grid>
-            </Border>
-
             <Border x:Name="NotesPane"
-                    Grid.Column="2"
-                    Margin="8,0,0,0"
+                    Width="380"
+                    HorizontalAlignment="Right"
+                    Margin="8"
+                    CornerRadius="12"
                     Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
-                    CornerRadius="12"
-                    AutomationProperties.Name="Notes panel">
-                <DockPanel LastChildFill="True">
+                    Visibility="{Binding IsNotesPaneOpen, Converter={StaticResource BoolVis}}"
+                    Panel.ZIndex="10"
+                    AutomationProperties.Name="Notes drawer">
+                <DockPanel>
                     <Border DockPanel.Dock="Top"
-                            Background="{DynamicResource ControlFillColorDefaultBrush}"
+                            Padding="12,10"
                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="0,0,0,1"
-                            Padding="12,10">
+                            BorderThickness="0,0,0,1">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Notes"
-                                           FontWeight="SemiBold"
-                                           FontSize="14"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                <TextBlock Text="Decisions, action items, and risks from the session."
+                                <TextBlock Text="Notes" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding NoteCount, StringFormat='Notes: {0} · decisions, actions, risks, and questions'}"
                                            FontSize="11"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
                             <ui:Button Grid.Column="1"
-                                       Click="OnToggleNotesPane"
-                                       Appearance="Transparent"
-                                       Padding="8,4"
-                                       ToolTip="Hide the notes panel"
-                                       AutomationProperties.Name="Hide notes panel">
+                                       Command="{Binding ToggleNotesPaneCommand}"
+                                       Height="32"
+                                       Width="32"
+                                       Padding="0"
+                                       ToolTip="Close notes."
+                                       AutomationProperties.Name="Close notes drawer">
                                 <ui:Button.Icon>
                                     <ui:SymbolIcon Symbol="Dismiss20" />
                                 </ui:Button.Icon>
                             </ui:Button>
                         </Grid>
                     </Border>
-                    <ListBox x:Name="NotesList"
-                             ItemsSource="{Binding Source={StaticResource GroupedNotes}}"
+                    <ListBox ItemsSource="{Binding Source={StaticResource GroupedNotes}}"
                              BorderThickness="0"
                              Background="Transparent"
-                             Padding="6"
+                             Padding="8"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                             VirtualizingPanel.IsVirtualizing="True"
-                             VirtualizingPanel.IsVirtualizingWhenGrouping="True"
-                             VirtualizingPanel.VirtualizationMode="Recycling"
                              AutomationProperties.Name="Session notes">
                         <ListBox.GroupStyle>
                             <GroupStyle>
                                 <GroupStyle.HeaderTemplate>
                                     <DataTemplate>
-                                        <Border Margin="0,8,0,4" Padding="2,0">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding Name}"
-                                                           FontWeight="SemiBold"
-                                                           FontSize="12"
-                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                                <TextBlock Text="{Binding ItemCount, StringFormat=' ({0})'}"
-                                                           FontSize="12"
-                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                            </StackPanel>
-                                        </Border>
+                                        <TextBlock Text="{Binding Name}"
+                                                   Margin="2,8,2,4"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                     </DataTemplate>
                                 </GroupStyle.HeaderTemplate>
                             </GroupStyle>
@@ -546,42 +558,31 @@
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Padding" Value="0" />
-                                <Setter Property="Margin" Value="0,0,0,6" />
+                                <Setter Property="Margin" Value="0,0,0,8" />
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                <Setter Property="Background" Value="Transparent" />
-                                <Setter Property="BorderThickness" Value="0" />
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
+                                <Border Padding="10,8"
                                         CornerRadius="8"
-                                        Padding="10,8">
+                                        Background="{DynamicResource ControlFillColorDefaultBrush}">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="3" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <Border Width="3"
+                                        <Border Background="{Binding Kind, Converter={StaticResource NoteKindBrush}}"
                                                 CornerRadius="2"
-                                                Margin="0,1,10,1"
-                                                Background="{Binding Kind, Converter={StaticResource NoteKindBrush}}" />
+                                                Margin="0,0,10,0" />
                                         <StackPanel Grid.Column="1">
                                             <TextBlock Text="{Binding Text}"
                                                        TextWrapping="Wrap"
-                                                       FontSize="13"
-                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                                <TextBlock Text="{Binding Owner}"
-                                                           Visibility="{Binding HasOwner, Converter={StaticResource BoolVis}}"
-                                                           FontWeight="SemiBold"
-                                                           FontSize="11"
-                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                                <TextBlock Text="{Binding Time}"
-                                                           Margin="8,0,0,0"
-                                                           FontSize="11"
-                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                                            </StackPanel>
+                                                       FontSize="13" />
+                                            <TextBlock Text="{Binding Time}"
+                                                       Margin="0,4,0,0"
+                                                       FontSize="11"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -593,24 +594,37 @@
         </Grid>
 
         <Border Grid.Row="3"
+                Padding="12,6"
                 Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{DynamicResource ControlElevationBorderBrush}"
-                BorderThickness="0,1,0,0"
-                Padding="12,6">
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-
-                <!-- Component health lives here rather than in a panel that pushed the
-                     canvas down: a traffic-light per check is all the signal needed,
-                     and the detail is available on hover. -->
-                <ItemsControl Grid.Column="0"
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding RuntimeStatus.Label}"
+                               FontWeight="SemiBold"
+                               Margin="0,0,10,0"
+                               AutomationProperties.Name="Runtime state" />
+                    <TextBlock Text="{Binding RuntimeStatus.Details}"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="620"
+                               AutomationProperties.Name="Runtime state details" />
+                    <ui:Button Command="{Binding DismissRuntimeFaultCommand}"
+                               Content="Dismiss"
+                               Height="32"
+                               Padding="10,0"
+                               Margin="8,0,0,0"
+                               Visibility="{Binding IsRuntimeFaultVisible, Converter={StaticResource BoolVis}}"
+                               AutomationProperties.Name="Dismiss runtime fault" />
+                </StackPanel>
+                <ItemsControl Grid.Column="2"
                               ItemsSource="{Binding HealthStates}"
                               VerticalAlignment="Center"
-                              Margin="0,0,16,0"
                               AutomationProperties.Name="Component health">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
@@ -620,37 +634,21 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal"
-                                        Margin="0,0,14,0"
-                                        VerticalAlignment="Center"
+                                        Margin="12,0,0,0"
                                         ToolTip="{Binding Detail}"
                                         AutomationProperties.Name="{Binding Title}"
                                         AutomationProperties.HelpText="{Binding Detail}">
                                 <Ellipse Width="8"
                                          Height="8"
                                          Margin="0,0,6,0"
-                                         VerticalAlignment="Center"
                                          Fill="{Binding Status, Converter={StaticResource HealthBrush}}" />
                                 <TextBlock Text="{Binding Title}"
-                                           FontSize="12"
-                                           VerticalAlignment="Center"
+                                           FontSize="11"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-
-                <TextBlock Grid.Column="1"
-                           VerticalAlignment="Center"
-                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                           Text="{Binding StatusMessage}"
-                           TextTrimming="CharacterEllipsis" />
-
-                <TextBlock Grid.Column="2"
-                           VerticalAlignment="Center"
-                           Margin="16,0,0,0"
-                           FontSize="11"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                           Text="Ctrl+Shift+L listen  •  Ctrl+Shift+R refine  •  Ctrl+Shift+E export" />
             </Grid>
         </Border>
     </Grid>

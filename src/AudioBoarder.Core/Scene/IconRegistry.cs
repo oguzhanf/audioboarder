@@ -291,6 +291,7 @@ public static class IconRegistry
         [NodeKind.System] = "server",
         [NodeKind.Technology] = "wrench",
         [NodeKind.Security] = "shield",
+        [NodeKind.Identity] = "key",
         [NodeKind.Cloud] = "cloud",
         [NodeKind.Document] = "file-text",
         [NodeKind.Milestone] = "flag",

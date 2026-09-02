@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Wpf.Ui.Controls;
 
 namespace AudioBoarder.Tests.App;
@@ -39,6 +40,34 @@ public class XamlSymbolTests
         invalid.Should().BeEmpty(
             $"{Path.GetFileName(xamlPath)} references SymbolRegular values that do not exist; " +
             "the app would crash on load with a XamlParseException");
+    }
+
+    [Fact]
+    public void MainWindowHasAccessiblePhaseFiveProductSurface()
+    {
+        var path = Path.Combine(AppRoot(), "MainWindow.xaml");
+        var content = File.ReadAllText(path);
+
+        XDocument.Load(path).Root.Should().NotBeNull();
+        content.Should().Contain("Live architecture canvas");
+        content.Should().Contain("Export to Excalidraw");
+        content.Should().Contain("AutomationProperties.Name=\"Diagram intent selector\"");
+        content.Should().Contain("AutomationProperties.Name=\"Reflow unpinned nodes\"");
+        content.Should().Contain("AutomationProperties.Name=\"Toggle full transcript drawer\"");
+        content.Should().Contain("AutomationProperties.Name=\"Toggle notes drawer\"");
+        content.Should().Contain("AutomationProperties.Name=\"Runtime state\"");
+        content.Should().NotContain("ShowWhiteboard");
+        content.Should().NotContain("Classic canvas");
+    }
+
+    [Fact]
+    public void MainWindowHasNoDecorativeGradientResources()
+    {
+        var content = File.ReadAllText(Path.Combine(AppRoot(), "MainWindow.xaml"));
+
+        content.Should().NotContain("LinearGradientBrush");
+        content.Should().NotContain("RadialGradientBrush");
+        content.Should().NotContain("DropShadowEffect");
     }
 
     /// <summary>Walks up from the test binaries to the app project.</summary>

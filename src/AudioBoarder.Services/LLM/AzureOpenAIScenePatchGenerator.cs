@@ -1,5 +1,6 @@
 using System.ClientModel;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Text;
 using Azure.AI.OpenAI;
 using Azure.Identity;
@@ -44,10 +45,10 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
                 "AzureOpenAIScenePatchGenerator requires Endpoint and DeploymentName. Run scripts/setup-azure.ps1 to sign in and let Foundry auto-discovery populate these on startup.");
 
         var sw = Stopwatch.StartNew();
-        var prompt = BuildUserPrompt(request);
+        var prompt = ScenePromptComposer.BuildUserPrompt(request);
 
         // Continuous-mode requests get the leaner prompt and target the FAST deployment.
-        var systemPrompt = request.IsContinuous ? _options.ContinuousSystemPrompt : _options.SystemPrompt;
+        var systemPrompt = ScenePromptComposer.BuildSystemPrompt(_options, request);
         var deploymentName = request.IsContinuous && !string.IsNullOrWhiteSpace(_options.FallbackDeploymentName)
             ? _options.FallbackDeploymentName!
             : _options.DeploymentName!;
@@ -86,17 +87,19 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
             }
             catch (System.ClientModel.ClientResultException ex) when (ex.Status == 400)
             {
-                _logger.LogWarning("Strict mode rejected by deployment; retrying with looser response format. {Msg}", ex.Message);
+                _logger.LogWarning(
+                    "Strict response format rejected; status={Status} category={Category}",
+                    ex.Status, "unsupported_response_format");
                 lastError = ex;
                 continue;
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
             {
                 // Malformed / unparseable model output. Fall through to the next
-                // (looser) response-format strategy rather than discarding the
-                // whole turn, and log the payload so it can be diagnosed.
-                _logger.LogWarning(ex, "ScenePatch parse failed; trying next strategy. Raw: {Raw}",
-                    raw.Length > 400 ? raw[..400] + "…" : raw);
+                // (looser) response-format strategy rather than discarding the turn.
+                _logger.LogWarning(
+                    "ScenePatch parse failed; category={Category} responseChars={Chars}; trying next strategy",
+                    "invalid_scene_patch", raw.Length);
                 lastError = ex;
                 continue;
             }
@@ -107,7 +110,9 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Azure OpenAI completion failed");
+                _logger.LogError(
+                    "Azure OpenAI completion failed; category={Category}",
+                    ex is HttpRequestException ? "model_request_failure" : "model_generation_failure");
                 throw;
             }
         }
@@ -197,49 +202,4 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         return client.GetChatClient(deploymentName);
     }
 
-    private static string BuildUserPrompt(ScenePatchRequest request)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("## Current scene (JSON)");
-        sb.AppendLine(SceneSummariser.Summarise(request.CurrentScene));
-        sb.AppendLine();
-        sb.AppendLine("## Transcript (last N segments)");
-        foreach (var seg in request.TranscriptWindow)
-            sb.AppendLine($"- [{seg.Speaker}] {seg.Start:HH:mm:ss}: {seg.Text}");
-        if (!string.IsNullOrWhiteSpace(request.UserInstruction))
-        {
-            sb.AppendLine();
-            sb.AppendLine("## User instruction");
-            sb.AppendLine(request.UserInstruction);
-        }
-        sb.AppendLine();
-        sb.AppendLine($"Respond with a ScenePatch JSON. Max {request.MaxNodes} nodes total.");
-        return sb.ToString();
-    }
-}
-
-internal static class SceneSummariser
-{
-    public static string Summarise(Core.Scene.SceneGraph graph)
-    {
-        var sb = new StringBuilder();
-        sb.Append("nodes=").Append(graph.Nodes.Count)
-          .Append(" edges=").Append(graph.Edges.Count)
-          .Append(" groups=").Append(graph.Groups.Count)
-          .Append(" notes=").Append(graph.Notes.Count).AppendLine();
-        foreach (var n in graph.Nodes.Values)
-        {
-            // Surface icon/description/group so a refine pass can see what is already
-            // enriched and extend it instead of silently stripping it back to a bare box.
-            sb.Append($"  N {n.Id} ({n.Kind}) {n.Label}");
-            if (!string.IsNullOrWhiteSpace(n.Description)) sb.Append($" desc=\"{n.Description}\"");
-            if (!string.IsNullOrWhiteSpace(n.GroupId)) sb.Append($" group={n.GroupId}");
-            sb.AppendLine();
-        }
-        foreach (var e in graph.Edges.Values)
-            sb.AppendLine($"  E {e.Id}: {e.FromNodeId} -> {e.ToNodeId} {e.Kind} {e.Label}");
-        foreach (var g in graph.Groups.Values)
-            sb.AppendLine($"  G {g.Id}: {g.Label}");
-        return sb.ToString();
-    }
 }

@@ -1,8 +1,10 @@
 <Project Sdk="WixToolset.Sdk/5.0.2">
   <PropertyGroup>
-    <OutputName>AudioBoarder-v$(Version)-win-x64</OutputName>
+    <MsiVersion Condition="'$(MsiVersion)' == ''">0.0.0</MsiVersion>
+    <MsiOutputName Condition="'$(MsiOutputName)' == ''">AudioBoarder-v$(Version)-win-x64</MsiOutputName>
+    <OutputName>$(MsiOutputName)</OutputName>
     <Platform>x64</Platform>
-    <DefineConstants>Version=$(Version);PublishDir=$(PublishDir)</DefineConstants>
+    <DefineConstants>MsiVersion=$(MsiVersion);ArtifactVersion=$(Version);PublishDir=$(PublishDir)</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

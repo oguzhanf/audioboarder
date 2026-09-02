@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AudioBoarder.Core.Layout;
 using AudioBoarder.Core.Scene;
 
 namespace AudioBoarder.Core.Excalidraw;
@@ -7,11 +8,8 @@ namespace AudioBoarder.Core.Excalidraw;
 /// <summary>
 /// Serialises a <see cref="SceneGraph"/> for the in-app canvas renderer.
 /// <para>
-/// The renderer does its own layout and styling, so unlike
-/// <see cref="SceneToExcalidrawConverter"/> this emits the graph's *meaning*
-/// (labels, kinds, relationships) rather than drawing instructions. That keeps
-/// the payload two orders of magnitude smaller — which matters when it is pushed
-/// across the WebView2 bridge several times a minute during a live meeting.
+/// Geometry is resolved by .NET and expressed as centre coordinates. The SVG
+/// renderer only converts centres to top-left drawing coordinates.
 /// </para>
 /// <para>
 /// The Excalidraw converter is retained for file export, where a real
@@ -34,11 +32,14 @@ public static class SceneToCanvasJson
         CanvasScene payload;
         lock (graph.SyncRoot)
         {
+            var layout = LayoutSnapshot.Capture(graph);
             payload = new CanvasScene
             {
                 SceneRevision = revision,
+                Intent = ToSnake(graph.IntentState.AppliedIntent.ToString()),
                 Nodes = graph.Nodes.Values
                     .OrderBy(n => n.Sequence)
+                    .ThenBy(n => n.Id, StringComparer.Ordinal)
                     .Select(n => new CanvasNode
                     {
                         Id = n.Id,
@@ -47,16 +48,18 @@ public static class SceneToCanvasJson
                         Kind = ToSnake(n.Kind.ToString()),
                         Group = n.GroupId,
                         Locked = n.Locked ? true : null,
-                        // Pinned nodes carry their coordinates so the renderer can honour
-                        // the user's placement instead of re-laying them out every pass.
-                        X = n.Locked ? n.X : null,
-                        Y = n.Locked ? n.Y : null,
+                        Lifecycle = ToSnake(n.LifecycleState.ToString()),
+                        CenterX = layout.Nodes[n.Id].CenterX,
+                        CenterY = layout.Nodes[n.Id].CenterY,
+                        Width = layout.Nodes[n.Id].Width,
+                        Height = layout.Nodes[n.Id].Height,
                         // Official Azure artwork when the user has pointed us at the
                         // icon set; the renderer falls back to a bundled icon otherwise.
                         Svg = ResolveOfficialIcon(icons, n.Label),
                     })
                     .ToArray(),
                 Edges = graph.Edges.Values
+                    .OrderBy(e => e.Id, StringComparer.Ordinal)
                     .Select(e => new CanvasEdge
                     {
                         Id = e.Id,
@@ -65,15 +68,31 @@ public static class SceneToCanvasJson
                         Kind = ToSnake(e.Kind.ToString()),
                         Label = string.IsNullOrWhiteSpace(e.Label) ? null : e.Label,
                         Step = e.Step,
+                        Protocol = e.Protocol,
+                        Payload = e.Payload,
+                        DataClassification = e.DataClassification,
+                        Authentication = e.Authentication,
+                        InteractionMode = e.InteractionMode.HasValue
+                            ? ToSnake(e.InteractionMode.Value.ToString()) : null,
+                        Lifecycle = ToSnake(e.LifecycleState.ToString()),
                     })
                     .ToArray(),
                 Groups = graph.Groups.Values
+                    .OrderBy(g => layout.Groups[g.Id].Depth)
+                    .ThenBy(g => g.Id, StringComparer.Ordinal)
                     .Select(g => new CanvasGroup
                     {
                         Id = g.Id,
                         Label = g.Label,
                         Parent = g.ParentGroupId,
                         Subtitle = string.IsNullOrWhiteSpace(g.Subtitle) ? null : g.Subtitle,
+                        BoundaryKind = ToSnake(g.BoundaryKind.ToString()),
+                        Lifecycle = ToSnake(g.LifecycleState.ToString()),
+                        CenterX = layout.Groups[g.Id].CenterX,
+                        CenterY = layout.Groups[g.Id].CenterY,
+                        Width = layout.Groups[g.Id].Width,
+                        Height = layout.Groups[g.Id].Height,
+                        Depth = layout.Groups[g.Id].Depth,
                     })
                     .ToArray(),
             };
@@ -107,6 +126,7 @@ public static class SceneToCanvasJson
     private sealed class CanvasScene
     {
         public int SceneRevision { get; init; }
+        public required string Intent { get; init; }
         public CanvasNode[] Nodes { get; init; } = Array.Empty<CanvasNode>();
         public CanvasEdge[] Edges { get; init; } = Array.Empty<CanvasEdge>();
         public CanvasGroup[] Groups { get; init; } = Array.Empty<CanvasGroup>();
@@ -120,8 +140,11 @@ public static class SceneToCanvasJson
         public required string Kind { get; init; }
         public string? Group { get; init; }
         public bool? Locked { get; init; }
-        public double? X { get; init; }
-        public double? Y { get; init; }
+        public string? Lifecycle { get; init; }
+        public double CenterX { get; init; }
+        public double CenterY { get; init; }
+        public double Width { get; init; }
+        public double Height { get; init; }
 
         /// <summary>Official Azure icon markup, when the user has the icon set.</summary>
         public string? Svg { get; init; }
@@ -135,6 +158,12 @@ public static class SceneToCanvasJson
         public required string Kind { get; init; }
         public string? Label { get; init; }
         public int? Step { get; init; }
+        public string? Protocol { get; init; }
+        public string? Payload { get; init; }
+        public string? DataClassification { get; init; }
+        public string? Authentication { get; init; }
+        public string? InteractionMode { get; init; }
+        public string? Lifecycle { get; init; }
     }
 
     private sealed class CanvasGroup
@@ -143,5 +172,12 @@ public static class SceneToCanvasJson
         public required string Label { get; init; }
         public string? Parent { get; init; }
         public string? Subtitle { get; init; }
+        public string? BoundaryKind { get; init; }
+        public string? Lifecycle { get; init; }
+        public double CenterX { get; init; }
+        public double CenterY { get; init; }
+        public double Width { get; init; }
+        public double Height { get; init; }
+        public int Depth { get; init; }
     }
 }

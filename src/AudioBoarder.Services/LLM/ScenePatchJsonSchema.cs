@@ -1,11 +1,7 @@
 namespace AudioBoarder.Services.LLM;
 
-/// <summary>
-/// JSON schema that mirrors <see cref="Core.Patch.ScenePatch"/>. Kept as a
-/// hand-written constant so we can hand it to Azure OpenAI's strict JSON-schema
-/// response format without dragging in a reflection-based generator.
-/// </summary>
-internal static class ScenePatchJsonSchema
+/// <summary>Strict operation-specific schema for the model-owned ScenePatch DSL.</summary>
+public static class ScenePatchJsonSchema
 {
     public static string Build() => Schema;
 
@@ -17,54 +13,183 @@ internal static class ScenePatchJsonSchema
         "operations": {
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "op": {
-                "type": "string",
-                "enum": [
-                  "add_node", "update_node", "delete_node",
-                  "connect", "disconnect", "relabel", "group", "ungroup",
-                  "note_upsert", "note_delete",
-                  "generate_image", "delete_image"
-                ]
+            "oneOf": [
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": { "op": { "const": "clear_scene" } },
+                "required": ["op"]
               },
-              "id": { "type": "string" },
-              "kind": { "type": "string" },
-              "label": { "type": "string" },
-              "icon": { "type": "string" },
-              "description": { "type": "string" },
-              "group_id": { "type": "string" },
-              "from": { "type": "string" },
-              "to": { "type": "string" },
-              "node_ids": { "type": "array", "items": { "type": "string" } },
-              "parent_group_id": { "type": "string" },
-              "subtitle": { "type": "string" },
-              "step": { "type": ["integer", "null"] },
-              "text": { "type": "string" },
-              "owner": { "type": "string" },
-              "prompt": { "type": "string" },
-              "attach_to_node_id": { "type": "string" },
-              "position": {
-                "type": "object",
-                "additionalProperties": false,
+              {
+                "type": "object", "additionalProperties": false,
                 "properties": {
-                  "kind": { "type": "string" },
-                  "reference": { "type": "string" }
+                  "op": { "const": "add_node" },
+                  "id": { "type": "string" },
+                  "kind": { "$ref": "#/$defs/nodeKind" },
+                  "label": { "type": "string" },
+                  "group_id": { "type": "string" },
+                  "position": { "$ref": "#/$defs/position" },
+                  "icon": { "type": "string" },
+                  "description": { "type": "string" }
                 },
-                "required": ["kind", "reference"]
+                "required": ["op", "id", "kind", "label"]
               },
-              "source_timestamp": { "type": "string", "format": "date-time" }
-            },
-            "required": [
-              "op", "id", "kind", "label", "icon", "description", "group_id", "from", "to",
-              "node_ids", "parent_group_id", "subtitle", "step", "text", "owner", "prompt",
-              "attach_to_node_id", "position", "source_timestamp"
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "update_node" },
+                  "id": { "type": "string" },
+                  "kind": { "$ref": "#/$defs/nodeKind" },
+                  "label": { "type": "string" },
+                  "group_id": { "type": "string" },
+                  "position": { "$ref": "#/$defs/position" },
+                  "icon": { "type": "string" },
+                  "description": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "delete_node" },
+                  "id": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "connect" },
+                  "id": { "type": "string" },
+                  "from": { "type": "string" },
+                  "to": { "type": "string" },
+                  "kind": { "$ref": "#/$defs/edgeKind" },
+                  "label": { "type": "string" },
+                  "step": { "type": ["integer", "null"] },
+                  "protocol": { "type": "string" },
+                  "payload": { "type": "string" },
+                  "data_classification": { "type": "string" },
+                  "authentication": { "type": "string" },
+                  "interaction_mode": { "$ref": "#/$defs/interactionMode" }
+                },
+                "required": ["op", "id", "from", "to"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "disconnect" },
+                  "id": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "relabel" },
+                  "id": { "type": "string" },
+                  "label": { "type": "string" }
+                },
+                "required": ["op", "id", "label"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "group" },
+                  "id": { "type": "string" },
+                  "label": { "type": "string" },
+                  "node_ids": { "type": "array", "items": { "type": "string" } },
+                  "parent_group_id": { "type": "string" },
+                  "subtitle": { "type": "string" },
+                  "boundary_kind": { "$ref": "#/$defs/boundaryKind" }
+                },
+                "required": ["op", "id", "label", "node_ids"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "ungroup" },
+                  "id": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "note_upsert" },
+                  "id": { "type": "string" },
+                  "kind": { "$ref": "#/$defs/noteKind" },
+                  "text": { "type": "string" },
+                  "owner": { "type": "string" },
+                  "source_timestamp": { "type": "string", "format": "date-time" }
+                },
+                "required": ["op", "id", "kind", "text"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "note_delete" },
+                  "id": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "generate_image" },
+                  "id": { "type": "string" },
+                  "prompt": { "type": "string" },
+                  "attach_to_node_id": { "type": "string" }
+                },
+                "required": ["op", "id", "prompt"]
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "op": { "const": "delete_image" },
+                  "id": { "type": "string" }
+                },
+                "required": ["op", "id"]
+              }
             ]
           }
         }
       },
-      "required": ["operations"]
+      "required": ["operations"],
+      "$defs": {
+        "nodeKind": {
+          "type": "string",
+          "enum": ["process","entity","decision","data_store","actor","note","system",
+                   "technology","security","identity","cloud","document","milestone",
+                   "risk","metric","external","callout"]
+        },
+        "edgeKind": {
+          "type": "string",
+          "enum": ["flow","dependency","association","inheritance"]
+        },
+        "noteKind": {
+          "type": "string",
+          "enum": ["action_item","decision","question","risk","general"]
+        },
+        "boundaryKind": {
+          "type": "string",
+          "enum": ["generic","system","environment","tenant","network","trust_zone","cloud_scope","external"]
+        },
+        "interactionMode": {
+          "type": "string",
+          "enum": ["synchronous","asynchronous","batch","stream"]
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["auto","above","below","left_of","right_of","near","inside_group"]
+            },
+            "reference": { "type": "string" }
+          },
+          "required": ["kind"]
+        }
+      }
     }
     """;
 }

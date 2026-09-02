@@ -7,8 +7,9 @@ namespace AudioBoarder.Core.Transcript;
 public sealed class TranscriptBuffer
 {
     private readonly object _gate = new();
-    private readonly LinkedList<TranscriptSegment> _segments = new();
+    private readonly LinkedList<Entry> _segments = new();
     private readonly Func<DateTimeOffset> _clock;
+    private long _sequence;
 
     public TimeSpan Window { get; }
 
@@ -24,8 +25,44 @@ public sealed class TranscriptBuffer
         ArgumentNullException.ThrowIfNull(segment);
         lock (_gate)
         {
-            _segments.AddLast(segment);
+            _segments.AddLast(new Entry(++_sequence, segment));
             Evict();
+        }
+    }
+
+    /// <summary>The cursor immediately after the newest appended segment.</summary>
+    public TranscriptCursor CurrentCursor
+    {
+        get
+        {
+            lock (_gate) return new TranscriptCursor(_sequence);
+        }
+    }
+
+    /// <summary>
+    /// Reads every retained segment appended after <paramref name="cursor"/> in
+    /// exact append order. Timestamps are deliberately not used for ordering.
+    /// </summary>
+    public TranscriptSlice ReadAfter(TranscriptCursor cursor)
+    {
+        if (cursor.Sequence < 0) throw new ArgumentOutOfRangeException(nameof(cursor));
+        lock (_gate)
+        {
+            Evict();
+            var firstRetained = _segments.First?.Value.Sequence ?? (_sequence + 1);
+            var gap = cursor.Sequence < firstRetained - 1;
+            var entries = _segments
+                .Where(e => e.Sequence > cursor.Sequence)
+                .ToArray();
+            var through = entries.Length == 0
+                ? cursor.Sequence
+                : entries[^1].Sequence;
+            return new TranscriptSlice(
+                cursor,
+                new TranscriptCursor(firstRetained),
+                new TranscriptCursor(through),
+                entries.Select(e => e.Segment).ToArray(),
+                gap);
         }
     }
 
@@ -34,7 +71,7 @@ public sealed class TranscriptBuffer
         lock (_gate)
         {
             Evict();
-            return _segments.ToArray();
+            return _segments.Select(e => e.Segment).ToArray();
         }
     }
 
@@ -56,10 +93,10 @@ public sealed class TranscriptBuffer
         {
             Evict();
             var cutoff = _clock() - window;
-            var recent = _segments.Where(s => s.End >= cutoff).ToArray();
+            var recent = _segments.Where(e => e.Segment.End >= cutoff).Select(e => e.Segment).ToArray();
             if (recent.Length >= minSegments) return recent;
             // Too few in the window (a long pause): fall back to the last N overall.
-            return _segments.Reverse().Take(minSegments).Reverse().ToArray();
+            return _segments.Reverse().Take(minSegments).Reverse().Select(e => e.Segment).ToArray();
         }
     }
 
@@ -71,7 +108,9 @@ public sealed class TranscriptBuffer
     private void Evict()
     {
         var cutoff = _clock() - Window;
-        while (_segments.First is { } first && first.Value.End < cutoff)
+        while (_segments.First is { } first && first.Value.Segment.End < cutoff)
             _segments.RemoveFirst();
     }
+
+    private sealed record Entry(long Sequence, TranscriptSegment Segment);
 }

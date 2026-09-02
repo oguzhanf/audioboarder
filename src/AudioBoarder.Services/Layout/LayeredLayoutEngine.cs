@@ -72,7 +72,7 @@ public sealed class LayeredLayoutEngine : ILayoutEngine
 
                 foreach (var node in row)
                 {
-                    if (!node.Locked || node.X is null || node.Y is null)
+                    if (options.ReflowPinned || !node.Locked || node.X is null || node.Y is null)
                     {
                         node.X = x + node.Width / 2;
                         node.Y = y + rowMaxHeight / 2;

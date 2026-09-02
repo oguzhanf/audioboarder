@@ -17,6 +17,8 @@ public sealed class SceneGroup
     /// ("10.1.0.0/24") or a region ("West Europe").
     /// </summary>
     public string? Subtitle { get; set; }
+    public BoundaryKind BoundaryKind { get; set; } = BoundaryKind.Generic;
+    public ElementLifecycleState LifecycleState { get; set; } = ElementLifecycleState.Provisional;
 
     public SceneGroup Clone() => new()
     {
@@ -24,5 +26,7 @@ public sealed class SceneGroup
         Label = Label,
         ParentGroupId = ParentGroupId,
         Subtitle = Subtitle,
+        BoundaryKind = BoundaryKind,
+        LifecycleState = LifecycleState,
     };
 }

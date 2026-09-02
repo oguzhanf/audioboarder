@@ -11,7 +11,7 @@ using Microsoft.Win32;
 namespace AudioBoarder.App.Updates;
 
 public sealed record UpdateRelease(
-    Version Version,
+    SemanticVersion Version,
     string TagName,
     string Name,
     string ReleaseNotes,
@@ -23,9 +23,17 @@ public sealed class GitHubUpdateService
 {
     private const string LatestReleaseUrl =
         "https://api.github.com/repos/oguzhanf/audioboarder/releases/latest";
+    private const string ReleasesUrl =
+        "https://api.github.com/repos/oguzhanf/audioboarder/releases?per_page=20";
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<GitHubUpdateService> _logger;
+    private readonly IFileHashVerifier _hashVerifier;
+    private readonly IAuthenticodeVerifier _signatureVerifier;
+    private readonly string _allowedSignerCertificateSha256;
+    private readonly bool _isPortableBuild;
+    private readonly SemanticVersion _currentVersion;
+    private readonly Func<bool> _isMsiInstallation;
     private readonly string _updateRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "AudioBoarder", "updates");
@@ -34,15 +42,48 @@ public sealed class GitHubUpdateService
         "AudioBoarder", "update-state.json");
 
     public GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpdateService> logger)
+        : this(
+            httpClient,
+            logger,
+            new Sha256FileVerifier(),
+            new WindowsAuthenticodeVerifier(),
+            ReleaseBuildMetadata.AllowedSignerCertificateSha256,
+            ReleaseBuildMetadata.IsPortable,
+            CurrentVersion)
+    {
+    }
+
+    internal GitHubUpdateService(
+        HttpClient httpClient,
+        ILogger<GitHubUpdateService> logger,
+        IFileHashVerifier hashVerifier,
+        IAuthenticodeVerifier signatureVerifier,
+        string allowedSignerCertificateSha256,
+        bool isPortableBuild = false,
+        SemanticVersion? currentVersion = null,
+        Func<bool>? isMsiInstallation = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _hashVerifier = hashVerifier;
+        _signatureVerifier = signatureVerifier;
+        _allowedSignerCertificateSha256 = allowedSignerCertificateSha256;
+        _isPortableBuild = isPortableBuild;
+        _currentVersion = currentVersion ?? CurrentVersion;
+        _isMsiInstallation = isMsiInstallation ?? IsMsiInstallation;
     }
 
     public async Task<UpdateRelease?> CheckAsync(CancellationToken cancellationToken = default)
     {
-        if (!IsMsiInstallation())
+        if (_isPortableBuild || !_isMsiInstallation())
             return null;
+        if (!SignerIdentity.TryParseCertificateSha256Allowlist(
+                _allowedSignerCertificateSha256, out _))
+        {
+            _logger.LogError(
+                "Automatic update is disabled because no valid signer certificate SHA-256 allowlist is embedded.");
+            return null;
+        }
 
         // The check now gates startup, so it must never hang it. The shared HttpClient
         // has no timeout (the installer download needs that), so bound this call here.
@@ -50,7 +91,12 @@ public sealed class GitHubUpdateService
         timeout.CancelAfter(TimeSpan.FromSeconds(8));
         var ct = timeout.Token;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUrl);
+        // GitHub's /latest endpoint excludes prereleases. Preview installations must
+        // inspect the release collection so preview.1 can discover preview.2 and the
+        // eventual stable release. Stable installations stay on the stable-only path.
+        var currentVersion = _currentVersion;
+        var endpoint = currentVersion.IsPrerelease ? ReleasesUrl : LatestReleaseUrl;
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
         request.Headers.UserAgent.ParseAdd($"AudioBoarder/{CurrentVersion}");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
@@ -61,7 +107,9 @@ public sealed class GitHubUpdateService
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        var release = ParseRelease(document.RootElement, CurrentVersion);
+        var release = document.RootElement.ValueKind == JsonValueKind.Array
+            ? ParseReleases(document.RootElement, currentVersion, includePrereleases: true)
+            : ParseRelease(document.RootElement, currentVersion);
         return release is not null && ShouldOffer(release.TagName) ? release : null;
     }
 
@@ -83,7 +131,7 @@ public sealed class GitHubUpdateService
         var destination = Path.Combine(updateDirectory, fileName);
         var temporary = destination + ".download";
         if (File.Exists(destination) &&
-            await VerifyFileAsync(destination, release.Sha256, cancellationToken).ConfigureAwait(false))
+            await VerifyUpdateAsync(destination, release.Sha256, cancellationToken).ConfigureAwait(false))
         {
             progress?.Report(1d);
             return destination;
@@ -138,6 +186,7 @@ public sealed class GitHubUpdateService
                 throw new InvalidDataException("The downloaded update failed SHA-256 verification.");
             }
 
+            EnsureSignatureIsValid(temporary);
             File.Move(temporary, destination, overwrite: true);
             progress?.Report(1d);
             return destination;
@@ -152,6 +201,14 @@ public sealed class GitHubUpdateService
 
     public void BeginInstallAndRestart(string msiPath, UpdateRelease release)
     {
+        if (!_hashVerifier.VerifySha256Async(msiPath, release.Sha256)
+                .GetAwaiter().GetResult())
+        {
+            throw new InvalidDataException(
+                "The update changed after download and failed SHA-256 verification.");
+        }
+        EnsureSignatureIsValid(msiPath);
+
         var executablePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("Could not determine the application path.");
         var updateDirectory = Path.GetDirectoryName(msiPath)
@@ -164,6 +221,7 @@ public sealed class GitHubUpdateService
             MsiPath = msiPath,
             release.Sha256,
             release.TagName,
+            AllowedSignerCertificateSha256 = _allowedSignerCertificateSha256,
             ExecutablePath = executablePath,
             LogPath = logPath,
             InstallPath = installPath
@@ -172,23 +230,86 @@ public sealed class GitHubUpdateService
             $ErrorActionPreference = 'Stop'
             $payload = [Text.Encoding]::UTF8.GetString(
                 [Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
-            $stageRoot = Join-Path $env:ProgramData "AudioBoarder\updates\$($payload.TagName)"
-            New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
-            & "$env:SystemRoot\System32\icacls.exe" $stageRoot '/inheritance:r' `
-                '/grant:r' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+            $secureParent = Join-Path $env:ProgramData 'AudioBoarder\updates-secure'
+            if (Test-Path -LiteralPath $secureParent) {
+                $parentItem = Get-Item -LiteralPath $secureParent -Force
+                if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    exit 17
+                }
+            } else {
+                New-Item -ItemType Directory -Path $secureParent | Out-Null
+            }
+
+            function Set-SecureDirectoryAcl([string]$path) {
+                $administrators = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+                $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+                $acl = [Security.AccessControl.DirectorySecurity]::new()
+                $acl.SetAccessRuleProtection($true, $false)
+                $acl.SetOwner($administrators)
+                $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+                $propagation = [Security.AccessControl.PropagationFlags]::None
+                $allow = [Security.AccessControl.AccessControlType]::Allow
+                $rights = [Security.AccessControl.FileSystemRights]::FullControl
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                    $system, $rights, $inheritance, $propagation, $allow))
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                    $administrators, $rights, $inheritance, $propagation, $allow))
+                Set-Acl -LiteralPath $path -AclObject $acl
+            }
+
+            Set-SecureDirectoryAcl $secureParent
+            $securedParent = Get-Item -LiteralPath $secureParent -Force
+            if (($securedParent.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                exit 17
+            }
+
+            # The random child is created only after the parent DACL has been
+            # replaced, so an unelevated process cannot predict, pre-create, or
+            # modify the path between verification and msiexec opening it.
+            $stageRoot = Join-Path $secureParent ([Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $stageRoot | Out-Null
+            Set-SecureDirectoryAcl $stageRoot
+            $stageItem = Get-Item -LiteralPath $stageRoot -Force
+            if (($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                exit 17
+            }
             $stagedMsi = Join-Path $stageRoot 'AudioBoarder-update.msi'
+            $stagedLog = Join-Path $stageRoot 'install.log'
             Copy-Item -LiteralPath $payload.MsiPath -Destination $stagedMsi -Force
             $actualHash = (Get-FileHash -LiteralPath $stagedMsi -Algorithm SHA256).Hash
             if ($actualHash -ine $payload.Sha256) { exit 13 }
+            if ([string]::IsNullOrWhiteSpace($payload.AllowedSignerCertificateSha256)) { exit 14 }
+            $signature = Get-AuthenticodeSignature -LiteralPath $stagedMsi
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { exit 15 }
+            $allowedSignerHashes = @($payload.AllowedSignerCertificateSha256 -split '[,;]' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ } |
+                ForEach-Object {
+                    if ($_.StartsWith('sha256:', [StringComparison]::OrdinalIgnoreCase)) {
+                        $_.Substring(7)
+                    } else { $_ }
+                })
+            if ($allowedSignerHashes.Count -eq 0 -or
+                @($allowedSignerHashes | Where-Object { $_ -notmatch '^[0-9A-Fa-f]{64}$' }).Count -gt 0) {
+                exit 14
+            }
+            $sha256 = [Security.Cryptography.SHA256]::Create()
+            try {
+                $signerHash = [BitConverter]::ToString(
+                    $sha256.ComputeHash($signature.SignerCertificate.RawData)).Replace('-', '')
+            } finally {
+                $sha256.Dispose()
+            }
+            if ($allowedSignerHashes -inotcontains $signerHash) { exit 16 }
 
-            $arguments = @('/i', "`"$stagedMsi`"", '/passive', '/norestart', '/L*v', "`"$($payload.LogPath)`"")
+            $arguments = @('/i', "`"$stagedMsi`"", '/passive', '/norestart', '/L*v', "`"$stagedLog`"")
             if ($payload.InstallPath) {
                 $arguments += "INSTALLFOLDER=`"$($payload.InstallPath)`""
             }
             $installer = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" `
                 -ArgumentList $arguments -Wait -PassThru
             $exitCode = $installer.ExitCode
-            Remove-Item -LiteralPath $stagedMsi -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
             exit $exitCode
             """.Replace("__PAYLOAD__", payload, StringComparison.Ordinal);
         var elevatedCommand = Convert.ToBase64String(
@@ -371,37 +492,48 @@ public sealed class GitHubUpdateService
         }
     }
 
-    private static async Task<bool> VerifyFileAsync(
-        string path, string expectedHash, CancellationToken cancellationToken)
+    internal async Task<bool> VerifyUpdateAsync(
+        string path, string expectedHash, CancellationToken cancellationToken = default)
     {
-        await using var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.Read,
-            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var buffer = new byte[128 * 1024];
-        while (true)
-        {
-            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-                break;
-            hash.AppendData(buffer, 0, read);
-        }
-
-        return CryptographicOperations.FixedTimeEquals(
-            hash.GetHashAndReset(), Convert.FromHexString(expectedHash));
+        if (!SignerIdentity.TryParseCertificateSha256Allowlist(
+                _allowedSignerCertificateSha256, out _))
+            return false;
+        if (!await _hashVerifier.VerifySha256Async(
+                path, expectedHash, cancellationToken).ConfigureAwait(false))
+            return false;
+        return _signatureVerifier.Verify(path, _allowedSignerCertificateSha256).IsValid;
     }
 
-    internal static Version CurrentVersion =>
-        Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0);
+    private void EnsureSignatureIsValid(string path)
+    {
+        if (!SignerIdentity.TryParseCertificateSha256Allowlist(
+                _allowedSignerCertificateSha256, out _))
+        {
+            throw new InvalidDataException(
+                "The update signer certificate SHA-256 allowlist is missing or invalid.");
+        }
 
-    internal static UpdateRelease? ParseRelease(JsonElement root, Version currentVersion)
+        var result = _signatureVerifier.Verify(path, _allowedSignerCertificateSha256);
+        if (!result.IsValid)
+            throw new InvalidDataException(
+                $"The update failed Authenticode verification: {result.FailureReason}");
+    }
+
+    internal static SemanticVersion CurrentVersion =>
+        SemanticVersion.TryParse(ReleaseBuildMetadata.PackageVersion, out var version)
+            ? version
+            : new SemanticVersion(0, 0, 0);
+
+    internal static UpdateRelease? ParseRelease(
+        JsonElement root,
+        SemanticVersion currentVersion)
     {
         if (!root.TryGetProperty("tag_name", out var tagElement))
             return null;
 
         var tagName = tagElement.GetString();
         if (string.IsNullOrWhiteSpace(tagName) ||
-            !Version.TryParse(tagName.TrimStart('v', 'V'), out var releaseVersion) ||
+            !SemanticVersion.TryParse(tagName, out var releaseVersion) ||
             releaseVersion <= currentVersion)
         {
             return null;
@@ -456,6 +588,30 @@ public sealed class GitHubUpdateService
         }
 
         return null;
+    }
+
+    internal static UpdateRelease? ParseRelease(JsonElement root, Version currentVersion) =>
+        ParseRelease(root, SemanticVersion.FromVersion(currentVersion));
+
+    internal static UpdateRelease? ParseReleases(
+        JsonElement root,
+        SemanticVersion currentVersion,
+        bool includePrereleases)
+    {
+        if (root.ValueKind != JsonValueKind.Array) return null;
+
+        return root.EnumerateArray()
+            .Where(release =>
+                !release.TryGetProperty("draft", out var draft) || !draft.GetBoolean())
+            .Where(release =>
+                includePrereleases ||
+                !release.TryGetProperty("prerelease", out var prerelease) ||
+                !prerelease.GetBoolean())
+            .Select(release => ParseRelease(release, currentVersion))
+            .Where(release => release is not null)
+            .Cast<UpdateRelease>()
+            .OrderByDescending(release => release.Version)
+            .FirstOrDefault();
     }
 
     private sealed record UpdateState(

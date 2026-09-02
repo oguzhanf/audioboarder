@@ -1,6 +1,9 @@
 using System.IO;
+using System.Reflection;
+using System.Text.Json;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
+using AudioBoarder.App.Updates;
 using AudioBoarder.Core.Imaging;
 using AudioBoarder.Core.LLM;
 using AudioBoarder.Core.Scene;
@@ -25,6 +28,7 @@ public static class HealthCheckCommand
     public const int ExitAzure = 12;
     public const int ExitLlmCall = 13;
     public const int ExitImageCall = 14;
+    public const int ExitPackage = 15;
     public const int ExitUnexpected = 99;
 
     public static async Task<int> RunAsync(string[] args, IServiceProvider services, TextWriter? output = null)
@@ -32,6 +36,8 @@ public static class HealthCheckCommand
         output ??= Console.Out;
         var withLlm = args.Any(a => string.Equals(a, "--llm", StringComparison.OrdinalIgnoreCase));
         var withImage = args.Any(a => string.Equals(a, "--image", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(a => string.Equals(a, "--package", StringComparison.OrdinalIgnoreCase)))
+            return RunPackageCheck(output);
 
         var health = services.GetRequiredService<StartupHealthService>();
 
@@ -129,5 +135,82 @@ public static class HealthCheckCommand
             _ => "?",
         };
         w.WriteLine($"  [{icon}] {s.Title}: {s.Detail}");
+    }
+
+    private static int RunPackageCheck(TextWriter output)
+    {
+        output.WriteLine("== AudioBoarder package health check ==");
+        var baseDirectory = AppContext.BaseDirectory;
+        var required = new[]
+        {
+            "AudioBoarder.exe",
+            "appsettings.json",
+            Path.Combine("Assets", "web", "index.html"),
+            "LICENSE",
+            "THIRD-PARTY-NOTICES.txt",
+            "RELEASE-METADATA.json",
+        };
+        var missing = required
+            .Where(relative => !File.Exists(Path.Combine(baseDirectory, relative)))
+            .ToArray();
+        if (!Directory.EnumerateFiles(baseDirectory, "AudioBoarder-v*.spdx.json").Any())
+            missing = missing.Append("AudioBoarder-v*.spdx.json").ToArray();
+
+        if (missing.Length > 0)
+        {
+            foreach (var relative in missing)
+                output.WriteLine($"  [FAIL] Missing {relative}");
+            output.WriteLine($"Exit code: {ExitPackage}");
+            return ExitPackage;
+        }
+
+        try
+        {
+            using var metadata = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(baseDirectory, "RELEASE-METADATA.json")));
+            var root = metadata.RootElement;
+            var version = root.GetProperty("version").GetString();
+            var commit = root.GetProperty("sourceCommit").GetString();
+            if (string.IsNullOrWhiteSpace(version) ||
+                commit is null ||
+                commit.Length != 40 ||
+                !commit.All(Uri.IsHexDigit))
+            {
+                output.WriteLine("  [FAIL] Release metadata is incomplete.");
+                output.WriteLine($"Exit code: {ExitPackage}");
+                return ExitPackage;
+            }
+
+            var assemblyVersion = Assembly.GetEntryAssembly()?.GetName().Version;
+            var numericVersion = version.Split('-', 2)[0];
+            if (!Version.TryParse(numericVersion, out var expectedVersion) ||
+                assemblyVersion is null ||
+                assemblyVersion.Major != expectedVersion.Major ||
+                assemblyVersion.Minor != expectedVersion.Minor ||
+                assemblyVersion.Build != expectedVersion.Build)
+            {
+                output.WriteLine("  [FAIL] Package metadata version does not match the executable.");
+                output.WriteLine($"Exit code: {ExitPackage}");
+                return ExitPackage;
+            }
+            if (!ReleaseBuildMetadata.IsPortable)
+            {
+                output.WriteLine("  [FAIL] Portable build metadata is not enabled.");
+                output.WriteLine($"Exit code: {ExitPackage}");
+                return ExitPackage;
+            }
+
+            output.WriteLine($"  [OK] Version {version}; source {commit}");
+            output.WriteLine("  [OK] Portable automatic updates disabled");
+            output.WriteLine("  [OK] Settings, WebView assets, license, notices, SBOM and metadata present");
+            output.WriteLine($"Exit code: {ExitOk}");
+            return ExitOk;
+        }
+        catch (Exception)
+        {
+            output.WriteLine("  [FAIL] Release metadata could not be validated.");
+            output.WriteLine($"Exit code: {ExitPackage}");
+            return ExitPackage;
+        }
     }
 }

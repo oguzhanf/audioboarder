@@ -42,6 +42,7 @@ public sealed class SceneNode
     /// leave locked nodes alone.
     /// </summary>
     public bool Locked { get; set; }
+    public ElementLifecycleState LifecycleState { get; set; } = ElementLifecycleState.Provisional;
 
     /// <summary>
     /// Name of the vector icon to draw inside the shape. Uses an explicit
@@ -66,6 +67,7 @@ public sealed class SceneNode
         Height = Height,
         GroupId = GroupId,
         Locked = Locked,
+        LifecycleState = LifecycleState,
         Sequence = Sequence,
     };
 }

@@ -5,6 +5,7 @@ using System.Windows.Threading;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.HealthCheck;
+using AudioBoarder.App.Logging;
 using AudioBoarder.App.Sessions;
 using AudioBoarder.App.Updates;
 using AudioBoarder.App.ViewModels;
@@ -224,6 +225,8 @@ public partial class App : Application
         var settingsSection = builder.Configuration.GetSection("AudioBoarder");
         builder.Services.Configure<AudioBoarderSettings>(settingsSection);
         var settings = settingsSection.Get<AudioBoarderSettings>() ?? new AudioBoarderSettings();
+        Controls.UiPerformanceTelemetry.Enabled =
+            settings.Diagnostics.EnableLocalPerformanceTelemetry;
 
         builder.Services.AddOptions<AzureOpenAIOptions>().Configure<IOptions<AudioBoarderSettings>>((opts, root) =>
         {
@@ -265,6 +268,8 @@ public partial class App : Application
             opts.WindowSeconds = ct.WindowSeconds;
             opts.Backend = ct.Backend;
             opts.SilenceFlushMs = ct.SilenceFlushMs;
+            opts.MaxRetryBackoffSeconds = ct.MaxRetryBackoffSeconds;
+            opts.MaxBufferedSeconds = ct.MaxBufferedSeconds;
             // Only override the built-in vocabulary prompt when the user actually
             // supplied one. A blank value in appsettings must not silently disable
             // domain biasing — that is what made product names come back wrong.
@@ -313,7 +318,7 @@ public partial class App : Application
         {
             var library = AzureIconLibrary.Load(settings.Realtime.AzureIconsPath);
             if (library.Count > 0)
-                Log.Information("Loaded {Count} official Azure icons from {Path}", library.Count, library.Root);
+                Log.Information("Loaded {Count} official Azure icons", library.Count);
             return library;
         });
 
@@ -322,6 +327,7 @@ public partial class App : Application
                 ? DiagramTheme.Dark : DiagramTheme.Light);
 
         builder.Services.AddSingleton<Auth.AzureCredentialProvider>();
+        builder.Services.AddSingleton<IUiStateStore, JsonUiStateStore>();
         builder.Services.AddSingleton<SessionStore>();
         builder.Services.AddSingleton<Export.DiagramExporter>();
         builder.Services.AddSingleton<Export.ExcalidrawExporter>();
@@ -343,21 +349,32 @@ public partial class App : Application
     {
         Directory.CreateDirectory(LogDirectory);
         var path = Path.Combine(LogDirectory, "audioboarder-.log");
+        var baseDir = AppContext.BaseDirectory;
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(baseDir)
+            .AddJsonFile(Path.Combine(baseDir, "appsettings.json"), optional: true)
+            .AddJsonFile(Path.Combine(baseDir, "appsettings.Local.json"), optional: true)
+            .AddEnvironmentVariables(prefix: "AUDIOBOARDER_")
+            .Build();
+        var configuredLevel = configuration["AudioBoarder:Diagnostics:LogLevel"];
+        var level = Enum.TryParse<LogEventLevel>(configuredLevel, ignoreCase: true, out var parsed)
+            ? parsed
+            : LogEventLevel.Information;
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Information()
+            .MinimumLevel.Is(level)
             .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
             .MinimumLevel.Override("System.Net.Http", LogEventLevel.Warning)
             .Enrich.FromLogContext()
             .WriteTo.File(
+                new PrivacyTextFormatter(),
                 path,
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5_000_000,
-                shared: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}")
-            .WriteTo.Console()
+                shared: true)
+            .WriteTo.Console(new PrivacyTextFormatter())
             .CreateLogger();
-        Log.Information("AudioBoarder starting; logs at {Path}", LogDirectory);
+        Log.Information("AudioBoarder starting");
     }
 
     private void WireCrashHandlers()
