@@ -1,3 +1,5 @@
+using Azure.Core;
+
 namespace AudioBoarder.Services.LLM;
 
 public sealed class AzureOpenAIOptions
@@ -8,6 +10,11 @@ public sealed class AzureOpenAIOptions
     public string? TenantId { get; set; }
     public string? ApiKey { get; set; }
     public bool UseManagedIdentity { get; set; } = true;
+    /// <summary>
+    /// Verified interactive/cached credential supplied by the desktop host. Kept
+    /// runtime-only; configuration binding never serializes it.
+    /// </summary>
+    public TokenCredential? Credential { get; set; }
     public float? Temperature { get; set; } = 0.4f;
     public int? MaxOutputTokens { get; set; } = 2_000;
     public string SystemPrompt { get; set; } = DefaultSystemPrompt;

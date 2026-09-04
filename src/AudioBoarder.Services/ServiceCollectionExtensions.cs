@@ -79,50 +79,73 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<MaiTranscribeService>();
         services.AddSingleton<AzureSpeechStreamingService>();
 
-        // Always-on lazy selector. AudioPipeline holds a factory and resolves at Listen time.
-        // StartupHealthService also resolves via this factory so it can re-evaluate after
-        // discovery populates CloudTranscriptionOptions.
-        //
-        // Priority for "auto": Azure Speech STREAMING first when it is configured.
-        // Streaming emits partial hypotheses in ~200-300ms ("words appear as you
-        // talk"); gpt-4o-transcribe is a BATCH API that cannot emit partials at all,
-        // so it always costs a full buffer window plus a round trip. Accuracy is
-        // worth less than latency in a live meeting tool. Explicit Backend="cloud"
-        // or "openai" still forces the LLM transcriber.
-        services.AddSingleton<Func<ITranscriptionService>>(sp => () =>
+        // Build a fresh ordered candidate list for every health/listen attempt so
+        // discovery changes and recovered credentials take effect immediately.
+        // Selection initializes each candidate before capture starts: cloud first,
+        // then configured Azure Speech, then local Whisper. It never switches an
+        // active utterance between services.
+        services.AddSingleton<ITranscriptionServiceSelector>(sp =>
         {
-            var cloud = sp.GetRequiredService<IOptions<CloudTranscriptionOptions>>().Value;
-            var speech = sp.GetRequiredService<IOptions<AzureSpeechSettings>>().Value;
-            var backend = (cloud.Backend ?? "auto").Trim().ToLowerInvariant();
+            IReadOnlyList<TranscriptionCandidate> BuildCandidates()
+            {
+                var cloud = sp.GetRequiredService<IOptions<CloudTranscriptionOptions>>().Value;
+                var speech = sp.GetRequiredService<IOptions<AzureSpeechSettings>>().Value;
+                var backend = (cloud.Backend ?? "auto").Trim().ToLowerInvariant();
+                var candidates = new List<TranscriptionCandidate>();
 
-            if (backend == "local" || backend == "whisper")
-                return sp.GetRequiredService<WhisperTranscriptionService>();
+                if (backend is "local" or "whisper")
+                {
+                    candidates.Add(new(
+                        TranscriptionBackendKind.LocalWhisper,
+                        sp.GetRequiredService<WhisperTranscriptionService>()));
+                    return candidates;
+                }
 
-            if (backend == "speech" && speech.IsConfigured)
-                return sp.GetRequiredService<AzureSpeechStreamingService>();
+                if (backend == "speech")
+                {
+                    candidates.Add(new(
+                        TranscriptionBackendKind.AzureSpeech,
+                        sp.GetRequiredService<AzureSpeechStreamingService>()));
+                }
+                else if (backend is "cloud" or "openai")
+                {
+                    candidates.Add(new(
+                        TranscriptionBackendKind.Cloud,
+                        ResolveCloud(sp, cloud)));
+                    if (speech.IsConfigured)
+                        candidates.Add(new(
+                            TranscriptionBackendKind.AzureSpeech,
+                            sp.GetRequiredService<AzureSpeechStreamingService>()));
+                }
+                else
+                {
+                    if (cloud.IsConfigured)
+                        candidates.Add(new(
+                            TranscriptionBackendKind.Cloud,
+                            ResolveCloud(sp, cloud)));
+                    if (speech.IsConfigured)
+                        candidates.Add(new(
+                            TranscriptionBackendKind.AzureSpeech,
+                            sp.GetRequiredService<AzureSpeechStreamingService>()));
+                }
 
-            if (backend is "cloud" or "openai" && cloud.IsConfigured)
-                return ResolveCloud(sp, cloud);
+                candidates.Add(new(
+                    TranscriptionBackendKind.LocalWhisper,
+                    sp.GetRequiredService<WhisperTranscriptionService>()));
+                return candidates;
+            }
 
-            // auto: streaming wins when available.
-            if (speech.IsConfigured)
-                return sp.GetRequiredService<AzureSpeechStreamingService>();
-
-            if (cloud.IsConfigured)
-                return ResolveCloud(sp, cloud);
-
-            return sp.GetRequiredService<WhisperTranscriptionService>();
+            return new TranscriptionServiceSelector(
+                BuildCandidates,
+                sp.GetService<ILoggerFactory>()?.CreateLogger<TranscriptionServiceSelector>());
         });
 
         static ITranscriptionService ResolveCloud(IServiceProvider sp, CloudTranscriptionOptions cloud)
-            => cloud.DeploymentName!.StartsWith("MAI-", StringComparison.OrdinalIgnoreCase)
+            => cloud.DeploymentName?.StartsWith("MAI-", StringComparison.OrdinalIgnoreCase) == true
                 ? sp.GetRequiredService<MaiTranscribeService>()
                 : sp.GetRequiredService<OpenAITranscribeService>();
         // NOTE: We intentionally do NOT register ITranscriptionService as a DI singleton.
-        // Doing so cached the first resolution (Whisper, picked before discovery had a
-        // chance to populate CloudTranscriptionOptions) and froze the app on the local
-        // backend forever. Consumers must use Func<ITranscriptionService> so the choice
-        // tracks live options.
+        // The selector must re-evaluate live discovery/auth state for every session.
 
         services.AddSingleton<OpenAIImageGenerator>();
         services.AddSingleton<MaiImageGenerator>();
@@ -131,7 +154,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<AudioDeviceService>();
         services.AddSingleton<AudioPipeline>(sp =>
         {
-            var factory = sp.GetRequiredService<Func<ITranscriptionService>>();
+            var selector = sp.GetRequiredService<ITranscriptionServiceSelector>();
             var vad = sp.GetRequiredService<IVoiceActivityDetector>();
             var buffer = sp.GetRequiredService<TranscriptBuffer>();
             var loggerFactory = sp.GetService<ILoggerFactory>();
@@ -149,7 +172,7 @@ public static class ServiceCollectionExtensions
                 sources.Add(new WasapiAudioCaptureSource(AudioStreamRole.Microphone, devices,
                     loggerFactory?.CreateLogger<WasapiAudioCaptureSource>(), capture.AutoGain));
 
-            return new AudioPipeline(sources, factory, vad, buffer,
+            return new AudioPipeline(sources, selector, vad, buffer,
                 loggerFactory?.CreateLogger<AudioPipeline>());
         });
 
@@ -164,6 +187,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<DiagramIntentCoordinator>()));
 
         services.AddSingleton<FoundryDiscovery>();
+        services.AddSingleton<IFoundryDiscovery>(sp => sp.GetRequiredService<FoundryDiscovery>());
         return services;
     }
 

@@ -29,7 +29,7 @@ public partial class MainViewModel : ObservableObject
     private readonly Export.ExcalidrawExporter _excalidrawExporter;
     private readonly StartupHealthService _health;
     private readonly ContinuousDiagrammer _continuous;
-    private readonly Auth.AzureCredentialProvider _credentials;
+    private readonly Auth.AzureSignInCoordinator _azureSignIn;
     private readonly AudioDeviceService _devices;
     private readonly ILogger<MainViewModel> _logger;
     private readonly bool _autoSave;
@@ -76,6 +76,10 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool isAudioReady;
     [ObservableProperty] private bool isTranscriptionReady;
     [ObservableProperty] private bool isAzureReady;
+    [ObservableProperty] private HealthAction healthAction;
+    [ObservableProperty] private bool isAzureSignInRequired;
+    [ObservableProperty] private bool isAzureConfigurationRequired;
+    [ObservableProperty] private bool isAzureRetryAvailable;
     [ObservableProperty] private bool isHealthPanelVisible = true;
     [ObservableProperty] private long continuousUpdates;
     [ObservableProperty] private double micLevel;
@@ -105,6 +109,7 @@ public partial class MainViewModel : ObservableObject
             if (!string.IsNullOrWhiteSpace(InterimText)) lines.Add(InterimText);
             return string.Join(Environment.NewLine, lines.TakeLast(3));
         }
+
     }
 
     partial void OnLiveTranscriptChanged(string value)
@@ -147,7 +152,7 @@ public partial class MainViewModel : ObservableObject
         Export.ExcalidrawExporter excalidrawExporter,
         StartupHealthService health,
         ContinuousDiagrammer continuous,
-        Auth.AzureCredentialProvider credentials,
+        Auth.AzureSignInCoordinator azureSignIn,
         AudioDeviceService devices,
         DiagramIntentCoordinator intentCoordinator,
         IUiStateStore uiStateStore,
@@ -162,7 +167,7 @@ public partial class MainViewModel : ObservableObject
         _excalidrawExporter = excalidrawExporter;
         _health = health;
         _continuous = continuous;
-        _credentials = credentials;
+        _azureSignIn = azureSignIn;
         _devices = devices;
         _intentCoordinator = intentCoordinator;
         _uiStateStore = uiStateStore;
@@ -315,15 +320,26 @@ public partial class MainViewModel : ObservableObject
                 IsAudioReady = state.IsReady || state.Status == ComponentStatus.Degraded;
                 break;
             case StartupHealthService.TranscriptionKey:
-                IsTranscriptionReady = state.IsReady;
+                // A successfully initialized fallback (Azure Speech or local
+                // Whisper) is intentionally Degraded, but it is still fully usable.
+                IsTranscriptionReady =
+                    state.IsReady || state.Status == ComponentStatus.Degraded;
                 break;
             case StartupHealthService.LlmKey:
                 IsAzureReady = state.IsReady;
+                HealthAction = state.Action;
+                var visibility = MapHealthAction(state.Action);
+                IsAzureSignInRequired = visibility.ShowSignIn;
+                IsAzureConfigurationRequired = visibility.ShowConfigure;
+                IsAzureRetryAvailable = visibility.ShowRetry;
                 break;
         }
 
         var anyChecking = _health.States.Values.Any(s => s.Status == ComponentStatus.Checking);
-        var anyFailed = _health.States.Values.Any(s => s.Status == ComponentStatus.Failed);
+        var actionRequired = _health.States.Values.FirstOrDefault(s =>
+            s.Status == ComponentStatus.ActionRequired);
+        var anyFailed = _health.States.Values.Any(s =>
+            s.Status is ComponentStatus.Failed or ComponentStatus.RateLimited);
         if (IsListening)
         {
             RefreshRuntimeStatus();
@@ -332,6 +348,15 @@ public partial class MainViewModel : ObservableObject
         else if (anyChecking)
         {
             RuntimeStatus = UiRuntimeStatus.Initializing("Health checks running…");
+            StatusMessage = RuntimeStatus.Details;
+        }
+        else if (actionRequired is not null)
+        {
+            RuntimeStatus = new UiRuntimeStatus(
+                UiRuntimeState.Degraded,
+                "Action required",
+                actionRequired.Detail,
+                IsWarning: true);
             StatusMessage = RuntimeStatus.Details;
         }
         else if (anyFailed)
@@ -353,6 +378,14 @@ public partial class MainViewModel : ObservableObject
         RefineDiagramCommand.NotifyCanExecuteChanged();
         ImportTranscriptCommand.NotifyCanExecuteChanged();
     }
+
+    internal static AzureHealthActionVisibility MapHealthAction(HealthAction action) => action switch
+    {
+        HealthAction.SignIn => new(true, false, false),
+        HealthAction.Configure => new(false, true, false),
+        HealthAction.Retry => new(false, false, true),
+        _ => new(false, false, false),
+    };
 
     public bool CanListen => IsListening || (!IsGenerating && IsAudioReady && IsTranscriptionReady);
     public bool CanRefine => !IsGenerating && IsAzureReady && Scene.Nodes.Count > 0;
@@ -406,7 +439,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    public async Task PrepareForUpdateAsync()
+    public async Task PrepareForUpdateAsync(bool forceSave = false)
     {
         if (IsListening)
             await ToggleListenAsync();
@@ -418,7 +451,7 @@ public partial class MainViewModel : ObservableObject
             catch (ObjectDisposedException) { }
         }
 
-        if (_autoSave)
+        if (_autoSave || forceSave)
             await _sessions.SaveAsync(Scene.Clone());
     }
 
@@ -929,26 +962,14 @@ public partial class MainViewModel : ObservableObject
         {
             StatusMessage = "Opening browser sign-in… complete it in your browser.";
             _logger.LogInformation("Sign-in command starting");
-            var (ok, msg) = await _credentials.SignInInteractiveAsync(CancellationToken.None);
+            var (ok, msg) = await _azureSignIn.SignInAndRefreshAsync(CancellationToken.None);
             _logger.LogInformation("Sign-in command returned ok={Ok}", ok);
             StatusMessage = ok ? msg : $"Sign-in failed: {msg}";
-            if (ok)
-            {
-                // Run health refresh on a worker thread so the UI dispatcher stays free
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        _logger.LogInformation("Triggering post-signin health refresh");
-                        await _health.RunAllAsync();
-                        _logger.LogInformation("Post-signin health refresh complete");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Post-signin health refresh failed");
-                    }
-                });
-            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-signin health refresh failed");
+            StatusMessage = "Signed in, but Azure health checks could not be refreshed. Retry health checks.";
         }
         finally
         {
@@ -1091,3 +1112,8 @@ public sealed class NoteViewModel
         _ => "Notes",
     };
 }
+
+internal readonly record struct AzureHealthActionVisibility(
+    bool ShowSignIn,
+    bool ShowConfigure,
+    bool ShowRetry);

@@ -1,6 +1,7 @@
 namespace AudioBoarder.App.Configuration;
 
 using AudioBoarder.Core.Scene;
+using AudioBoarder.Services.Transcription.Cloud;
 
 public sealed class AudioBoarderSettings
 {
@@ -20,8 +21,6 @@ public sealed class AudioBoarderSettings
     public IReadOnlyList<string> Validate()
     {
         var problems = new List<string>();
-        if (AzureOpenAI.AutoDiscover && string.IsNullOrWhiteSpace(AzureOpenAI.SubscriptionId))
-            problems.Add("AzureOpenAI.AutoDiscover requires SubscriptionId");
         if (!AzureOpenAI.AutoDiscover && string.IsNullOrWhiteSpace(AzureOpenAI.Endpoint))
             problems.Add("AzureOpenAI.Endpoint is required when AutoDiscover is false");
         if (!AzureOpenAI.AutoDiscover && string.IsNullOrWhiteSpace(AzureOpenAI.DeploymentName))
@@ -34,6 +33,19 @@ public sealed class AudioBoarderSettings
             problems.Add("Realtime.MinNewSegments must be positive");
         if (Realtime.DeepPauseSeconds < 0)
             problems.Add("Realtime.DeepPauseSeconds cannot be negative");
+        if (CloudTranscription.WindowSeconds <= 0)
+            problems.Add("CloudTranscription.WindowSeconds must be positive");
+        if (CloudTranscription.SilenceFlushMs < 0)
+            problems.Add("CloudTranscription.SilenceFlushMs cannot be negative");
+        if (CloudTranscription.MaxRetryBackoffSeconds < 0)
+            problems.Add("CloudTranscription.MaxRetryBackoffSeconds cannot be negative");
+        if (CloudTranscription.MaxBufferedSeconds <= 0 ||
+            CloudTranscription.MaxBufferedSeconds >
+            CloudTranscriptionOptions.MaximumMaxBufferedSeconds)
+            problems.Add(
+                $"CloudTranscription.MaxBufferedSeconds must be between 0 and {CloudTranscriptionOptions.MaximumMaxBufferedSeconds}");
+        if (Whisper.WindowSeconds <= 0)
+            problems.Add("Whisper.WindowSeconds must be positive");
         if (!Enum.IsDefined(DiagramIntent.SelectionMode))
             problems.Add("DiagramIntent.SelectionMode is invalid");
         if (!Enum.IsDefined(DiagramIntent.PinnedIntent))
@@ -145,7 +157,11 @@ public sealed class CloudTranscriptionSettings
     /// <summary>Trailing-silence gap that ends an utterance and triggers a flush (ms).</summary>
     public int SilenceFlushMs { get; set; } = 380;
     public double MaxRetryBackoffSeconds { get; set; } = 2.0;
-    public double MaxBufferedSeconds { get; set; } = 20.0;
+    /// <summary>
+    /// Per-role PCM backlog. 180 seconds at 16 kHz mono PCM-16 is 5,760,000 bytes
+    /// (about 5.8 MB); the runtime also enforces this value as its hard upper bound.
+    /// </summary>
+    public double MaxBufferedSeconds { get; set; } = 180.0;
     /// <summary>Domain prompt biasing recognition toward expected vocabulary.</summary>
     public string? Prompt { get; set; }
     /// <summary>Transcription sampling temperature. 0 = most literal.</summary>

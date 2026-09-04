@@ -6,7 +6,7 @@ on:
       version:
         description: SemVer without leading v
         required: true
-        default: 0.8.0-preview.1
+        default: 0.8.0-preview.2
       source_commit:
         description: Exact 40-character commit SHA to build
         required: true

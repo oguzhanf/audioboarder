@@ -56,8 +56,52 @@ public class XamlSymbolTests
         content.Should().Contain("AutomationProperties.Name=\"Toggle full transcript drawer\"");
         content.Should().Contain("AutomationProperties.Name=\"Toggle notes drawer\"");
         content.Should().Contain("AutomationProperties.Name=\"Runtime state\"");
+        content.Should().Contain("Visibility=\"{Binding IsAzureSignInRequired, Converter={StaticResource BoolVis}}\"");
+        content.Should().Contain("Visibility=\"{Binding IsAzureRetryAvailable, Converter={StaticResource BoolVis}}\"");
+        content.Should().Contain("Visibility=\"{Binding IsAzureConfigurationRequired, Converter={StaticResource BoolVis}}\"");
+        content.Should().Contain("Text=\"{Binding StatusLabel, StringFormat=' · {0}'}\"");
+        content.Should().NotContain("Visibility=\"{Binding IsAzureReady, Converter={StaticResource InverseBoolVis}}\"");
         content.Should().NotContain("ShowWhiteboard");
         content.Should().NotContain("Classic canvas");
+    }
+
+    [Fact]
+    public void MainCommandBarIsSingleRowAndHasSettingsAndOverflow()
+    {
+        var content = File.ReadAllText(Path.Combine(AppRoot(), "MainWindow.xaml"));
+
+        content.Should().Contain("x:Name=\"CommandBar\"");
+        content.Should().NotContain("<WrapPanel");
+        content.Should().Contain("MinWidth=\"940\"",
+            "the command bar must remain usable on a 1920px display at 200% scaling");
+        content.Should().Contain("AutomationProperties.Name=\"Open Settings\"");
+        content.Should().Contain("AutomationProperties.Name=\"More commands\"");
+        content.Should().Contain("AutomationProperties.Name=\"Choose audio input\"");
+        content.Should().Contain("Header=\"Reflow unpinned nodes\"");
+        content.Should().Contain("Key=\"OemComma\"");
+        content.Should().Contain("OpenSettingsCommand");
+        content.Should().Contain("Import transcript…");
+        content.Should().Contain("Transcript drawer ({0})");
+        content.Should().Contain("Notes drawer ({0})");
+    }
+
+    [Fact]
+    public void SettingsWindowHasAllRequiredSectionsAndActions()
+    {
+        var path = Path.Combine(AppRoot(), "SettingsWindow.xaml");
+        var content = File.ReadAllText(path);
+
+        XDocument.Load(path).Root.Should().NotBeNull();
+        content.Should().Contain("General / Appearance");
+        content.Should().Contain("Header=\"Diagram\"");
+        content.Should().Contain("Header=\"Audio\"");
+        content.Should().Contain("Header=\"Transcription\"");
+        content.Should().Contain("Header=\"Azure\"");
+        content.Should().Contain("Privacy &amp; Data");
+        content.Should().Contain("Save &amp; Restart");
+        content.Should().Contain("Open data folder");
+        content.Should().Contain("Delete local data…");
+        content.Should().Contain("PasswordBox");
     }
 
     [Fact]

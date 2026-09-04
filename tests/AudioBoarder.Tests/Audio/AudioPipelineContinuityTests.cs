@@ -1,6 +1,7 @@
 using AudioBoarder.Core.Audio;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.Audio;
+using AudioBoarder.Services.Transcription;
 
 namespace AudioBoarder.Tests.Audio;
 
@@ -196,6 +197,29 @@ public class AudioPipelineContinuityTests
         pipe.Diagnostics.State.Should().Be(AudioPipelineRuntimeState.Stopped);
     }
 
+    [Fact]
+    public async Task FallbackSelectionIsVisibleAsDegraded()
+    {
+        var sink = new DiagnosticsTranscription();
+        var selector = new FixedSelector(new TranscriptionSelection(
+            sink,
+            IsFallback: true,
+            SafeErrorCode: "authentication_required",
+            StatusMessage: "cloud authentication required, using local Whisper"));
+        await using var pipe = new AudioPipeline(
+            Array.Empty<IAudioCaptureSource>(),
+            selector,
+            new PassThroughVoiceActivityDetector(),
+            new TranscriptBuffer(TimeSpan.FromMinutes(1)));
+
+        await pipe.StartAsync(CancellationToken.None);
+
+        pipe.Diagnostics.State.Should().Be(AudioPipelineRuntimeState.Degraded);
+        pipe.Diagnostics.SafeErrorCode.Should().Be("authentication_required");
+        pipe.Diagnostics.StatusMessage.Should().Be(
+            "cloud authentication required, using local Whisper");
+    }
+
     private sealed class DiagnosticsTranscription :
         ITranscriptionService, ITranscriptionDiagnosticsSource
     {
@@ -217,5 +241,12 @@ public class AudioPipelineContinuityTests
             Diagnostics = diagnostics;
             DiagnosticsChanged?.Invoke(this, diagnostics);
         }
+    }
+
+    private sealed class FixedSelector(TranscriptionSelection selection)
+        : AudioBoarder.Services.Transcription.ITranscriptionServiceSelector
+    {
+        public Task<TranscriptionSelection> SelectAsync(CancellationToken ct) =>
+            Task.FromResult(selection);
     }
 }

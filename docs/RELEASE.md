@@ -26,7 +26,7 @@ SBOM and metadata.
 
 ```powershell
 .\scripts\build-release.ps1 `
-  -Version 0.8.0-preview.1 `
+  -Version 0.8.0-preview.2 `
   -Prerelease -Unsigned -DryRun
 ```
 

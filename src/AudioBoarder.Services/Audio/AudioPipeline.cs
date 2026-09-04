@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Threading.Channels;
 using AudioBoarder.Core.Audio;
 using AudioBoarder.Core.Transcript;
+using AudioBoarder.Services.Transcription;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -20,7 +21,7 @@ public sealed class AudioPipeline : IAsyncDisposable
 {
     private const int ChannelCapacity = 256;
     private readonly IReadOnlyList<IAudioCaptureSource> _sources;
-    private readonly Func<ITranscriptionService> _transcriptionFactory;
+    private readonly Func<CancellationToken, Task<TranscriptionSelection>> _transcriptionSelector;
     private readonly IVoiceActivityDetector _vad;
     private readonly TranscriptBuffer _buffer;
     private readonly ILogger<AudioPipeline> _logger;
@@ -42,6 +43,9 @@ public sealed class AudioPipeline : IAsyncDisposable
     private readonly object _diagnosticsGate = new();
     private AudioPipelineDiagnostics _diagnostics = AudioPipelineDiagnostics.Stopped;
     private volatile bool _captureFaulted;
+    private bool _usingFallback;
+    private string? _fallbackSafeErrorCode;
+    private string? _fallbackStatusMessage;
 
     public event EventHandler<TranscriptSegment>? SegmentEmitted;
     public event EventHandler<TranscriptSegment>? InterimEmitted;
@@ -56,7 +60,29 @@ public sealed class AudioPipeline : IAsyncDisposable
         ILogger<AudioPipeline>? logger = null)
     {
         _sources = sources?.ToList() ?? throw new ArgumentNullException(nameof(sources));
-        _transcriptionFactory = transcriptionFactory ?? throw new ArgumentNullException(nameof(transcriptionFactory));
+        ArgumentNullException.ThrowIfNull(transcriptionFactory);
+        _transcriptionSelector = async ct =>
+        {
+            var service = transcriptionFactory();
+            if (!service.IsReady)
+                await service.InitializeAsync(ct).ConfigureAwait(false);
+            return new TranscriptionSelection(service);
+        };
+        _vad = vad ?? throw new ArgumentNullException(nameof(vad));
+        _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+        _logger = logger ?? NullLogger<AudioPipeline>.Instance;
+    }
+
+    public AudioPipeline(
+        IEnumerable<IAudioCaptureSource> sources,
+        ITranscriptionServiceSelector transcriptionSelector,
+        IVoiceActivityDetector vad,
+        TranscriptBuffer buffer,
+        ILogger<AudioPipeline>? logger = null)
+    {
+        _sources = sources?.ToList() ?? throw new ArgumentNullException(nameof(sources));
+        ArgumentNullException.ThrowIfNull(transcriptionSelector);
+        _transcriptionSelector = transcriptionSelector.SelectAsync;
         _vad = vad ?? throw new ArgumentNullException(nameof(vad));
         _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
         _logger = logger ?? NullLogger<AudioPipeline>.Instance;
@@ -106,6 +132,9 @@ public sealed class AudioPipeline : IAsyncDisposable
         Interlocked.Exchange(ref _segmentsEmitted, 0);
         Interlocked.Exchange(ref _chunksDropped, 0);
         _captureFaulted = false;
+        _usingFallback = false;
+        _fallbackSafeErrorCode = null;
+        _fallbackStatusMessage = null;
         _firstChunkAt = default;
         lock (_peakGate) _recentPeak = 0;
         PublishDiagnostics(AudioPipelineRuntimeState.Starting);
@@ -126,18 +155,23 @@ public sealed class AudioPipeline : IAsyncDisposable
                 PublishDiagnostics(AudioPipelineRuntimeState.Degraded, "channel_backlog");
             });
 
-        var transcription = _transcriptionFactory();
-        _activeTranscription = transcription;
+        TranscriptionSelection selection;
         try
         {
-            if (!transcription.IsReady)
-                await transcription.InitializeAsync(_cts.Token).ConfigureAwait(false);
+            selection = await _transcriptionSelector(_cts.Token).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            PublishDiagnostics(AudioPipelineRuntimeState.Faulted, "transcription_initialization");
+            PublishDiagnostics(
+                AudioPipelineRuntimeState.Faulted,
+                TranscriptionInitializationException.SafeCode(ex));
             throw;
         }
+        var transcription = selection.Service;
+        _activeTranscription = transcription;
+        _usingFallback = selection.IsFallback;
+        _fallbackSafeErrorCode = selection.SafeErrorCode;
+        _fallbackStatusMessage = selection.StatusMessage;
         if (transcription is ITranscriptionDiagnosticsSource diagnosticsSource)
         {
             _diagnosticsSource = diagnosticsSource;
@@ -167,7 +201,10 @@ public sealed class AudioPipeline : IAsyncDisposable
                 await src.StartAsync(_cts.Token).ConfigureAwait(false);
             }
             _started = true;
-            PublishDiagnostics(AudioPipelineRuntimeState.Running);
+            PublishDiagnostics(
+                _usingFallback ? AudioPipelineRuntimeState.Degraded : AudioPipelineRuntimeState.Running,
+                _fallbackSafeErrorCode,
+                statusMessage: _fallbackStatusMessage);
         }
         catch
         {
@@ -292,9 +329,15 @@ public sealed class AudioPipeline : IAsyncDisposable
             : diagnostics.State == TranscriptionRuntimeState.Healthy &&
               diagnostics.DroppedBytes == 0 &&
               Interlocked.Read(ref _chunksDropped) == 0
-                ? (_started ? AudioPipelineRuntimeState.Running : AudioPipelineRuntimeState.Starting)
+                ? (_usingFallback
+                    ? AudioPipelineRuntimeState.Degraded
+                    : (_started ? AudioPipelineRuntimeState.Running : AudioPipelineRuntimeState.Starting))
                 : AudioPipelineRuntimeState.Degraded;
-        PublishDiagnostics(state, diagnostics.SafeErrorCode, diagnostics);
+        PublishDiagnostics(
+            state,
+            diagnostics.SafeErrorCode ?? _fallbackSafeErrorCode,
+            diagnostics,
+            diagnostics.StatusMessage ?? _fallbackStatusMessage);
     }
 
     private void OnChunkCaptured(object? sender, AudioChunk chunk)
@@ -488,7 +531,8 @@ public sealed class AudioPipeline : IAsyncDisposable
     private void PublishDiagnostics(
         AudioPipelineRuntimeState state,
         string? safeErrorCode = null,
-        TranscriptionDiagnostics? backend = null)
+        TranscriptionDiagnostics? backend = null,
+        string? statusMessage = null)
     {
         backend ??= _diagnosticsSource?.Diagnostics;
         var next = new AudioPipelineDiagnostics(
@@ -498,7 +542,8 @@ public sealed class AudioPipeline : IAsyncDisposable
             backend?.DroppedDuration ?? TimeSpan.Zero,
             backend?.DroppedBytes ?? 0,
             backend?.RetryAt,
-            safeErrorCode ?? backend?.SafeErrorCode);
+            safeErrorCode ?? backend?.SafeErrorCode,
+            statusMessage ?? backend?.StatusMessage);
         lock (_diagnosticsGate)
         {
             if (next == _diagnostics) return;

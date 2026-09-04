@@ -3,6 +3,7 @@ namespace AudioBoarder.Core.Transcript;
 public enum TranscriptionRuntimeState
 {
     Healthy,
+    Degraded,
     RateLimited,
     Retrying,
     Backlogged,
@@ -17,7 +18,8 @@ public sealed record TranscriptionDiagnostics(
     DateTimeOffset? RetryAt = null,
     TimeSpan DroppedDuration = default,
     long DroppedBytes = 0,
-    string? SafeErrorCode = null)
+    string? SafeErrorCode = null,
+    string? StatusMessage = null)
 {
     public static TranscriptionDiagnostics Healthy { get; } =
         new(TranscriptionRuntimeState.Healthy, TimeSpan.Zero);
@@ -46,7 +48,8 @@ public sealed record AudioPipelineDiagnostics(
     TimeSpan DroppedBackendAudio,
     long DroppedBackendBytes,
     DateTimeOffset? RetryAt = null,
-    string? SafeErrorCode = null)
+    string? SafeErrorCode = null,
+    string? StatusMessage = null)
 {
     public static AudioPipelineDiagnostics Stopped { get; } =
         new(AudioPipelineRuntimeState.Stopped, 0, TimeSpan.Zero, TimeSpan.Zero, 0);

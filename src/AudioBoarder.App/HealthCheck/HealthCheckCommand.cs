@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
+using AudioBoarder.App.Auth;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.Updates;
@@ -40,8 +41,21 @@ public static class HealthCheckCommand
             return RunPackageCheck(output);
 
         var health = services.GetRequiredService<StartupHealthService>();
+        var credentials = services.GetService<IAzureCredentialProvider>();
 
         output.WriteLine("== AudioBoarder health check ==");
+        if (credentials is not null)
+        {
+            try
+            {
+                using var restore = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                await credentials.TryRestoreAsync(restore.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // RunLlmAsync maps the provider snapshot to an actionable, safe state.
+            }
+        }
         await health.RunAllAsync().ConfigureAwait(false);
 
         var audio = health.GetState(StartupHealthService.AudioKey);
@@ -55,7 +69,8 @@ public static class HealthCheckCommand
         int code = ExitOk;
         if (audio.Status == ComponentStatus.Failed) code = Math.Max(code, ExitAudio);
         if (trans.Status == ComponentStatus.Failed) code = Math.Max(code, ExitTranscription);
-        if (llm.Status == ComponentStatus.Failed) code = Math.Max(code, ExitAzure);
+        if (llm.Status is ComponentStatus.Failed or ComponentStatus.ActionRequired or ComponentStatus.RateLimited)
+            code = Math.Max(code, ExitAzure);
 
         if (withLlm && llm.Status == ComponentStatus.Ready)
         {
@@ -130,6 +145,8 @@ public static class HealthCheckCommand
         {
             ComponentStatus.Ready => "OK",
             ComponentStatus.Degraded => "WARN",
+            ComponentStatus.ActionRequired => "ACTION",
+            ComponentStatus.RateLimited => "RETRY",
             ComponentStatus.Failed => "FAIL",
             ComponentStatus.Checking => "...",
             _ => "?",

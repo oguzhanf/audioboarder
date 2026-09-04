@@ -1,7 +1,10 @@
+using Azure;
 using Azure.Core;
 using Azure.Identity;
 using Azure.ResourceManager;
 using Azure.ResourceManager.CognitiveServices;
+using System.Net;
+using System.Net.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,7 +15,20 @@ namespace AudioBoarder.Services.LLM;
 /// Uses an externally-supplied credential when available (so the app can
 /// share a single signed-in browser credential across services).
 /// </summary>
-public sealed class FoundryDiscovery
+public interface IFoundryDiscovery
+{
+    Task<DiscoveryResult> DiscoverAsync(
+        string? tenantId,
+        string? subscriptionId,
+        string? preferredDeploymentName = null,
+        string? preferredRegion = null,
+        string? preferredImageDeploymentName = null,
+        string? preferredTranscribeDeploymentName = null,
+        TokenCredential? credentialOverride = null,
+        CancellationToken ct = default);
+}
+
+public sealed class FoundryDiscovery : IFoundryDiscovery
 {
     private readonly ILogger<FoundryDiscovery> _logger;
     private TokenCredential? _externalCredential;
@@ -29,6 +45,8 @@ public sealed class FoundryDiscovery
         string? subscriptionId,
         string? preferredDeploymentName = null,
         string? preferredRegion = null,
+        string? preferredImageDeploymentName = null,
+        string? preferredTranscribeDeploymentName = null,
         TokenCredential? credentialOverride = null,
         CancellationToken ct = default)
     {
@@ -67,6 +85,7 @@ public sealed class FoundryDiscovery
             // Flatten (account, deployment) pairs across the whole subscription with
             // per-account try/catch so one inaccessible account can't break discovery.
             var all = new List<DeploymentRef>();
+            var enumerationFailure = DiscoveryFailureKind.None;
             foreach (var account in accounts)
             {
                 try
@@ -78,6 +97,7 @@ public sealed class FoundryDiscovery
                 }
                 catch (Exception ex)
                 {
+                    enumerationFailure = MergeFailure(enumerationFailure, ClassifyFailure(ex));
                     _logger.LogWarning("Could not enumerate deployments for one account; category={Category}",
                         ex.GetType().Name);
                 }
@@ -86,6 +106,17 @@ public sealed class FoundryDiscovery
             if (all.Count == 0)
             {
                 var fallback = accounts.First();
+                if (enumerationFailure != DiscoveryFailureKind.None)
+                {
+                    return new DiscoveryResult(false, fallback.Data.Properties.Endpoint?.ToString(),
+                        null, null, null, null, null, null, null, null,
+                        AccountName: fallback.Data.Name, Region: fallback.Data.Location.Name,
+                        Message: enumerationFailure == DiscoveryFailureKind.AccessDenied
+                            ? "Signed in, but Azure denied permission to enumerate deployments."
+                            : "Azure deployment enumeration could not be completed.",
+                        AccountResourceId: fallback.Id.ToString(),
+                        FailureKind: enumerationFailure);
+                }
                 return new DiscoveryResult(false, fallback.Data.Properties.Endpoint?.ToString(),
                     null, null, null, null, null, null, null, null,
                     AccountName: fallback.Data.Name, Region: fallback.Data.Location.Name,
@@ -112,17 +143,28 @@ public sealed class FoundryDiscovery
 
             // IMAGE — pick the best across ALL accounts. MAI > gpt-image-*.
             var images = all.Where(r => IsImageModel(r.Model)).ToList();
-            var imagePrimary = images
-                .OrderByDescending(r => IsMaiModel(r.Model))
-                .ThenByDescending(r => ImageScore(r.Model))
-                .FirstOrDefault();
+            var imagePrimary = string.IsNullOrWhiteSpace(preferredImageDeploymentName)
+                ? images
+                    .OrderByDescending(r => IsMaiModel(r.Model))
+                    .ThenByDescending(r => ImageScore(r.Model))
+                    .FirstOrDefault()
+                : images.FirstOrDefault(r => string.Equals(
+                    r.Deployment.Data.Name,
+                    preferredImageDeploymentName,
+                    StringComparison.OrdinalIgnoreCase));
 
             // TRANSCRIBE — pick the best across ALL accounts. MAI > gpt-4o-transcribe.
             var transcribes = all.Where(r => IsTranscribeModel(r.Model)).ToList();
-            var transcribePrimary = transcribes
-                .OrderByDescending(r => IsMaiModel(r.Model))
-                .ThenByDescending(r => TranscribeScore(r.Model))
-                .FirstOrDefault();
+            var transcribePrimary =
+                string.IsNullOrWhiteSpace(preferredTranscribeDeploymentName)
+                    ? transcribes
+                        .OrderByDescending(r => IsMaiModel(r.Model))
+                        .ThenByDescending(r => TranscribeScore(r.Model))
+                        .FirstOrDefault()
+                    : transcribes.FirstOrDefault(r => string.Equals(
+                        r.Deployment.Data.Name,
+                        preferredTranscribeDeploymentName,
+                        StringComparison.OrdinalIgnoreCase));
 
             string EndpointFor(CognitiveServicesAccountResource acct) =>
                 acct.Data.Properties.Endpoint?.ToString()
@@ -169,8 +211,43 @@ public sealed class FoundryDiscovery
         {
             _logger.LogWarning(ex, "Foundry discovery failed");
             return new DiscoveryResult(false, null, null, null, null, null, null, null, null, null, null, null,
-                $"Discovery failed: {ex.Message}");
+                $"Discovery failed: {ex.Message}", FailureKind: ClassifyFailure(ex));
         }
+    }
+
+    private static DiscoveryFailureKind MergeFailure(
+        DiscoveryFailureKind current,
+        DiscoveryFailureKind next)
+    {
+        if (current == DiscoveryFailureKind.AccessDenied || next == DiscoveryFailureKind.AccessDenied)
+            return DiscoveryFailureKind.AccessDenied;
+        return current == DiscoveryFailureKind.None ? next : current;
+    }
+
+    private static DiscoveryFailureKind ClassifyFailure(Exception ex)
+    {
+        if (ex is AuthenticationFailedException { InnerException: { } innerException })
+        {
+            var innerKind = ClassifyFailure(innerException);
+            if (innerKind != DiscoveryFailureKind.Unknown)
+                return innerKind;
+        }
+        if (ex is AuthenticationRequiredException or CredentialUnavailableException or AuthenticationFailedException)
+            return DiscoveryFailureKind.Authentication;
+        if (ex is RequestFailedException request)
+        {
+            return request.Status switch
+            {
+                (int)HttpStatusCode.Unauthorized => DiscoveryFailureKind.Authentication,
+                (int)HttpStatusCode.Forbidden => DiscoveryFailureKind.AccessDenied,
+                (int)HttpStatusCode.TooManyRequests => DiscoveryFailureKind.RateLimited,
+                >= 500 => DiscoveryFailureKind.Service,
+                _ => DiscoveryFailureKind.Unknown,
+            };
+        }
+        if (ex is HttpRequestException) return DiscoveryFailureKind.Network;
+        if (ex is TimeoutException or TaskCanceledException) return DiscoveryFailureKind.Service;
+        return ex.InnerException is not null ? ClassifyFailure(ex.InnerException) : DiscoveryFailureKind.Unknown;
     }
 
     private static int RegionMatchScore(string? region, string? preferred)
@@ -395,4 +472,16 @@ public sealed record DiscoveryResult(
     string? AccountName,
     string? Region,
     string Message,
-    string? AccountResourceId = null);
+    string? AccountResourceId = null,
+    DiscoveryFailureKind FailureKind = DiscoveryFailureKind.None);
+
+public enum DiscoveryFailureKind
+{
+    None,
+    Authentication,
+    AccessDenied,
+    Network,
+    Service,
+    RateLimited,
+    Unknown,
+}

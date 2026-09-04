@@ -1,26 +1,48 @@
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Input;
 using System.ComponentModel;
+using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
+using Microsoft.Extensions.Options;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
+using WpfContextMenu = System.Windows.Controls.ContextMenu;
+using WpfMenuItem = System.Windows.Controls.MenuItem;
+using WpfSeparator = System.Windows.Controls.Separator;
 
 namespace AudioBoarder.App;
 
 public partial class MainWindow : FluentWindow
 {
     private const double NumericTolerance = 0.5d;
+    public static readonly RoutedUICommand OpenSettingsCommand = new(
+        "Open Settings", nameof(OpenSettingsCommand), typeof(MainWindow));
 
     private readonly MainViewModel _viewModel;
+    private readonly SettingsService _settingsService;
+    private readonly LocalDataService _localDataService;
+    private readonly ILocalDataDeletionConfirmation _deletionConfirmation;
+    private string _themePreference = "System";
     private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
 
-    public MainWindow(MainViewModel viewModel, AudioBoarder.Core.Scene.AzureIconLibrary azureIcons)
+    public MainWindow(
+        MainViewModel viewModel,
+        AudioBoarder.Core.Scene.AzureIconLibrary azureIcons,
+        IOptions<AudioBoarderSettings> settings,
+        SettingsService settingsService,
+        LocalDataService localDataService,
+        ILocalDataDeletionConfirmation deletionConfirmation)
     {
         InitializeComponent();
         _viewModel = viewModel;
+        _settingsService = settingsService;
+        _localDataService = localDataService;
+        _deletionConfirmation = deletionConfirmation;
         DataContext = viewModel;
-        ApplicationThemeManager.Apply(GetApplicationThemeFromSystemTheme(), WindowBackdropType.Mica, true);
+        ApplyThemePreference(settings.Value.Theme);
         Loaded += OnLoaded;
         Closing += OnClosing;
 
@@ -44,8 +66,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        SystemThemeWatcher.Watch(this, WindowBackdropType.Mica, true);
-        _isThemeWatcherActive = true;
+        ApplyThemePreference(_themePreference);
         SyncCanvasTheme();
         // The WebView can't observe the app theme, so push it on every change.
         ApplicationThemeManager.Changed += OnApplicationThemeChanged;
@@ -62,15 +83,85 @@ public partial class MainWindow : FluentWindow
         if (_isThemeWatcherActive)
         {
             SystemThemeWatcher.UnWatch(this);
-            ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
             _isThemeWatcherActive = false;
         }
+        ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
 
         Whiteboard.UserSceneChanged -= OnWhiteboardUserSceneChanged;
     }
 
     private void OnShowWelcome(object sender, RoutedEventArgs e)
         => Onboarding.FirstRunExperience.Show(this, markComplete: false);
+
+    private void OnOpenMoreMenu(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement element && element.ContextMenu is { } menu)
+        {
+            menu.PlacementTarget = element;
+            menu.IsOpen = true;
+        }
+    }
+
+    private void OnOpenAudioMenu(object sender, RoutedEventArgs e)
+    {
+        _viewModel.RefreshInputDevices();
+        var menu = new WpfContextMenu { PlacementTarget = AudioInputButton };
+        foreach (var device in _viewModel.InputDevices)
+        {
+            var item = new WpfMenuItem
+            {
+                Header = device.Name,
+                IsCheckable = true,
+                IsChecked = string.Equals(
+                    device.Id,
+                    _viewModel.SelectedInputDevice?.Id,
+                    StringComparison.Ordinal),
+            };
+            item.Click += (_, _) => _viewModel.SelectedInputDevice = device;
+            menu.Items.Add(item);
+        }
+
+        menu.Items.Add(new WpfSeparator());
+        var refresh = new WpfMenuItem { Header = "Rescan microphones" };
+        refresh.Click += (_, _) => _viewModel.RefreshInputDevices();
+        menu.Items.Add(refresh);
+        menu.IsOpen = true;
+    }
+
+    private async void OnOpenSettings(object sender, ExecutedRoutedEventArgs e)
+        => await ShowSettingsAsync();
+
+    private async void OnOpenSettingsMenuItem(object sender, RoutedEventArgs e)
+        => await ShowSettingsAsync();
+
+    private async Task ShowSettingsAsync()
+    {
+        var window = new SettingsWindow(
+            _settingsService, _localDataService, _deletionConfirmation)
+        {
+            Owner = this,
+        };
+
+        if (window.ShowDialog() != true)
+            return;
+
+        ApplyThemePreference(window.SelectedTheme);
+        if (!window.RestartRequested)
+            return;
+
+        var executable = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(executable))
+        {
+            await _viewModel.PrepareForUpdateAsync(forceSave: true);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executable,
+                Arguments = "--restore-session",
+                UseShellExecute = true,
+            });
+            Application.Current.Shutdown();
+        }
+    }
 
     private void OnWhiteboardUserSceneChanged(object? sender, ExcalidrawSceneChangedEventArgs e)
     {
@@ -120,6 +211,31 @@ public partial class MainWindow : FluentWindow
 
     private static bool AreClose(double? current, double next) =>
         current.HasValue && Math.Abs(current.Value - next) <= NumericTolerance;
+
+    private void ApplyThemePreference(string? preference)
+    {
+        _themePreference = string.IsNullOrWhiteSpace(preference) ? "System" : preference;
+        var followsSystem = string.IsNullOrWhiteSpace(preference) ||
+                            string.Equals(preference, "System", StringComparison.OrdinalIgnoreCase);
+        var theme = followsSystem
+            ? GetApplicationThemeFromSystemTheme()
+            : string.Equals(preference, "Dark", StringComparison.OrdinalIgnoreCase)
+                ? ApplicationTheme.Dark
+                : ApplicationTheme.Light;
+
+        ApplicationThemeManager.Apply(theme, WindowBackdropType.Mica, true);
+
+        if (IsLoaded && followsSystem && !_isThemeWatcherActive)
+        {
+            SystemThemeWatcher.Watch(this, WindowBackdropType.Mica, true);
+            _isThemeWatcherActive = true;
+        }
+        else if (!followsSystem && _isThemeWatcherActive)
+        {
+            SystemThemeWatcher.UnWatch(this);
+            _isThemeWatcherActive = false;
+        }
+    }
 
     private static ApplicationTheme GetApplicationThemeFromSystemTheme() =>
         SystemThemeManager.GetCachedSystemTheme() switch

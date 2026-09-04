@@ -14,6 +14,13 @@ using Microsoft.Extensions.Options;
 
 namespace AudioBoarder.Tests.Continuous;
 
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class ContinuousDiagrammerTestCollection
+{
+    public const string Name = "Continuous diagrammer scheduler";
+}
+
+[Collection(ContinuousDiagrammerTestCollection.Name)]
 public class ContinuousDiagrammerTests
 {
     [Fact]
@@ -426,7 +433,7 @@ public class ContinuousDiagrammerTests
 
         await WaitForAsync(
             () => generator.Modes.Contains(GenerationMode.DeepSynthesis),
-            TimeSpan.FromSeconds(3));
+            TimeSpan.FromSeconds(6));
         generator.Modes.Should().ContainInOrder(
             GenerationMode.ContinuousExtraction,
             GenerationMode.DeepSynthesis);

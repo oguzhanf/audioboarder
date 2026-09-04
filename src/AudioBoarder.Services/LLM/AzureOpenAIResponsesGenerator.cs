@@ -158,9 +158,10 @@ public sealed class AzureOpenAIResponsesGenerator : IScenePatchGenerator
             req.Headers.Add("api-key", _options.ApiKey);
             return;
         }
-        if (_credential is null)
+        var credential = _options.Credential ?? _credential;
+        if (credential is null)
             throw new InvalidOperationException("No credential available for Azure OpenAI.");
-        var token = await _credential.GetTokenAsync(
+        var token = await credential.GetTokenAsync(
             new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
             ct).ConfigureAwait(false);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);

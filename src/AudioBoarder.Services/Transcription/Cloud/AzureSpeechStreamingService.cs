@@ -2,6 +2,7 @@ using Azure.Core;
 using Azure.Identity;
 using AudioBoarder.Core.Audio;
 using AudioBoarder.Core.Transcript;
+using AudioBoarder.Services.Transcription;
 using Microsoft.CognitiveServices.Speech;
 using Microsoft.CognitiveServices.Speech.Audio;
 using Microsoft.Extensions.Logging;
@@ -56,13 +57,42 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
 
     public string Name => $"AzureSpeech.Streaming/{_settings.Region}";
     public bool IsReady => _ready;
-    public Task InitializeAsync(CancellationToken ct)
+    public async Task InitializeAsync(CancellationToken ct)
     {
+        _ready = false;
         if (!_settings.IsConfigured)
-            throw new InvalidOperationException("AzureSpeechStreamingService requires Region and either ApiKey or ResourceId.");
+            throw new TranscriptionInitializationException(
+                "AzureSpeechStreamingService requires Region and either ApiKey or ResourceId.",
+                "configuration");
+
+        if (string.IsNullOrWhiteSpace(_settings.ApiKey))
+        {
+            try
+            {
+                var token = await AcquireAadTokenAsync(ct).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(token))
+                    throw new TranscriptionInitializationException(
+                        "The Azure Speech credential returned no usable token.",
+                        "credential_unavailable");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var code = TranscriptionInitializationException.SafeCode(ex);
+                if (ex is TranscriptionInitializationException initialization)
+                    throw initialization;
+                throw new TranscriptionInitializationException(
+                    "Azure Speech authentication could not be initialized.",
+                    code,
+                    ex);
+            }
+        }
+
         _ready = true;
         _logger.LogInformation("Azure Speech streaming ready: region={Region}", _settings.Region);
-        return Task.CompletedTask;
     }
 
     public async Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)

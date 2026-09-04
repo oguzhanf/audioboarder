@@ -15,6 +15,8 @@ public sealed class HealthStatusBrushConverter : IValueConverter
             ComponentStatus.Ready => new SolidColorBrush(Color.FromRgb(0x05, 0x96, 0x69)),    // emerald
             ComponentStatus.Checking => new SolidColorBrush(Color.FromRgb(0xD9, 0x77, 0x06)), // amber
             ComponentStatus.Degraded => new SolidColorBrush(Color.FromRgb(0xD9, 0x77, 0x06)), // amber
+            ComponentStatus.ActionRequired => new SolidColorBrush(Color.FromRgb(0xD9, 0x77, 0x06)),
+            ComponentStatus.RateLimited => new SolidColorBrush(Color.FromRgb(0xD9, 0x77, 0x06)),
             ComponentStatus.Failed => new SolidColorBrush(Color.FromRgb(0xDC, 0x26, 0x26)),   // red
             _ => new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),                        // grey
         };
@@ -38,16 +40,6 @@ public sealed class BoolVisibilityConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         => value is true ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        => throw new NotSupportedException();
-}
-
-/// <summary>Shows an element only while a flag is false — used for the Sign in
-/// button, which is relevant precisely when Azure is NOT ready.</summary>
-public sealed class InverseBoolVisibilityConverter : IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        => value is true ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }

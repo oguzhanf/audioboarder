@@ -33,6 +33,9 @@ public partial class App : Application
     private static readonly string LogDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "AudioBoarder", "logs");
+    internal static readonly string UserSettingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "AudioBoarder", "appsettings.Local.json");
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -63,50 +66,49 @@ public partial class App : Application
         MainWindow = window;
         window.Show();
         HandleUpdateResult(e.Args, Host.Services);
-        _ = RunStartupSequenceAsync(window, Host.Services);
+        _ = RunStartupSequenceAsync(window, Host.Services, e.Args);
     }
 
-    private static async Task RunStartupSequenceAsync(Window owner, IServiceProvider services)
+    private static Task RunStartupSequenceAsync(
+        Window owner,
+        IServiceProvider services,
+        string[] args)
     {
-        // Update check FIRST. Health probes sign in to Azure, discover deployments and
-        // warm the transcription backend — tens of seconds of work whose results are
-        // thrown away if the user then accepts an update and the app restarts. Asking
-        // about the update before that work begins avoids the waste, and means a user
-        // never spends time in a build that is about to be replaced.
-        var updating = await CheckForUpdatesAsync(owner, services);
-        if (updating) return;
-
-        await RunStartupTasksAsync(services);
+        return StartIndependentStartupTasksAsync(
+            () => CheckForUpdatesAsync(owner, services),
+            () => RunStartupTasksAsync(services, args));
     }
 
-    /// <summary>
-    /// Offers any newer release. Returns true when the update window is showing, so
-    /// the caller can skip startup work the restart would discard.
-    /// </summary>
-    private static async Task<bool> CheckForUpdatesAsync(Window owner, IServiceProvider services)
+    internal static Task StartIndependentStartupTasksAsync(
+        Func<Task> startUpdateCheck,
+        Func<Task> startHealthAndSession)
+    {
+        // Invocation order is intentional: start the network update check first, then
+        // immediately start auth/health/session work without waiting for GitHub.
+        var updateTask = startUpdateCheck();
+        var healthAndSessionTask = startHealthAndSession();
+        return Task.WhenAll(updateTask, healthAndSessionTask);
+    }
+
+    private static async Task CheckForUpdatesAsync(Window owner, IServiceProvider services)
     {
         try
         {
             var updateService = services.GetRequiredService<GitHubUpdateService>();
             var release = await updateService.CheckAsync();
             if (release is null || !owner.IsVisible)
-                return false;
+                return;
 
             await owner.Dispatcher.InvokeAsync(() =>
             {
                 var viewModel = services.GetRequiredService<MainViewModel>();
                 var updateWindow = new UpdateWindow(updateService, release, viewModel) { Owner = owner };
-                // If the user defers or the download fails, the app carries on as a
-                // normal session — so health probes must still run.
-                updateWindow.Closed += (_, _) => _ = RunStartupTasksAsync(services);
                 updateWindow.Show();
             });
-            return true;
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "GitHub update check failed");
-            return false;
         }
     }
 
@@ -133,18 +135,21 @@ public partial class App : Application
             MessageBoxImage.Warning);
     }
 
-    private static async Task RunStartupTasksAsync(IServiceProvider services)
+    private static async Task RunStartupTasksAsync(
+        IServiceProvider services,
+        string[] args)
     {
         var health = services.GetRequiredService<StartupHealthService>();
         var sessions = services.GetRequiredService<SessionStore>();
         var settings = services.GetRequiredService<IOptions<AudioBoarderSettings>>().Value;
         var vm = services.GetRequiredService<MainViewModel>();
-        var creds = services.GetRequiredService<Auth.AzureCredentialProvider>();
+        var creds = services.GetRequiredService<Auth.IAzureCredentialProvider>();
 
         // Try to silently restore a prior sign-in before the first health probe so
         // the Azure pill comes up green for users who already signed in once.
         try
         {
+            health.MarkLlmChecking("Restoring Azure sign-in…", HealthCondition.Restoring);
             Log.Information("Probing for cached Azure sign-in token…");
             using var restoreCts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
             var restored = await creds.TryRestoreAsync(restoreCts.Token);
@@ -152,14 +157,21 @@ public partial class App : Application
         }
         catch (Exception ex) { Log.Warning(ex, "Silent restore threw"); }
 
-        // Hand the signed-in credential chain to the Speech SDK options so it
-        // reuses the same MSAL cache as everything else (no extra browser prompt).
+        // Hand the signed-in credential chain to both transcription stacks so
+        // readiness validates the same cached data-plane identity before listening.
         try
         {
+            var cloudOpts = services.GetRequiredService<IOptions<CloudTranscriptionOptions>>().Value;
             var speechOpts = services.GetRequiredService<IOptions<AzureSpeechSettings>>().Value;
-            speechOpts.Credential = creds.Get();
+            if (creds.TryGetSignedInCredential(out var credential) && credential is not null)
+            {
+                services.GetRequiredService<IOptions<AzureOpenAIOptions>>().Value.Credential = credential;
+                services.GetRequiredService<IOptions<ImageGeneratorOptions>>().Value.Credential = credential;
+                cloudOpts.Credential = credential;
+                speechOpts.Credential = credential;
+            }
         }
-        catch (Exception ex) { Log.Warning(ex, "Could not seed AzureSpeechSettings.Credential"); }
+        catch (Exception ex) { Log.Warning(ex, "Could not seed transcription credentials"); }
 
         // Fire health probes immediately in parallel so the UI pills update
         // even if the user is still deciding on the session-restore prompt.
@@ -169,19 +181,24 @@ public partial class App : Application
             catch (Exception ex) { Log.Error(ex, "Startup health probes failed"); }
         });
 
-        if (settings.Sessions.OfferRestoreOnLaunch)
+        var restoreOnce = args.Any(arg =>
+            string.Equals(arg, "--restore-session", StringComparison.OrdinalIgnoreCase));
+        if (restoreOnce || settings.Sessions.OfferRestoreOnLaunch)
         {
             try
             {
                 var prior = await sessions.LoadLatestAsync();
                 if (prior is not null && (prior.Nodes.Length > 0 || prior.Notes.Length > 0))
                 {
-                    var result = MessageBox.Show(
+                    var shouldRestore = restoreOnce || MessageBox.Show(
                         $"A previous session from {prior.SavedAt.LocalDateTime:g} was found with {prior.Nodes.Length} nodes. Restore it?",
-                        "AudioBoarder", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                    if (result == MessageBoxResult.Yes)
+                        "AudioBoarder", MessageBoxButton.YesNo, MessageBoxImage.Question)
+                        == MessageBoxResult.Yes;
+                    if (shouldRestore)
                     {
                         vm.RestoreSession(prior);
+                        if (restoreOnce && !settings.Sessions.AutoSave)
+                            await sessions.ClearAsync();
                     }
                     else
                     {
@@ -217,9 +234,11 @@ public partial class App : Application
         builder.Configuration
             .SetBasePath(baseDir)
             .AddJsonFile(Path.Combine(baseDir, "appsettings.json"), optional: true)
-            // Personal, machine-specific settings (tenant/subscription/endpoints).
-            // Git-ignored so real tenant identifiers never land in source control.
+            // Legacy portable/developer override beside the executable.
             .AddJsonFile(Path.Combine(baseDir, "appsettings.Local.json"), optional: true, reloadOnChange: true)
+            // Writable per-user settings edited by SettingsWindow. Loaded last so an
+            // installed non-admin user can override defaults under Program Files.
+            .AddJsonFile(UserSettingsPath, optional: true, reloadOnChange: true)
             .AddEnvironmentVariables(prefix: "AUDIOBOARDER_");
 
         var settingsSection = builder.Configuration.GetSection("AudioBoarder");
@@ -327,11 +346,21 @@ public partial class App : Application
                 ? DiagramTheme.Dark : DiagramTheme.Light);
 
         builder.Services.AddSingleton<Auth.AzureCredentialProvider>();
+        builder.Services.AddSingleton<Auth.IAzureCredentialProvider>(
+            sp => sp.GetRequiredService<Auth.AzureCredentialProvider>());
+        builder.Services.AddSingleton<Auth.IAzureManagementTokenProbe, Auth.AzureManagementTokenProbe>();
+        builder.Services.AddSingleton<SettingsService>();
+        builder.Services.AddSingleton<LocalDataService>();
+        builder.Services.AddSingleton<ILocalDataDeletionConfirmation,
+            MessageBoxLocalDataDeletionConfirmation>();
         builder.Services.AddSingleton<IUiStateStore, JsonUiStateStore>();
         builder.Services.AddSingleton<SessionStore>();
         builder.Services.AddSingleton<Export.DiagramExporter>();
         builder.Services.AddSingleton<Export.ExcalidrawExporter>();
         builder.Services.AddSingleton<StartupHealthService>();
+        builder.Services.AddSingleton<Auth.IHealthProbeRunner>(
+            sp => sp.GetRequiredService<StartupHealthService>());
+        builder.Services.AddSingleton<Auth.AzureSignInCoordinator>();
         builder.Services.AddSingleton<Continuous.ContinuousDiagrammer>();
         builder.Services.AddSingleton(sp => new GitHubUpdateService(
             new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
@@ -354,6 +383,7 @@ public partial class App : Application
             .SetBasePath(baseDir)
             .AddJsonFile(Path.Combine(baseDir, "appsettings.json"), optional: true)
             .AddJsonFile(Path.Combine(baseDir, "appsettings.Local.json"), optional: true)
+            .AddJsonFile(UserSettingsPath, optional: true)
             .AddEnvironmentVariables(prefix: "AUDIOBOARDER_")
             .Build();
         var configuredLevel = configuration["AudioBoarder:Diagnostics:LogLevel"];

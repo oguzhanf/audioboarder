@@ -356,10 +356,11 @@ public sealed class GitHubUpdateService
                 if ($installedExecutable -and (Test-Path -LiteralPath $installedExecutable)) {
                     $restartPath = $installedExecutable
                 }
-                Start-Process -FilePath $restartPath
+                Start-Process -FilePath $restartPath -ArgumentList '--restore-session'
             } else {
                 Start-Process -FilePath $restartPath -ArgumentList @(
-                    "--update-failed=$exitCode", "--update-tag=$($payload.TagName)")
+                    "--restore-session", "--update-failed=$exitCode",
+                    "--update-tag=$($payload.TagName)")
             }
             exit $exitCode
             """.Replace("__PAYLOAD__", outerPayload, StringComparison.Ordinal);

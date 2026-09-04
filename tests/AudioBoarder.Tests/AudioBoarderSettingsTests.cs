@@ -6,6 +6,21 @@ namespace AudioBoarder.Tests;
 public class AudioBoarderSettingsTests
 {
     [Fact]
+    public void InvalidRealtimeAndTranscriptionValuesAreRejected()
+    {
+        var settings = new AudioBoarderSettings();
+        settings.Realtime.MinNewSegments = 0;
+        settings.CloudTranscription.WindowSeconds = 0;
+        settings.CloudTranscription.MaxBufferedSeconds = 181;
+
+        settings.Validate().Should().Contain(
+        [
+            "Realtime.MinNewSegments must be positive",
+            "CloudTranscription.WindowSeconds must be positive",
+            "CloudTranscription.MaxBufferedSeconds must be between 0 and 180",
+        ]);
+    }
+    [Fact]
     public void Defaults_AreProductionSafe()
     {
         var s = new AudioBoarderSettings();
@@ -45,12 +60,13 @@ public class AudioBoarderSettingsTests
     }
 
     [Fact]
-    public void Validate_RequiresSubscriptionWhenAutoDiscovering()
+    public void Validate_AllowsDefaultSubscriptionWhenAutoDiscovering()
     {
         var s = new AudioBoarderSettings();
         s.AzureOpenAI.SubscriptionId = null;
         var problems = s.Validate();
-        problems.Should().Contain(p => p.Contains("SubscriptionId"));
+        problems.Should().BeEmpty(
+            "FoundryDiscovery resolves the signed-in account's default subscription when none is pinned");
     }
 
     [Fact]

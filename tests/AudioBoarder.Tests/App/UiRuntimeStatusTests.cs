@@ -7,6 +7,27 @@ namespace AudioBoarder.Tests.App;
 
 public class UiRuntimeStatusTests
 {
+    [Fact]
+    public void BackendFallbackMapsToVisibleDegradedStatus()
+    {
+        var status = UiRuntimeStatusMapper.Map(
+            new AudioPipelineDiagnostics(
+                AudioPipelineRuntimeState.Degraded,
+                0,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                0,
+                SafeErrorCode: "authentication_required",
+                StatusMessage: "cloud authentication required, using Azure Speech"),
+            Snapshot(GenerationRuntimeStage.Current),
+            true,
+            Now);
+
+        status.State.Should().Be(UiRuntimeState.Degraded);
+        status.Label.Should().Be("Degraded");
+        status.Details.Should().Be("cloud authentication required, using Azure Speech");
+    }
+
     private static readonly DateTimeOffset Now =
         new(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
 

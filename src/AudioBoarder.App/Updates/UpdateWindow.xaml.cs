@@ -99,7 +99,7 @@ public partial class UpdateWindow : FluentWindow
         StatusText.Text = "Saving your session and preparing to restart…";
         try
         {
-            await _viewModel.PrepareForUpdateAsync();
+            await _viewModel.PrepareForUpdateAsync(forceSave: true);
             _updateService.BeginInstallAndRestart(_msiPath, _release);
             Application.Current.Shutdown();
         }

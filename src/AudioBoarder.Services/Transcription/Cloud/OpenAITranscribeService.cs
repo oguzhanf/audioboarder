@@ -6,6 +6,7 @@ using Azure.Core;
 using Azure.Identity;
 using AudioBoarder.Core.Audio;
 using AudioBoarder.Core.Transcript;
+using AudioBoarder.Services.Transcription;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -31,6 +32,9 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
     private TranscriptionDiagnostics _diagnostics = TranscriptionDiagnostics.Healthy;
     private long _droppedBytes;
     private TimeSpan _droppedDuration;
+    private readonly HashSet<string> _rejectedApiKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<TokenCredential> _rejectedCredentials =
+        new(ReferenceEqualityComparer.Instance);
 
     public event EventHandler<TranscriptionDiagnostics>? DiagnosticsChanged;
 
@@ -56,17 +60,59 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         }
     }
 
-    public Task InitializeAsync(CancellationToken ct)
+    public async Task InitializeAsync(CancellationToken ct)
     {
+        _ready = false;
         if (!_options.IsConfigured)
         {
             PublishDiagnostics(TranscriptionRuntimeState.Fatal, "configuration");
-            throw new InvalidOperationException("OpenAITranscribeService requires Endpoint + DeploymentName.");
+            throw new TranscriptionInitializationException(
+                "OpenAITranscribeService requires Endpoint + DeploymentName.",
+                "configuration");
         }
+
+        try
+        {
+            if (IsCurrentCredentialRejected())
+            {
+                throw new TranscriptionInitializationException(
+                    "The configured cloud transcription credential was rejected by the data plane.",
+                    "authentication_required");
+            }
+            if (string.IsNullOrWhiteSpace(_options.ApiKey))
+            {
+                var credential = GetOrCreateCredential()
+                    ?? throw new TranscriptionInitializationException(
+                        "No cloud transcription credential is available.",
+                        "credential_unavailable");
+                var token = await credential.GetTokenAsync(
+                    new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+                    ct).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(token.Token) || token.ExpiresOn <= DateTimeOffset.UtcNow)
+                    throw new TranscriptionInitializationException(
+                        "The cloud transcription credential returned no usable token.",
+                        "credential_unavailable");
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var code = TranscriptionInitializationException.SafeCode(ex);
+            PublishDiagnostics(TranscriptionRuntimeState.Fatal, code);
+            if (ex is TranscriptionInitializationException initialization)
+                throw initialization;
+            throw new TranscriptionInitializationException(
+                "Cloud transcription authentication could not be initialized.",
+                code,
+                ex);
+        }
+
         _ready = true;
         _logger.LogInformation("Cloud transcription ready: {Name}", Name);
         PublishDiagnostics(TranscriptionRuntimeState.Healthy);
-        return Task.CompletedTask;
     }
 
     public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
@@ -93,8 +139,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
                 return Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
             rb.Stream.Write(chunk.Samples.Span[..alignedLength]);
             rb.LastAppendAt = DateTimeOffset.UtcNow;
-            rb.WindowEnd = chunk.CapturedAt + TimeSpan.FromSeconds(
-                alignedLength / (double)chunk.Format.BytesPerSecond);
+            rb.WindowEnd = rb.WindowStart + PcmDuration(rb.Stream.Length);
             TrimToBacklogLimit(rb, chunk.Role);
             PublishDiagnosticsLocked();
         }
@@ -172,6 +217,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
 
     private async Task<IReadOnlyList<TranscriptSegment>> TranscribeBatchAsync(PendingBatch batch, CancellationToken ct)
     {
+        var authentication = CaptureAuthentication();
         try
         {
             for (var attempt = 1; ; attempt++)
@@ -179,7 +225,8 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
                 try
                 {
                     var result = await CallApiAsync(
-                        batch.Pcm, AudioFormat.Mono16kPcm16, batch.Speaker, batch.Start, batch.End, ct)
+                        batch.Pcm, AudioFormat.Mono16kPcm16, batch.Speaker, batch.Start, batch.End,
+                        authentication, ct)
                         .ConfigureAwait(false);
                     lock (_bufferGate)
                     {
@@ -239,17 +286,21 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         catch (Exception ex)
         {
             var code = SafeErrorCode(ex);
+            if (code == "authentication_required")
+                MarkAuthenticationRejected(authentication);
             Requeue(batch, code);
             _logger.LogWarning(
                 "Cloud transcribe failed; category={Category} audioBytes={Bytes} durationMs={DurationMs:F0} retained=true",
-                code, batch.Pcm.Length, (batch.End - batch.Start).TotalMilliseconds);
+                code, batch.Pcm.Length, PcmDuration(batch.Pcm.Length).TotalMilliseconds);
             return Array.Empty<TranscriptSegment>();
         }
     }
 
     private async Task<IReadOnlyList<TranscriptSegment>> CallApiAsync(
         byte[] pcm, AudioFormat format, TranscriptSpeaker speaker,
-        DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
+        DateTimeOffset start, DateTimeOffset end,
+        AuthenticationSnapshot authentication,
+        CancellationToken ct)
     {
         if (pcm.Length == 0) return Array.Empty<TranscriptSegment>();
 
@@ -270,7 +321,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         form.Add(new StringContent("json"), "response_format");
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
-        await ApplyAuthAsync(req, ct).ConfigureAwait(false);
+        await ApplyAuthAsync(req, authentication, ct).ConfigureAwait(false);
 
         using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
@@ -372,8 +423,8 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
             rb.Stream.Write(batch.Pcm);
             rb.Stream.Write(newer);
             rb.WindowStart = batch.Start;
-            rb.WindowEnd = rb.WindowEnd > batch.End ? rb.WindowEnd : batch.End;
-            if (rb.LastAppendAt == default) rb.LastAppendAt = batch.End;
+            rb.WindowEnd = rb.WindowStart + PcmDuration(rb.Stream.Length);
+            if (rb.LastAppendAt == default) rb.LastAppendAt = DateTimeOffset.UtcNow;
             rb.FailureCount++;
             var activeServerThrottle =
                 string.Equals(rb.SafeErrorCode, "rate_limited", StringComparison.Ordinal) &&
@@ -411,7 +462,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         var format = AudioFormat.Mono16kPcm16;
         var blockAlign = format.Channels * format.BytesPerSample;
         var configuredBytes = Math.Max(0L,
-            (long)Math.Floor(format.BytesPerSecond * Math.Max(0, _options.MaxBufferedSeconds)));
+            (long)Math.Floor(format.BytesPerSecond * _options.EffectiveMaxBufferedSeconds));
         var maxBytes = configuredBytes - (configuredBytes % blockAlign);
         if (rb.Stream.Length <= maxBytes) return;
 
@@ -425,10 +476,21 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         rb.WindowStart += dropped;
         _droppedBytes += dropBytes;
         _droppedDuration += dropped;
-        _logger.LogWarning(
-            "Transcription audio dropped; role={Role} category={Category} droppedBytes={DroppedBytes} droppedMs={DroppedMs:F0} maxBacklogMs={MaxMs:F0}",
-            role, "backlog_limit", dropBytes, dropped.TotalMilliseconds,
-            Math.Max(0, _options.MaxBufferedSeconds) * 1000);
+        rb.UnloggedDroppedBytes += dropBytes;
+        var now = DateTimeOffset.UtcNow;
+        var shouldLog = rb.LastDropWarningAt == default ||
+            now - rb.LastDropWarningAt >= TimeSpan.FromSeconds(5) ||
+            rb.UnloggedDroppedBytes >= format.BytesPerSecond * 5L;
+        if (shouldLog)
+        {
+            _logger.LogWarning(
+                "Transcription audio dropped; role={Role} category={Category} droppedBytesSinceLast={DroppedBytes} totalDroppedBytes={TotalDroppedBytes} totalDroppedMs={DroppedMs:F0} maxBacklogMs={MaxMs:F0}",
+                role, "backlog_limit", rb.UnloggedDroppedBytes, _droppedBytes,
+                _droppedDuration.TotalMilliseconds,
+                _options.EffectiveMaxBufferedSeconds * 1000);
+            rb.UnloggedDroppedBytes = 0;
+            rb.LastDropWarningAt = now;
+        }
     }
 
     private void PublishDiagnostics(
@@ -454,6 +516,12 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
             .Where(b => b.RetryNotBefore > now)
             .Select(b => b.SafeErrorCode)
             .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code));
+        safeErrorCode ??= _buffers.Values
+            .Where(b => b.FailureCount > 0 && b.Stream.Length > 0)
+            .Select(b => b.SafeErrorCode)
+            .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code));
+        var hasFailedBacklog = _buffers.Values.Any(
+            b => b.FailureCount > 0 && b.Stream.Length > 0);
         var pendingSeconds = _buffers.Values.Sum(
             b => b.Stream.Length / (double)AudioFormat.Mono16kPcm16.BytesPerSecond);
         var state = _droppedBytes > 0
@@ -462,7 +530,9 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
                 ? TranscriptionRuntimeState.RateLimited
                 : retryAt != default
                     ? TranscriptionRuntimeState.Retrying
-                    : pendingSeconds >= Math.Max(_options.WindowSeconds, _options.MaxBufferedSeconds * 0.5)
+                    : hasFailedBacklog
+                        ? TranscriptionRuntimeState.Retrying
+                    : pendingSeconds >= Math.Max(_options.WindowSeconds, _options.EffectiveMaxBufferedSeconds * 0.5)
                         ? TranscriptionRuntimeState.Backlogged
                         : TranscriptionRuntimeState.Healthy;
         var changed = UpdateDiagnosticsLocked(
@@ -506,6 +576,8 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
     {
         RateLimitedException => "rate_limited",
         HttpRequestException { StatusCode: System.Net.HttpStatusCode.RequestTimeout } => "request_timeout",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized } => "authentication_required",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.Forbidden } => "authentication_required",
         HttpRequestException { StatusCode: System.Net.HttpStatusCode.ServiceUnavailable } => "service_unavailable",
         HttpRequestException { StatusCode: { } status } when (int)status >= 500 => "service_failure",
         HttpRequestException => "network",
@@ -557,14 +629,17 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         "subtitles by", "transcription by", "for more information visit",
     };
 
-    private async Task ApplyAuthAsync(HttpRequestMessage req, CancellationToken ct)
+    private async Task ApplyAuthAsync(
+        HttpRequestMessage req,
+        AuthenticationSnapshot authentication,
+        CancellationToken ct)
     {
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (authentication.ApiKey is not null)
         {
-            req.Headers.Add("api-key", _options.ApiKey);
+            req.Headers.Add("api-key", authentication.ApiKey);
             return;
         }
-        var cred = GetOrCreateCredential()
+        var cred = authentication.Credential
             ?? throw new InvalidOperationException("No credential available (set ApiKey or enable UseManagedIdentity).");
         var token = await cred.GetTokenAsync(
             new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }), ct).ConfigureAwait(false);
@@ -573,6 +648,7 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
 
     private TokenCredential? GetOrCreateCredential()
     {
+        if (_options.Credential is not null) return _options.Credential;
         if (_credential is not null) return _credential;
         if (!_options.UseManagedIdentity || !string.IsNullOrWhiteSpace(_options.ApiKey)) return null;
         lock (_credGate)
@@ -587,6 +663,43 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
             return _credential;
         }
     }
+
+    private AuthenticationSnapshot CaptureAuthentication()
+    {
+        var apiKey = _options.ApiKey;
+        return string.IsNullOrWhiteSpace(apiKey)
+            ? new AuthenticationSnapshot(null, GetOrCreateCredential())
+            : new AuthenticationSnapshot(apiKey, null);
+    }
+
+    private bool IsCurrentCredentialRejected()
+    {
+        var authentication = CaptureAuthentication();
+        lock (_bufferGate)
+            return AuthenticationMatchesRejectedLocked(authentication);
+    }
+
+    private void MarkAuthenticationRejected(AuthenticationSnapshot authentication)
+    {
+        lock (_bufferGate)
+        {
+            if (authentication.ApiKey is not null)
+                _rejectedApiKeys.Add(authentication.ApiKey);
+            else if (authentication.Credential is not null)
+                _rejectedCredentials.Add(authentication.Credential);
+        }
+    }
+
+    private bool AuthenticationMatchesRejectedLocked(AuthenticationSnapshot authentication)
+    {
+        return authentication.ApiKey is not null
+            ? _rejectedApiKeys.Contains(authentication.ApiKey)
+            : authentication.Credential is not null &&
+                _rejectedCredentials.Contains(authentication.Credential);
+    }
+
+    private static TimeSpan PcmDuration(long bytes) =>
+        TimeSpan.FromSeconds(bytes / (double)AudioFormat.Mono16kPcm16.BytesPerSecond);
 
     /// <summary>Wraps raw PCM-16 in a minimal RIFF/WAV header.</summary>
     internal static byte[] WrapWav(byte[] pcm, AudioFormat fmt)
@@ -632,6 +745,10 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         DateTimeOffset Start,
         DateTimeOffset End);
 
+    private readonly record struct AuthenticationSnapshot(
+        string? ApiKey,
+        TokenCredential? Credential);
+
     private sealed class RoleBuffer
     {
         public MemoryStream Stream { get; } = new();
@@ -641,6 +758,8 @@ public sealed class OpenAITranscribeService : ITranscriptionService, ITranscript
         public DateTimeOffset RetryNotBefore { get; set; }
         public int FailureCount { get; set; }
         public string? SafeErrorCode { get; set; }
+        public long UnloggedDroppedBytes { get; set; }
+        public DateTimeOffset LastDropWarningAt { get; set; }
     }
 }
 

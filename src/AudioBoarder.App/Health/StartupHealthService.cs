@@ -1,8 +1,15 @@
 using System.Collections.Concurrent;
 using System.Net.Http;
+using Azure;
+using Azure.Core;
+using Azure.Identity;
+using AudioBoarder.App.Auth;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.Core.Transcript;
+using AudioBoarder.Services.Imaging;
 using AudioBoarder.Services.LLM;
+using AudioBoarder.Services.Transcription;
+using AudioBoarder.Services.Transcription.Cloud;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,7 +23,7 @@ namespace AudioBoarder.App.Health;
 /// Whisper, Azure OpenAI) and publishes per-component <see cref="HealthState"/>
 /// snapshots. UI subscribes via <see cref="StateChanged"/>.
 /// </summary>
-public sealed class StartupHealthService
+public sealed class StartupHealthService : IHealthProbeRunner
 {
     public const string AudioKey = "audio";
     public const string TranscriptionKey = "transcription";
@@ -26,6 +33,9 @@ public sealed class StartupHealthService
     private readonly IServiceProvider _services;
     private readonly ILogger<StartupHealthService> _logger;
     private readonly AudioBoarderSettings _settings;
+    private readonly IAzureCredentialProvider _credentials;
+    private readonly IAzureManagementTokenProbe _tokenProbe;
+    private readonly IFoundryDiscovery _discovery;
     // Monotonic generation counter per probe key. A probe captures the generation
     // it started in; if a newer probe has bumped the counter by the time this one
     // finishes, its result is discarded so a stale Whisper probe can't overwrite
@@ -35,14 +45,26 @@ public sealed class StartupHealthService
     public StartupHealthService(
         IServiceProvider services,
         IOptions<AudioBoarderSettings> settings,
+        IAzureCredentialProvider credentials,
+        IAzureManagementTokenProbe tokenProbe,
+        IFoundryDiscovery discovery,
         ILogger<StartupHealthService>? logger = null)
     {
         _services = services;
         _settings = settings.Value;
+        _credentials = credentials;
+        _tokenProbe = tokenProbe;
+        _discovery = discovery;
         _logger = logger ?? NullLogger<StartupHealthService>.Instance;
         Set(AudioKey, new HealthState(ComponentStatus.Unknown, "Audio devices", "Not checked yet", DateTimeOffset.UtcNow, AudioKey));
         Set(TranscriptionKey, new HealthState(ComponentStatus.Unknown, "Transcription", "Not checked yet", DateTimeOffset.UtcNow, TranscriptionKey));
-        Set(LlmKey, new HealthState(ComponentStatus.Unknown, "Azure OpenAI", "Not checked yet", DateTimeOffset.UtcNow, LlmKey));
+        Set(LlmKey, new HealthState(
+            ComponentStatus.Checking,
+            "Azure OpenAI",
+            "Restoring Azure sign-in…",
+            DateTimeOffset.UtcNow,
+            LlmKey,
+            Condition: HealthCondition.Restoring));
     }
 
     public event EventHandler<HealthState>? StateChanged;
@@ -52,6 +74,18 @@ public sealed class StartupHealthService
 
     public HealthState GetState(string key) => _states.TryGetValue(key, out var s) ? s
         : new HealthState(ComponentStatus.Unknown, key, "no probe", DateTimeOffset.UtcNow);
+
+    public void MarkLlmChecking(string detail, HealthCondition condition = HealthCondition.Unknown)
+    {
+        var gen = NextGeneration(LlmKey);
+        SetIfLatest(LlmKey, gen, new HealthState(
+            ComponentStatus.Checking,
+            "Azure OpenAI",
+            detail,
+            DateTimeOffset.UtcNow,
+            Action: HealthAction.None,
+            Condition: condition));
+    }
 
     public async Task RunAllAsync(CancellationToken ct = default)
     {
@@ -114,18 +148,18 @@ public sealed class StartupHealthService
     public async Task RunTranscriptionAsync(CancellationToken ct = default)
     {
         var gen = NextGeneration(TranscriptionKey);
-        // Resolve via the FACTORY so the choice tracks whatever options discovery
-        // populated. Resolving the ITranscriptionService singleton would freeze
-        // the app on Whisper after the first call.
-        var factory = _services.GetRequiredService<Func<ITranscriptionService>>();
-        ITranscriptionService svc;
-        try { svc = factory(); }
+        // Selection validates credentials and tries the ordered fallbacks without
+        // sending a billed transcription request.
+        var selector = _services.GetRequiredService<ITranscriptionServiceSelector>();
+        TranscriptionSelection selection;
+        try { selection = await selector.SelectAsync(ct).ConfigureAwait(false); }
         catch (Exception ex)
         {
-            _logger.LogError("Transcription factory failed; category={Category}", SafeCategory(ex));
+            _logger.LogError("Transcription selection failed; category={Category}", SafeCategory(ex));
             SetIfLatest(TranscriptionKey, gen, Failed("Transcription", ex));
             return;
         }
+        var svc = selection.Service;
 
         // Title is STABLE so the WPF ItemsControl updates the existing pill in
         // place (it keys by Title). The backend name lives in Detail so the user
@@ -140,9 +174,12 @@ public sealed class StartupHealthService
 
         try
         {
-            await svc.InitializeAsync(ct).ConfigureAwait(false);
-            SetIfLatest(TranscriptionKey, gen, new HealthState(ComponentStatus.Ready, title,
-                $"Ready ({svc.Name})", DateTimeOffset.UtcNow));
+            var status = selection.IsFallback ? ComponentStatus.Degraded : ComponentStatus.Ready;
+            var detail = selection.IsFallback
+                ? $"Degraded: {selection.StatusMessage} ({svc.Name})"
+                : $"Ready ({svc.Name})";
+            SetIfLatest(TranscriptionKey, gen, new HealthState(status, title,
+                detail, DateTimeOffset.UtcNow));
         }
         catch (Exception ex)
         {
@@ -163,28 +200,102 @@ public sealed class StartupHealthService
         var imgSection = _settings.ImageGeneration;
         try
         {
-            // Trigger discovery whenever ANY required capability is missing — not
-            // just chat. Before this fix, discovery only ran when chat config was
-            // empty, so cloud transcription/image were never auto-discovered when
-            // chat was already pinned.
-            var needsChat = string.IsNullOrWhiteSpace(azureSection.Endpoint) || string.IsNullOrWhiteSpace(azureSection.DeploymentName);
-            var needsTranscribe = string.IsNullOrWhiteSpace(ctSection.DeploymentName);
-            var needsImage = imgSection.Enabled && string.IsNullOrWhiteSpace(imgSection.DeploymentName);
-            if (azureSection.AutoDiscover && (needsChat || needsTranscribe || needsImage))
-            {
-                var discovery = _services.GetRequiredService<FoundryDiscovery>();
-                var creds = _services.GetService<AudioBoarder.App.Auth.AzureCredentialProvider>();
-                if (creds is not null) discovery.SetExternalCredential(creds.Get());
+        var needsChat = string.IsNullOrWhiteSpace(azureSection.Endpoint) || string.IsNullOrWhiteSpace(azureSection.DeploymentName);
+        // Discovery also resolves a pinned image/transcription deployment to the
+            // account endpoint that actually hosts it. Skipping discovery merely
+            // because the names are populated incorrectly pairs cross-account pins
+            // with the chat endpoint seeded during configuration binding.
+            var needsDiscovery = azureSection.AutoDiscover;
+            TokenCredential? verifiedCredential = null;
 
-                var result = await discovery.DiscoverAsync(
+            if (!azureSection.AutoDiscover && needsChat)
+            {
+                SetIfLatest(LlmKey, gen, ConfigurationRequired());
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(azureSection.ApiKey) && azureSection.UseManagedIdentity)
+            {
+                var snapshot = _credentials.Snapshot;
+                if (snapshot.State is AzureCredentialState.Unknown or AzureCredentialState.Restoring)
+                {
+                    SetIfLatest(LlmKey, gen, new HealthState(
+                        ComponentStatus.Checking,
+                        "Azure OpenAI",
+                        "Restoring Azure sign-in…",
+                        DateTimeOffset.UtcNow,
+                        Action: HealthAction.None,
+                        Condition: HealthCondition.Restoring));
+                    return;
+                }
+
+                TokenCredential credential;
+                if (_credentials.TryGetSignedInCredential(out var signedInCredential) &&
+                    signedInCredential is not null)
+                {
+                    credential = signedInCredential;
+                }
+                else
+                {
+                    // A missing interactive auth record does not mean Azure CLI,
+                    // managed identity, environment, or developer credentials are
+                    // unavailable. Probe the provider's non-interactive chain before
+                    // asking the user to sign in.
+                    try { credential = _credentials.Get(); }
+                    catch (Exception ex)
+                    {
+                        SetIfLatest(
+                            LlmKey,
+                            gen,
+                            ClassifyAzureFailure(ex, ct.IsCancellationRequested));
+                        return;
+                    }
+                }
+                verifiedCredential = credential;
+
+                using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                probeCts.CancelAfter(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await _tokenProbe.ProbeAsync(credential, probeCts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    SetIfLatest(LlmKey, gen, ClassifyAzureFailure(ex, ct.IsCancellationRequested));
+                    return;
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(azureSection.ApiKey))
+            {
+                SetIfLatest(LlmKey, gen, ConfigurationRequired());
+                return;
+            }
+
+            if (verifiedCredential is not null)
+            {
+                _services.GetRequiredService<IOptions<AzureOpenAIOptions>>()
+                    .Value.Credential = verifiedCredential;
+                _services.GetRequiredService<IOptions<CloudTranscriptionOptions>>()
+                    .Value.Credential = verifiedCredential;
+                _services.GetRequiredService<IOptions<ImageGeneratorOptions>>()
+                    .Value.Credential = verifiedCredential;
+                var speechCredentialOptions =
+                    _services.GetService<IOptions<AzureSpeechSettings>>()?.Value;
+                if (speechCredentialOptions is not null)
+                    speechCredentialOptions.Credential = verifiedCredential;
+            }
+
+            if (needsDiscovery)
+            {
+                var result = await _discovery.DiscoverAsync(
                     azureSection.TenantId, azureSection.SubscriptionId,
-                    azureSection.DeploymentName, azureSection.PreferredRegion, ct: ct).ConfigureAwait(false);
+                    azureSection.DeploymentName, azureSection.PreferredRegion,
+                    imgSection.DeploymentName, ctSection.DeploymentName,
+                    credentialOverride: verifiedCredential, ct: ct).ConfigureAwait(false);
                 LastDiscovery = result;
                 if (!result.Success)
                 {
-                    SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Failed, "Azure OpenAI",
-                        $"Discovery failed: {result.Message}. Run scripts/setup-azure.ps1 or fill AzureOpenAI in appsettings.json.",
-                        DateTimeOffset.UtcNow));
+                    SetIfLatest(LlmKey, gen, DiscoveryFailure(result));
                     return;
                 }
 
@@ -196,17 +307,29 @@ public sealed class StartupHealthService
                 // Image options — write deployment first, endpoint last so the
                 // factory's IsConfigured check can never see a half-populated state.
                 var imgOpts = _services.GetRequiredService<IOptions<AudioBoarder.Services.Imaging.ImageGeneratorOptions>>().Value;
-                if (string.IsNullOrWhiteSpace(imgOpts.DeploymentName) && !string.IsNullOrWhiteSpace(result.ImageDeploymentName))
+                if (!string.IsNullOrWhiteSpace(result.ImageDeploymentName))
+                {
                     imgOpts.DeploymentName = result.ImageDeploymentName;
-                imgOpts.Endpoint = result.ImageEndpoint ?? result.Endpoint;
+                    imgOpts.Endpoint = result.ImageEndpoint ?? result.Endpoint;
+                }
+                else if (!string.IsNullOrWhiteSpace(imgSection.DeploymentName))
+                {
+                    imgOpts.Endpoint = null;
+                }
 
                 // Cloud transcription options — same atomic-commit order. Use the
                 // per-capability transcribe endpoint so a transcribe deployment
                 // hosted in a different account from chat still works.
                 var ctOpts = _services.GetRequiredService<IOptions<AudioBoarder.Services.Transcription.Cloud.CloudTranscriptionOptions>>().Value;
-                if (string.IsNullOrWhiteSpace(ctOpts.DeploymentName) && !string.IsNullOrWhiteSpace(result.TranscribeDeploymentName))
+                if (!string.IsNullOrWhiteSpace(result.TranscribeDeploymentName))
+                {
                     ctOpts.DeploymentName = result.TranscribeDeploymentName;
-                ctOpts.Endpoint = result.TranscribeEndpoint ?? result.Endpoint;
+                    ctOpts.Endpoint = result.TranscribeEndpoint ?? result.Endpoint;
+                }
+                else if (!string.IsNullOrWhiteSpace(ctSection.DeploymentName))
+                {
+                    ctOpts.Endpoint = null;
+                }
 
                 var detail = $"Ready ({result.DeploymentName})";
                 if (result.FallbackDeploymentName is not null) detail += $" (fast: {result.FallbackDeploymentName})";
@@ -214,7 +337,13 @@ public sealed class StartupHealthService
                 else if (result.ImageDeploymentName is not null) detail += $" · image: {result.ImageDeploymentName}";
                 if (result.TranscribeDeploymentName is not null) detail += $" · transcribe: {result.TranscribeDeploymentName}";
 
-                SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Ready, "Azure OpenAI", detail, DateTimeOffset.UtcNow));
+                SetIfLatest(LlmKey, gen, new HealthState(
+                    ComponentStatus.Ready,
+                    "Azure OpenAI",
+                    detail,
+                    DateTimeOffset.UtcNow,
+                    Action: HealthAction.None,
+                    Condition: HealthCondition.Ready));
 
                 // Re-fire the transcription probe so the pill flips from Whisper
                 // to the discovered cloud deployment now that CT options are set.
@@ -240,22 +369,145 @@ public sealed class StartupHealthService
                 var deployment = azureSection.DeploymentName;
                 if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(deployment))
                 {
-                    SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Failed, "Azure OpenAI",
-                        "Endpoint/DeploymentName not configured and AutoDiscover is disabled.",
-                        DateTimeOffset.UtcNow));
+                    SetIfLatest(LlmKey, gen, ConfigurationRequired());
                     return;
                 }
                 SetIfLatest(LlmKey, gen, new HealthState(ComponentStatus.Ready, "Azure OpenAI",
                     $"Ready ({deployment}) · image: {(imgSection.Enabled ? "enabled" : "disabled")}",
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow,
+                    Action: HealthAction.None,
+                    Condition: HealthCondition.Ready));
             }
         }
         catch (Exception ex)
         {
             _logger.LogError("Azure probe failed; category={Category}", SafeCategory(ex));
-            SetIfLatest(LlmKey, gen, Failed("Azure OpenAI", ex));
+            SetIfLatest(LlmKey, gen, ClassifyAzureFailure(ex, ct.IsCancellationRequested));
         }
     }
+
+    private static HealthState SignInRequired() => new(
+        ComponentStatus.ActionRequired,
+        "Azure OpenAI",
+        "Sign in to Azure to discover deployments",
+        DateTimeOffset.UtcNow,
+        Action: HealthAction.SignIn,
+        Condition: HealthCondition.SignInRequired);
+
+    private static HealthState ConfigurationRequired() => new(
+        ComponentStatus.ActionRequired,
+        "Azure OpenAI",
+        "Endpoint/DeploymentName not configured and AutoDiscover is disabled.",
+        DateTimeOffset.UtcNow,
+        Action: HealthAction.Configure,
+        Condition: HealthCondition.ConfigurationRequired);
+
+    private static HealthState DiscoveryFailure(DiscoveryResult result)
+    {
+        return result.FailureKind switch
+        {
+            DiscoveryFailureKind.Authentication => SignInRequired(),
+            DiscoveryFailureKind.AccessDenied => AccessDenied(),
+            DiscoveryFailureKind.Network => RetryFailure(
+                HealthCondition.NetworkFailure,
+                "Could not reach Azure. Check your network connection and retry."),
+            DiscoveryFailureKind.Service => RetryFailure(
+                HealthCondition.ServiceFailure,
+                "Azure discovery is temporarily unavailable. Retry shortly."),
+            DiscoveryFailureKind.RateLimited => RateLimited(),
+            _ => new HealthState(
+                ComponentStatus.Failed,
+                "Azure OpenAI",
+                $"Discovery failed: {result.Message}. Check Azure configuration and permissions.",
+                DateTimeOffset.UtcNow,
+                Condition: HealthCondition.Failed),
+        };
+    }
+
+    private static HealthState ClassifyAzureFailure(Exception ex, bool callerCancelled)
+    {
+        if (callerCancelled)
+        {
+            return new HealthState(
+                ComponentStatus.Failed,
+                "Azure OpenAI",
+                "Azure health check was cancelled.",
+                DateTimeOffset.UtcNow,
+                Condition: HealthCondition.Failed);
+        }
+
+        var request = FindException<RequestFailedException>(ex);
+        if (request is not null)
+        {
+            return request.Status switch
+            {
+                401 => SignInRequired(),
+                403 => AccessDenied(),
+                429 => RateLimited(),
+                >= 500 => RetryFailure(
+                    HealthCondition.ServiceFailure,
+                    "Azure is temporarily unavailable. Retry shortly."),
+                _ => RetryFailure(
+                    HealthCondition.ServiceFailure,
+                    "Azure could not complete the health check. Retry shortly."),
+            };
+        }
+
+        if (FindException<HttpRequestException>(ex) is not null)
+            return RetryFailure(
+                HealthCondition.NetworkFailure,
+                "Could not reach Azure. Check your network connection and retry.");
+
+        if (FindException<AuthenticationRequiredException>(ex) is not null ||
+            FindException<CredentialUnavailableException>(ex) is not null)
+            return SignInRequired();
+
+        if (FindException<AuthenticationFailedException>(ex) is not null)
+            return SignInRequired();
+
+        if (ex is OperationCanceledException or TimeoutException)
+            return RetryFailure(
+                HealthCondition.ServiceFailure,
+                "Azure authentication timed out. Check your network and retry.");
+
+        return new HealthState(
+            ComponentStatus.Failed,
+            "Azure OpenAI",
+            "Azure health check failed. Check configuration and permissions.",
+            DateTimeOffset.UtcNow,
+            Condition: HealthCondition.Failed);
+    }
+
+    private static T? FindException<T>(Exception ex) where T : Exception
+    {
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+            if (current is T match) return match;
+        return null;
+    }
+
+    private static HealthState AccessDenied() => new(
+        ComponentStatus.Failed,
+        "Azure OpenAI",
+        "Signed in, but access was denied. Ask an Azure administrator for permission to read Cognitive Services accounts and deployments.",
+        DateTimeOffset.UtcNow,
+        Action: HealthAction.None,
+        Condition: HealthCondition.AccessDenied);
+
+    private static HealthState RetryFailure(HealthCondition condition, string detail) => new(
+        ComponentStatus.Failed,
+        "Azure OpenAI",
+        detail,
+        DateTimeOffset.UtcNow,
+        Action: HealthAction.Retry,
+        Condition: condition);
+
+    private static HealthState RateLimited() => new(
+        ComponentStatus.RateLimited,
+        "Azure OpenAI",
+        "Azure is rate limiting discovery. Wait briefly, then retry.",
+        DateTimeOffset.UtcNow,
+        Action: HealthAction.Retry,
+        Condition: HealthCondition.RateLimited);
 
     private long NextGeneration(string key) => _probeGen.AddOrUpdate(key, 1, (_, v) => v + 1);
 
@@ -284,6 +536,7 @@ public sealed class StartupHealthService
     private static string SafeCategory(Exception ex) => ex switch
     {
         OperationCanceledException => "cancelled",
+        TranscriptionInitializationException initialization => initialization.SafeErrorCode,
         TimeoutException => "timeout",
         HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } => "rate_limited",
         HttpRequestException { StatusCode: { } status } when (int)status >= 500 => "service_failure",

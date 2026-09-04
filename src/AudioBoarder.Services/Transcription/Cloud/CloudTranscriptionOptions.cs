@@ -1,3 +1,5 @@
+using Azure.Core;
+
 namespace AudioBoarder.Services.Transcription.Cloud;
 
 public sealed class CloudTranscriptionOptions
@@ -8,6 +10,8 @@ public sealed class CloudTranscriptionOptions
     public string? TenantId { get; set; }
     public string? ApiKey { get; set; }
     public bool UseManagedIdentity { get; set; } = true;
+    /// <summary>Optional application-provided credential sharing the signed-in token cache.</summary>
+    public TokenCredential? Credential { get; set; }
     public string Language { get; set; } = "en";
     public string OpenAIApiVersion { get; set; } = "2025-04-01-preview";
 
@@ -37,11 +41,16 @@ public sealed class CloudTranscriptionOptions
     public double MaxRetryBackoffSeconds { get; set; } = 2.0;
 
     /// <summary>
-    /// Hard cap on buffered audio per role. Once a backlog exceeds this the OLDEST
-    /// audio is dropped rather than growing the payload without bound, which is how a
-    /// transient outage used to snowball into a minute of missing transcript.
+    /// Hard cap on buffered audio per role. 180 seconds of 16 kHz mono PCM-16 is
+    /// 16,000 samples/s × 2 bytes × 180 = 5,760,000 bytes (about 5.8 MB) per role.
+    /// Values above <see cref="MaximumMaxBufferedSeconds"/> are clamped so the queue
+    /// remains explicitly bounded. Only the oldest PCM is dropped after this limit.
     /// </summary>
-    public double MaxBufferedSeconds { get; set; } = 20.0;
+    public double MaxBufferedSeconds { get; set; } = DefaultMaxBufferedSeconds;
+    public const double DefaultMaxBufferedSeconds = 180.0;
+    public const double MaximumMaxBufferedSeconds = 180.0;
+    public double EffectiveMaxBufferedSeconds =>
+        Math.Clamp(MaxBufferedSeconds, 0, MaximumMaxBufferedSeconds);
 
     /// <summary>
     /// Domain prompt biasing recognition toward expected vocabulary, sent as the
@@ -76,4 +85,3 @@ public sealed class CloudTranscriptionOptions
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(DeploymentName);
 }
-

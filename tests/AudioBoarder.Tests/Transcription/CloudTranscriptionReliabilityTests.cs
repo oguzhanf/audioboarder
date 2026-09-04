@@ -1,6 +1,9 @@
 using System.Net;
+using Azure.Core;
+using Azure.Identity;
 using AudioBoarder.Core.Audio;
 using AudioBoarder.Core.Transcript;
+using AudioBoarder.Services.Transcription;
 using AudioBoarder.Services.Transcription.Cloud;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -9,6 +12,99 @@ namespace AudioBoarder.Tests.Transcription;
 
 public class CloudTranscriptionReliabilityTests
 {
+    [Fact]
+    public async Task InitializeAcquiresDataPlaneTokenBeforeReady()
+    {
+        var credential = new RecordingCredential();
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                Credential = credential,
+            }),
+            new HttpClient(new AlwaysFailHandler()));
+
+        await service.InitializeAsync(CancellationToken.None);
+
+        service.IsReady.Should().BeTrue();
+        credential.RequestCount.Should().Be(1);
+        credential.LastScopes.Should().ContainSingle()
+            .Which.Should().Be("https://cognitiveservices.azure.com/.default");
+    }
+
+    [Fact]
+    public async Task MaiRateLimitHonorsServerRetryAfterAndBlocksForcedFlush()
+    {
+        var handler = new FixedResponseHandler(
+            HttpStatusCode.TooManyRequests,
+            "PRIVATE MAI RATE BODY",
+            TimeSpan.FromSeconds(30));
+        await using var service = new MaiTranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.services.ai.azure.com",
+                DeploymentName = "MAI-Transcribe-1",
+                ApiKey = "test-key",
+            }),
+            new HttpClient(handler));
+        await service.InitializeAsync(CancellationToken.None);
+        await service.TranscribeAsync(
+            Chunk(4_800, DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        await service.FlushAsync(CancellationToken.None, force: true);
+
+        service.Diagnostics.State.Should().Be(TranscriptionRuntimeState.RateLimited);
+        service.Diagnostics.SafeErrorCode.Should().Be("rate_limited");
+        service.Diagnostics.RetryAt.Should().NotBeNull();
+        service.Diagnostics.RetryAt!.Value.Should().BeAfter(
+            DateTimeOffset.UtcNow.AddSeconds(27));
+    }
+
+    [Fact]
+    public async Task AuthenticationRequiredDoesNotMarkCloudReady()
+    {
+        var context = new TokenRequestContext(
+            new[] { "https://cognitiveservices.azure.com/.default" });
+        var credential = new RecordingCredential(
+            new AuthenticationRequiredException("Sign in required.", context));
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                Credential = credential,
+            }));
+
+        var act = () => service.InitializeAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<TranscriptionInitializationException>();
+        thrown.Which.SafeErrorCode.Should().Be("authentication_required");
+        service.IsReady.Should().BeFalse();
+        service.Diagnostics.SafeErrorCode.Should().Be("authentication_required");
+    }
+
+    [Fact]
+    public async Task CredentialUnavailableIsClassifiedDistinctly()
+    {
+        var credential = new RecordingCredential(
+            new CredentialUnavailableException("No cached credential."));
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                Credential = credential,
+            }));
+
+        var act = () => service.InitializeAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<TranscriptionInitializationException>();
+        thrown.Which.SafeErrorCode.Should().Be("credential_unavailable");
+        service.IsReady.Should().BeFalse();
+    }
+
     [Fact]
     public async Task FailedOpenAIRequestRetainsAudioForLaterRetry()
     {
@@ -35,6 +131,237 @@ public class CloudTranscriptionReliabilityTests
 
         handler.RequestCount.Should().Be(6,
             "each forced flush retries the retained audio instead of discarding it after the first failure");
+    }
+
+    [Fact]
+    public async Task SixtySecondOutageBacklogDoesNotDropAudioWithDefaultLimit()
+    {
+        var handler = new AlwaysFailHandler();
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                ApiKey = "test-key",
+                MaxRetryBackoffSeconds = 0,
+            }),
+            new HttpClient(handler));
+        await service.InitializeAsync(CancellationToken.None);
+        var start = DateTimeOffset.UtcNow;
+
+        await service.TranscribeAsync(Chunk(32_000, start), CancellationToken.None);
+        await service.FlushAsync(CancellationToken.None, force: true);
+        await service.TranscribeAsync(
+            Chunk(32_000 * 60, start.AddSeconds(60)),
+            CancellationToken.None);
+
+        service.Diagnostics.PendingDuration.Should().Be(TimeSpan.FromSeconds(61));
+        service.Diagnostics.DroppedBytes.Should().Be(0);
+        service.Diagnostics.DroppedDuration.Should().Be(TimeSpan.Zero);
+        service.Diagnostics.State.Should().Be(TranscriptionRuntimeState.Retrying);
+    }
+
+    [Fact]
+    public async Task MidSessionAuthenticationFailureRetainsBacklogAndReportsRetrying()
+    {
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                ApiKey = "expired-key",
+                MaxRetryBackoffSeconds = 0,
+            }),
+            new HttpClient(new FixedResponseHandler(
+                HttpStatusCode.Unauthorized,
+                "PRIVATE AUTH BODY")));
+        await service.InitializeAsync(CancellationToken.None);
+        await service.TranscribeAsync(
+            Chunk(32_000, DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        await service.FlushAsync(CancellationToken.None, force: true);
+
+        service.Diagnostics.State.Should().Be(TranscriptionRuntimeState.Retrying);
+        service.Diagnostics.SafeErrorCode.Should().Be("authentication_required");
+        service.Diagnostics.PendingDuration.Should().Be(TimeSpan.FromSeconds(1));
+        service.Diagnostics.DroppedBytes.Should().Be(0);
+
+        var reinitialize = () => service.InitializeAsync(CancellationToken.None);
+        var rejected = await reinitialize.Should()
+            .ThrowAsync<TranscriptionInitializationException>();
+        rejected.Which.SafeErrorCode.Should().Be("authentication_required",
+            "the next selector pass must reject the known-bad credential and fall back");
+    }
+
+    [Fact]
+    public async Task MaiAuthenticationFailureIsRejectedOnNextSelection()
+    {
+        await using var service = new MaiTranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.services.ai.azure.com",
+                DeploymentName = "MAI-Transcribe-1",
+                ApiKey = "rejected-key",
+            }),
+            new HttpClient(new FixedResponseHandler(
+                HttpStatusCode.Unauthorized,
+                "PRIVATE AUTH BODY")));
+        await service.InitializeAsync(CancellationToken.None);
+        await service.TranscribeAsync(
+            Chunk(32_000, DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        await service.FlushAsync(CancellationToken.None, force: true);
+
+        var reinitialize = () => service.InitializeAsync(CancellationToken.None);
+        var rejected = await reinitialize.Should()
+            .ThrowAsync<TranscriptionInitializationException>();
+        rejected.Which.SafeErrorCode.Should().Be("authentication_required");
+        service.Diagnostics.PendingDuration.Should().Be(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task ConcurrentOpenAISuccessCannotEraseAuthenticationRejection()
+    {
+        var handler = new DelayedSuccessAuthenticationFailureHandler();
+        await using var service = new OpenAITranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.test",
+                DeploymentName = "transcribe",
+                ApiKey = "rejected-key",
+                MaxRetryBackoffSeconds = 0,
+            }),
+            new HttpClient(handler));
+        await service.InitializeAsync(CancellationToken.None);
+        await AssertConcurrentAuthenticationRejectionIsStickyAsync(service, handler);
+    }
+
+    [Fact]
+    public async Task ConcurrentMaiSuccessCannotEraseAuthenticationRejection()
+    {
+        var handler = new DelayedSuccessAuthenticationFailureHandler();
+        await using var service = new MaiTranscribeService(
+            Options.Create(new CloudTranscriptionOptions
+            {
+                Endpoint = "https://example.services.ai.azure.com",
+                DeploymentName = "MAI-Transcribe-1",
+                ApiKey = "rejected-key",
+                MaxRetryBackoffSeconds = 0,
+            }),
+            new HttpClient(handler));
+        await service.InitializeAsync(CancellationToken.None);
+        await AssertConcurrentAuthenticationRejectionIsStickyAsync(service, handler);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task StaleOpenAIResultCannotChangeCurrentCredentialRejection(
+        HttpStatusCode staleResult)
+    {
+        var options = new CloudTranscriptionOptions
+        {
+            Endpoint = "https://example.test",
+            DeploymentName = "transcribe",
+            ApiKey = "stale-key",
+            MaxRetryBackoffSeconds = 0,
+        };
+        await AssertCredentialRotationKeepsCurrentRejectionAsync(
+            options,
+            staleResult,
+            (settings, http) => new OpenAITranscribeService(
+                Options.Create(settings), http));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task StaleMaiResultCannotChangeCurrentCredentialRejection(
+        HttpStatusCode staleResult)
+    {
+        var options = new CloudTranscriptionOptions
+        {
+            Endpoint = "https://example.services.ai.azure.com",
+            DeploymentName = "MAI-Transcribe-1",
+            ApiKey = "stale-key",
+            MaxRetryBackoffSeconds = 0,
+        };
+        await AssertCredentialRotationKeepsCurrentRejectionAsync(
+            options,
+            staleResult,
+            (settings, http) => new MaiTranscribeService(
+                Options.Create(settings), http));
+    }
+
+    private static async Task AssertConcurrentAuthenticationRejectionIsStickyAsync(
+        ITranscriptionService service,
+        DelayedSuccessAuthenticationFailureHandler handler)
+    {
+        var rejectionObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ((ITranscriptionDiagnosticsSource)service).DiagnosticsChanged += (_, diagnostics) =>
+        {
+            if (diagnostics.SafeErrorCode == "authentication_required")
+                rejectionObserved.TrySetResult();
+        };
+
+        var capturedAt = DateTimeOffset.UtcNow;
+        await service.TranscribeAsync(
+            Chunk(4_800, capturedAt, AudioStreamRole.Microphone),
+            CancellationToken.None);
+        await service.TranscribeAsync(
+            Chunk(4_800, capturedAt, AudioStreamRole.Loopback),
+            CancellationToken.None);
+
+        var flush = service.FlushAsync(CancellationToken.None, force: true);
+        await rejectionObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        handler.ReleaseSuccessfulRequest();
+        await flush;
+
+        var reinitialize = () => service.InitializeAsync(CancellationToken.None);
+        var rejected = await reinitialize.Should()
+            .ThrowAsync<TranscriptionInitializationException>();
+        rejected.Which.SafeErrorCode.Should().Be("authentication_required");
+    }
+
+    private static async Task AssertCredentialRotationKeepsCurrentRejectionAsync(
+        CloudTranscriptionOptions options,
+        HttpStatusCode staleResult,
+        Func<CloudTranscriptionOptions, HttpClient, ITranscriptionService> createService)
+    {
+        var handler = new CredentialRotationAuthenticationHandler(
+            () => options.ApiKey = "current-key",
+            staleResult);
+        await using var service = createService(options, new HttpClient(handler));
+        await service.InitializeAsync(CancellationToken.None);
+
+        var rejectionObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ((ITranscriptionDiagnosticsSource)service).DiagnosticsChanged += (_, diagnostics) =>
+        {
+            if (diagnostics.SafeErrorCode == "authentication_required")
+                rejectionObserved.TrySetResult();
+        };
+
+        var capturedAt = DateTimeOffset.UtcNow;
+        await service.TranscribeAsync(
+            Chunk(4_800, capturedAt, AudioStreamRole.Microphone),
+            CancellationToken.None);
+        await service.TranscribeAsync(
+            Chunk(4_800, capturedAt, AudioStreamRole.Loopback),
+            CancellationToken.None);
+
+        var flush = service.FlushAsync(CancellationToken.None, force: true);
+        await rejectionObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        handler.ReleaseStaleRequest();
+        await flush;
+
+        var reinitialize = () => service.InitializeAsync(CancellationToken.None);
+        var rejected = await reinitialize.Should()
+            .ThrowAsync<TranscriptionInitializationException>();
+        rejected.Which.SafeErrorCode.Should().Be("authentication_required");
     }
 
     private sealed class AlwaysFailHandler : HttpMessageHandler
@@ -247,6 +574,57 @@ public class CloudTranscriptionReliabilityTests
         }
 
         [Fact]
+        public async Task SparseCaptureTimestampsStillUsePcmDuration()
+        {
+            var capturedAt = new DateTimeOffset(2026, 1, 1, 1, 2, 3, TimeSpan.Zero);
+            var handler = new FixedResponseHandler(HttpStatusCode.OK, """{"text":"continuous speech"}""");
+            await using var service = new OpenAITranscribeService(
+                Options.Create(new CloudTranscriptionOptions
+                {
+                    Endpoint = "https://example.test",
+                    DeploymentName = "transcribe",
+                    ApiKey = "test-key",
+                }),
+                new HttpClient(handler));
+            await service.InitializeAsync(CancellationToken.None);
+
+            await service.TranscribeAsync(Chunk(320_000, capturedAt), CancellationToken.None);
+            await service.TranscribeAsync(Chunk(320_000, capturedAt.AddSeconds(99)), CancellationToken.None);
+            var result = await service.FlushAsync(CancellationToken.None, force: true);
+
+            result.Should().ContainSingle();
+            result[0].Start.Should().Be(capturedAt);
+            result[0].End.Should().Be(capturedAt.AddSeconds(20));
+        }
+
+        [Fact]
+        public async Task TinyRepeatedTrimsAggregateWarningLogs()
+        {
+            var logger = new CaptureLogger<OpenAITranscribeService>();
+            await using var service = new OpenAITranscribeService(
+                Options.Create(new CloudTranscriptionOptions
+                {
+                    Endpoint = "https://example.test",
+                    DeploymentName = "transcribe",
+                    ApiKey = "test-key",
+                    MaxBufferedSeconds = 0.1,
+                }),
+                new HttpClient(new FixedResponseHandler(
+                    HttpStatusCode.OK, """{"text":"unused"}""")),
+                logger);
+            await service.InitializeAsync(CancellationToken.None);
+            var capturedAt = DateTimeOffset.UtcNow;
+
+            for (var i = 0; i < 100; i++)
+                await service.TranscribeAsync(
+                    Chunk(320, capturedAt.AddMilliseconds(i * 10)),
+                    CancellationToken.None);
+
+            service.Diagnostics.DroppedDuration.Should().Be(TimeSpan.FromSeconds(0.9));
+            logger.WarningCount("Transcription audio dropped").Should().Be(1);
+        }
+
+        [Fact]
         public async Task RequeueTrimKeepsNewestAudioAndAdjustedTimestamp()
         {
             var capturedAt = new DateTimeOffset(2026, 1, 1, 1, 2, 3, TimeSpan.Zero);
@@ -402,6 +780,72 @@ public class CloudTranscriptionReliabilityTests
             }
         }
 
+        private sealed class DelayedSuccessAuthenticationFailureHandler : HttpMessageHandler
+        {
+            private readonly TaskCompletionSource _releaseSuccessfulRequest =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _requestCount;
+
+            public void ReleaseSuccessfulRequest() =>
+                _releaseSuccessfulRequest.TrySetResult();
+
+            protected override async Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var requestNumber = Interlocked.Increment(ref _requestCount);
+                if (requestNumber == 1)
+                {
+                    await _releaseSuccessfulRequest.Task.WaitAsync(cancellationToken);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            """{"text":"surviving transcript"}"""),
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("PRIVATE AUTH BODY"),
+                };
+            }
+        }
+
+        private sealed class CredentialRotationAuthenticationHandler(
+            Action rotateCredential,
+            HttpStatusCode staleResult) : HttpMessageHandler
+        {
+            private readonly TaskCompletionSource _releaseStaleRequest =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private int _requestCount;
+
+            public void ReleaseStaleRequest() =>
+                _releaseStaleRequest.TrySetResult();
+
+            protected override async Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var requestNumber = Interlocked.Increment(ref _requestCount);
+                if (requestNumber == 1)
+                {
+                    rotateCredential();
+                    await _releaseStaleRequest.Task.WaitAsync(cancellationToken);
+                    return new HttpResponseMessage(staleResult)
+                    {
+                        Content = new StringContent(staleResult == HttpStatusCode.OK
+                            ? """{"text":"stale transcript"}"""
+                            : "PRIVATE STALE AUTH BODY"),
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("PRIVATE CURRENT AUTH BODY"),
+                };
+            }
+        }
+
         private sealed class SequenceHandler(params HttpStatusCode[] statuses) : HttpMessageHandler
         {
             private int _index;
@@ -423,6 +867,12 @@ public class CloudTranscriptionReliabilityTests
         {
             private readonly List<string> _messages = new();
             public string Text { get { lock (_messages) return string.Join("\n", _messages); } }
+            public int WarningCount(string contains)
+            {
+                lock (_messages)
+                    return _messages.Count(message =>
+                        message.Contains(contains, StringComparison.Ordinal));
+            }
             public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
             public bool IsEnabled(LogLevel logLevel) => true;
             public void Log<TState>(
@@ -434,5 +884,37 @@ public class CloudTranscriptionReliabilityTests
             {
                 lock (_messages) _messages.Add(formatter(state, exception));
             }
-    }
+        }
+
+        private sealed class RecordingCredential(Exception? failure = null) : TokenCredential
+        {
+            private int _requestCount;
+            public int RequestCount => Volatile.Read(ref _requestCount);
+            public IReadOnlyList<string> LastScopes { get; private set; } = Array.Empty<string>();
+
+            public override AccessToken GetToken(
+                TokenRequestContext requestContext,
+                CancellationToken cancellationToken)
+            {
+                Record(requestContext);
+                if (failure is not null) throw failure;
+                return new AccessToken("test-token", DateTimeOffset.UtcNow.AddHours(1));
+            }
+
+            public override ValueTask<AccessToken> GetTokenAsync(
+                TokenRequestContext requestContext,
+                CancellationToken cancellationToken)
+            {
+                Record(requestContext);
+                if (failure is not null) return ValueTask.FromException<AccessToken>(failure);
+                return ValueTask.FromResult(
+                    new AccessToken("test-token", DateTimeOffset.UtcNow.AddHours(1)));
+            }
+
+            private void Record(TokenRequestContext context)
+            {
+                Interlocked.Increment(ref _requestCount);
+                LastScopes = context.Scopes.ToArray();
+            }
+        }
 }

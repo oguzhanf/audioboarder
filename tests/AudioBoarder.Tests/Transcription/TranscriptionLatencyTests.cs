@@ -34,8 +34,18 @@ public class TranscriptionLatencyTests
     {
         var options = new CloudTranscriptionOptions();
 
-        options.MaxBufferedSeconds.Should().BeGreaterThan(options.WindowSeconds);
-        options.MaxBufferedSeconds.Should().BeLessThanOrEqualTo(30.0);
+        options.MaxBufferedSeconds.Should().Be(180.0);
+        options.EffectiveMaxBufferedSeconds.Should().Be(180.0);
+        (AudioBoarder.Core.Audio.AudioFormat.Mono16kPcm16.BytesPerSecond *
+            options.EffectiveMaxBufferedSeconds).Should().Be(5_760_000);
+    }
+
+    [Fact]
+    public void BacklogConfigurationCannotExceedMemorySafeCap()
+    {
+        var options = new CloudTranscriptionOptions { MaxBufferedSeconds = 900 };
+
+        options.EffectiveMaxBufferedSeconds.Should().Be(180.0);
     }
 
     [Fact]

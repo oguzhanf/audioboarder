@@ -88,6 +88,16 @@ public static class UiRuntimeStatusMapper
                 IsWarning: true);
         }
 
+        if (audio.State == AudioPipelineRuntimeState.Degraded &&
+            !string.IsNullOrWhiteSpace(audio.StatusMessage))
+        {
+            return new UiRuntimeStatus(
+                UiRuntimeState.Degraded,
+                "Degraded",
+                audio.StatusMessage,
+                IsWarning: true);
+        }
+
         if (generation.Stage == GenerationRuntimeStage.DeepSynthesizing)
         {
             return new UiRuntimeStatus(

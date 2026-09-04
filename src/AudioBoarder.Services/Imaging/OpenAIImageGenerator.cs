@@ -97,8 +97,9 @@ public sealed class OpenAIImageGenerator : IImageGenerator
             req.Headers.Add("api-key", _options.ApiKey);
             return;
         }
-        if (_credential is null) throw new InvalidOperationException("No credential available for image generation.");
-        var token = await _credential.GetTokenAsync(
+        var credential = _options.Credential ?? _credential;
+        if (credential is null) throw new InvalidOperationException("No credential available for image generation.");
+        var token = await credential.GetTokenAsync(
             new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }), ct).ConfigureAwait(false);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
     }

@@ -24,7 +24,6 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
 {
     private readonly AzureOpenAIOptions _options;
     private readonly ILogger<AzureOpenAIScenePatchGenerator> _logger;
-    private readonly Lazy<ChatClient> _chatClient;
 
     public AzureOpenAIScenePatchGenerator(
         IOptions<AzureOpenAIOptions> options,
@@ -32,7 +31,6 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
     {
         _options = options.Value ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? NullLogger<AzureOpenAIScenePatchGenerator>.Instance;
-        _chatClient = new Lazy<ChatClient>(BuildChatClient);
     }
 
     public string Name => $"AzureOpenAI/{_options.DeploymentName ?? "?"}";
@@ -52,9 +50,10 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         var deploymentName = request.IsContinuous && !string.IsNullOrWhiteSpace(_options.FallbackDeploymentName)
             ? _options.FallbackDeploymentName!
             : _options.DeploymentName!;
-        var client = deploymentName == _options.DeploymentName
-            ? _chatClient.Value
-            : BuildChatClientFor(deploymentName);
+        // Options are mutated after interactive sign-in and Foundry discovery.
+        // Building from the current snapshot avoids pinning the first endpoint,
+        // deployment, API key, or credential for the rest of the process.
+        var client = BuildChatClientFor(deploymentName);
 
         var messages = new ChatMessage[]
         {
@@ -174,8 +173,6 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         return s;
     }
 
-    private ChatClient BuildChatClient() => BuildChatClientFor(_options.DeploymentName!);
-
     private ChatClient BuildChatClientFor(string deploymentName)
     {
         var endpoint = new Uri(_options.Endpoint!);
@@ -186,13 +183,18 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         }
         else if (_options.UseManagedIdentity)
         {
-            var credOptions = new DefaultAzureCredentialOptions
+            var credential = _options.Credential;
+            if (credential is null)
             {
-                TenantId = string.IsNullOrWhiteSpace(_options.TenantId) ? null : _options.TenantId,
-                ExcludeInteractiveBrowserCredential = false,
-                ExcludeAzurePowerShellCredential = true,
-            };
-            client = new AzureOpenAIClient(endpoint, new DefaultAzureCredential(credOptions));
+                var credOptions = new DefaultAzureCredentialOptions
+                {
+                    TenantId = string.IsNullOrWhiteSpace(_options.TenantId) ? null : _options.TenantId,
+                    ExcludeInteractiveBrowserCredential = false,
+                    ExcludeAzurePowerShellCredential = true,
+                };
+                credential = new DefaultAzureCredential(credOptions);
+            }
+            client = new AzureOpenAIClient(endpoint, credential);
         }
         else
         {

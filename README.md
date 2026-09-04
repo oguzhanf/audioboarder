@@ -169,10 +169,13 @@ API for the live caption stream, but its exported `.vtt` drops straight in.
 Everything is optional. With empty configuration AudioBoarder signs you in
 interactively and picks the best deployment it can find.
 
-To set your own values, **copy `appsettings.Local.json.example` to
-`appsettings.Local.json`** next to the built executable and edit it.
-`appsettings.Local.json` is git-ignored, so your tenant and subscription identifiers
-never reach source control.
+Use the in-app **Settings** window (`Ctrl+,`). It saves per-user settings to
+`%LOCALAPPDATA%\AudioBoarder\appsettings.Local.json`, so an installed non-admin user
+never needs write access to Program Files. The file is outside the repository and can
+contain tenant-specific preferences without reaching source control.
+
+For source/portable development, an `appsettings.Local.json` beside the executable is
+still supported. The per-user file is loaded afterward and takes precedence.
 
 ```jsonc
 {
@@ -220,6 +223,18 @@ sibling of the same family (e.g. `gpt-5-6-luna`) rather than an older small mode
 | `auto` (default) | Cloud LLM transcription if a deployment exists, else Azure Speech, else local Whisper |
 | `speech` | Azure Speech streaming — lowest latency, needs `AzureSpeech.Region` + `ResourceId` |
 | `local` / `whisper` | Local Whisper.net, fully offline |
+
+Cloud readiness acquires a data-plane token (or validates that an API key is
+configured) before capture starts; it does not send a billed transcription probe.
+If cloud authentication/network initialization is unavailable, selection degrades
+to configured Azure Speech and then local Whisper, and retries cloud on the next
+health check or listening session. Active utterances are never switched between
+backends.
+
+`CloudTranscription.MaxBufferedSeconds` defaults to 180 seconds per role. At 16 kHz,
+mono PCM-16 that is `16,000 × 2 × 180 = 5,760,000` bytes (about 5.8 MB) for the
+microphone and independently for loopback. The runtime clamps larger values to this
+hard cap and reports `AudioDropped` only after the retained PCM actually exceeds it.
 
 ---
 
@@ -439,7 +454,7 @@ Live-model qualification is intentionally separate and opt-in through
 Use the single fail-fast pipeline; do not assemble releases by hand:
 
 ```powershell
-.\scripts\build-release.ps1 -Version 0.8.0-preview.1 -Prerelease -Unsigned -DryRun
+.\scripts\build-release.ps1 -Version 0.8.0-preview.2 -Prerelease -Unsigned -DryRun
 ```
 
 It restores, builds/verifies the web canvas, builds/tests .NET excluding `LiveModel`, runs

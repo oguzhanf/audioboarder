@@ -1,3 +1,5 @@
+using Azure.Core;
+
 namespace AudioBoarder.Services.Imaging;
 
 public sealed class ImageGeneratorOptions
@@ -10,6 +12,7 @@ public sealed class ImageGeneratorOptions
     public string? TenantId { get; set; }
     public string? ApiKey { get; set; }
     public bool UseManagedIdentity { get; set; } = true;
+    public TokenCredential? Credential { get; set; }
     public string OpenAIApiVersion { get; set; } = "2025-04-01-preview";
     public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(2);
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(DeploymentName);
