@@ -8,7 +8,7 @@
     <NeutralLanguage>en-US</NeutralLanguage>
     <Copyright>Copyright © 2026</Copyright>
     <Product>AudioBoarder</Product>
-    <Version>0.8.0-preview.3</Version>
+    <Version>0.8.0-preview.4</Version>
     <RepositoryUrl>https://github.com/oguzhanf/audioboarder</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>

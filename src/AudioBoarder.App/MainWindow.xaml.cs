@@ -166,13 +166,17 @@ public partial class MainWindow : FluentWindow
         {
             var release = await _updates.CheckAsync(ignoreDeferrals: true);
             if (release is null)
-                _viewModel.StatusMessage = $"No newer eligible release found. Installed: {GitHubUpdateService.CurrentVersion}.";
+                System.Windows.MessageBox.Show(this,
+                    $"AudioBoarder is up to date for this update channel.\nInstalled: {GitHubUpdateService.CurrentVersion}",
+                    "AudioBoarder updates", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
             else
                 new UpdateWindow(_updates, release, _viewModel) { Owner = this }.Show();
         }
         catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or OperationCanceledException or System.Text.Json.JsonException)
         {
-            _viewModel.StatusMessage = "Update check could not reach a valid GitHub release response. Check the connection and try again.";
+            System.Windows.MessageBox.Show(this,
+                "Update check could not reach a valid GitHub release response. Check the connection and try again.",
+                "AudioBoarder updates", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
         }
         finally { _checkingUpdates = false; }
     }
