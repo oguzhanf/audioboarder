@@ -349,7 +349,6 @@ public sealed class GitHubUpdateService
         var outerPayload = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new
         {
             ProcessId = Environment.ProcessId,
-            ElevatedCommand = elevatedCommand,
             release.TagName,
             ExecutablePath = executablePath
         }));
@@ -358,6 +357,8 @@ public sealed class GitHubUpdateService
                 [Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
             $exitCode = 1603
             try {
+                $elevatedCommand = $env:AUDIOBOARDER_UPDATE_COMMAND
+                if ([string]::IsNullOrWhiteSpace($elevatedCommand)) { exit 1603 }
                 try {
                     Wait-Process -Id $payload.ProcessId -Timeout 60 -ErrorAction Stop
                 } catch {
@@ -369,7 +370,7 @@ public sealed class GitHubUpdateService
                 $powerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
                 $elevated = Start-Process -FilePath $powerShell -Verb RunAs `
                     -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                        '-EncodedCommand', $payload.ElevatedCommand) -Wait -PassThru
+                        '-EncodedCommand', $elevatedCommand) -Wait -PassThru
                 $exitCode = $elevated.ExitCode
             } catch {
                 if ($_.Exception.NativeErrorCode -eq 1223) {
@@ -412,6 +413,9 @@ public sealed class GitHubUpdateService
         startInfo.ArgumentList.Add("Bypass");
         startInfo.ArgumentList.Add("-EncodedCommand");
         startInfo.ArgumentList.Add(outerCommand);
+        // Keep the inner script out of the doubly encoded outer command line.
+        // The previous nesting exceeded Windows' 32,767-character launch limit.
+        startInfo.Environment["AUDIOBOARDER_UPDATE_COMMAND"] = elevatedCommand;
 
         _ = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start the update installer.");

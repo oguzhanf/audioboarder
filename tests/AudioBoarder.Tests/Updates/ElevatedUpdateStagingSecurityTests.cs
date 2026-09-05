@@ -66,6 +66,19 @@ public sealed class ElevatedUpdateStagingSecurityTests
         window.Should().Contain("PreviewConsent.IsChecked != true");
     }
 
+    [Fact]
+    public void NestedInstallerScriptDoesNotOverflowTheWindowsCommandLine()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), "src", "AudioBoarder.App", "Updates", "GitHubUpdateService.cs"));
+        var payloadStart = source.IndexOf("var outerPayload", StringComparison.Ordinal);
+        var scriptStart = source.IndexOf("var outerScript", payloadStart, StringComparison.Ordinal);
+        source[payloadStart..scriptStart].Should().NotContain("ElevatedCommand");
+        source.Should().Contain("startInfo.Environment[\"AUDIOBOARDER_UPDATE_COMMAND\"] = elevatedCommand");
+        source.Should().Contain("$elevatedCommand = $env:AUDIOBOARDER_UPDATE_COMMAND");
+        source.Should().Contain("'-EncodedCommand', $elevatedCommand");
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
