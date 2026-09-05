@@ -21,10 +21,15 @@ public sealed class SessionStore
     private long _latestSaveVersion;
 
     public SessionStore(ILogger<SessionStore>? logger = null)
-    {
-        _root = Path.Combine(
+        : this(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "AudioBoarder", "sessions");
+            "AudioBoarder", "sessions"), logger)
+    {
+    }
+
+    internal SessionStore(string root, ILogger<SessionStore>? logger = null)
+    {
+        _root = root;
         Directory.CreateDirectory(_root);
         _logger = logger ?? NullLogger<SessionStore>.Instance;
     }

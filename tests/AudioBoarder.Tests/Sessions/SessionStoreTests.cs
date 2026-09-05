@@ -9,26 +9,30 @@ namespace AudioBoarder.Tests.Sessions;
 public class SessionStoreTests : IDisposable
 {
     private readonly string _tempLocalAppData;
-    private readonly string _originalLocalAppData;
-
     public SessionStoreTests()
     {
-        _originalLocalAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
         _tempLocalAppData = Path.Combine(Path.GetTempPath(), $"audioboarder-tests-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("LOCALAPPDATA", _tempLocalAppData);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("LOCALAPPDATA", _originalLocalAppData);
         try { if (Directory.Exists(_tempLocalAppData)) Directory.Delete(_tempLocalAppData, true); }
         catch { /* ignore */ }
     }
 
     [Fact]
+    public void TestStoreUsesAnExplicitIsolatedRoot()
+    {
+        var store = new SessionStore(_tempLocalAppData);
+        store.RootDirectory.Should().Be(_tempLocalAppData);
+        store.RootDirectory.Should().NotBe(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AudioBoarder", "sessions"));
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTrip()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var scene = new SceneGraph();
         new ScenePatchApplier().Apply(scene, new ScenePatch(new ScenePatchOperation[]
         {
@@ -60,7 +64,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task LoadLatest_NoFile_ReturnsNull()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var result = await store.LoadLatestAsync();
         result.Should().BeNull();
     }
@@ -68,7 +72,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task Clear_RemovesFile()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var scene = new SceneGraph();
         new ScenePatchApplier().Apply(scene, new ScenePatch(new ScenePatchOperation[]
         {
@@ -84,7 +88,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task ConcurrentSaves_PersistNewestSnapshotAsValidJson()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var older = new SceneGraph();
         var newer = new SceneGraph();
         var applier = new ScenePatchApplier();
@@ -110,7 +114,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task LoadLatest_MigratesUnversionedV0Payload()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var json = """
             {
               "savedAt": "2026-01-01T00:00:00Z",
@@ -138,7 +142,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task V1RoundTrip_PreservesSemanticFieldsGeometryAndSequence()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var scene = new SceneGraph();
         new ScenePatchApplier().Apply(scene, new ScenePatch(new ScenePatchOperation[]
         {
@@ -198,7 +202,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task RoundTripPreservesUnlockedGeometryForUserEditedNode()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var scene = new SceneGraph();
         new ScenePatchApplier().Apply(scene, new ScenePatch(
         [
@@ -220,7 +224,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task V1MigrationDefaultsNewSemanticFieldsSafely()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var json = """
             {
               "schemaVersion": 1,
@@ -253,7 +257,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public async Task LoadLatest_RejectsFutureSchemaVersion()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         await File.WriteAllTextAsync(
             Path.Combine(store.RootDirectory, "current.json"),
             """{"schemaVersion":999,"nodes":[],"edges":[],"groups":[],"notes":[]}""");
@@ -264,7 +268,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public void Apply_IgnoresMalformedGeometryAndInvalidIds()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var payload = new SessionPayload
         {
             Nodes =
@@ -286,7 +290,7 @@ public class SessionStoreTests : IDisposable
     [Fact]
     public void Apply_DoesNotDeduplicateDistinctPersistedIds()
     {
-        var store = new SessionStore();
+        var store = new SessionStore(_tempLocalAppData);
         var payload = new SessionPayload
         {
             Nodes =
