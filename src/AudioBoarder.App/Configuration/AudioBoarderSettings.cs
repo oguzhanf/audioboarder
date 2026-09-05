@@ -222,13 +222,11 @@ public sealed class RealtimeSettings
 
     /// <summary>
     /// Folder containing Microsoft's official Azure architecture icons, used to draw
-    /// nodes with real product artwork instead of the bundled generic icons.
+    /// nodes with additional product artwork beyond the curated bundled set.
     /// <para>
-    /// The icons are not shipped with AudioBoarder: Microsoft's terms permit copying
-    /// and displaying them only for architectural diagrams, training material and
-    /// documentation. Download the set from
-    /// https://learn.microsoft.com/azure/architecture/icons/ (which is where you
-    /// accept those terms), extract it, and point this at the folder.
+    /// The curated built-in set covers the Azure component catalog. Download a
+    /// larger or updated set from https://learn.microsoft.com/azure/architecture/icons/,
+    /// observe its architectural-use terms, and point this at the extracted folder.
     /// </para>
     /// </summary>
     public string? AzureIconsPath { get; set; }

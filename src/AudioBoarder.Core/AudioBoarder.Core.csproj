@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AudioBoarder.Tests" />
+    <EmbeddedResource Include="Assets\AzureIcons\*.svg"
+                      LogicalName="AudioBoarder.AzureIcons.%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

@@ -11,8 +11,10 @@ function report(result) {
   fetch("/verification-result", { method: "POST", body: encodeURIComponent(JSON.stringify(result)) });
 }
 
-window.addEventListener("load", () => {
+window.addEventListener("load", async () => {
   try {
+    const frontDoor = await (await fetch("/azure-front-door.svg")).text();
+    const appGateway = await (await fetch("/application-gateway.svg")).text();
     check(typeof window.loadScene === "function", "canvas module loaded");
     check(window.__messages.some(m => m.type === "ready"), "host readiness");
     host({ type: "theme", theme: "dark" });
@@ -21,16 +23,19 @@ window.addEventListener("load", () => {
       type: "component-library",
       source: "https://learn.microsoft.com/azure/architecture/",
       components: [
-        { id: "azure-openai", name: "Azure OpenAI Service", category: "Azure / AI", description: "AI models", aliases: ["llm"] },
-        { id: "sql-server", name: "SQL Server", category: "On-premises", description: "Relational database", aliases: ["mssql"] },
+        { id: "azure-front-door", name: "Azure Front Door", category: "Azure / Networking",
+          description: "Global application delivery", aliases: ["front door"], svg: frontDoor, iconIsOfficial: true },
+        { id: "application-gateway", name: "Azure Application Gateway", category: "Azure / Networking",
+          description: "Regional application gateway", aliases: ["app gateway"], svg: appGateway, iconIsOfficial: true },
       ],
     });
     check(document.querySelectorAll(".component-item").length === 2, "string component library message");
     const search = document.getElementById("componentSearch");
-    search.value = "mssql";
+    check(document.querySelectorAll(".component-preview").length === 2, "visual icons in library");
+    search.value = "app gateway";
     search.dispatchEvent(new Event("input"));
     check(document.querySelectorAll(".component-item").length === 1 &&
-      document.querySelector(".component-item").dataset.componentId === "sql-server", "component alias search");
+      document.querySelector(".component-item").dataset.componentId === "application-gateway", "component alias search");
 
     const scene = {
       sceneRevision: 7, intent: "security_zero_trust_architecture",
@@ -66,17 +71,28 @@ window.addEventListener("load", () => {
     const transform = viewport.getAttribute("transform");
     const matrix = viewport.getCTM();
     const transfer = new DataTransfer();
-    transfer.setData("application/x-audioboarder-component", "sql-server");
+    transfer.setData("application/x-audioboarder-component", "application-gateway");
     stage.dispatchEvent(new DragEvent("drop", { dataTransfer: transfer, clientX: rect.left + 250,
       clientY: rect.top + 210, bubbles: true, cancelable: true }));
     const dropped = window.__messages.find(m => m.type === "component-drop");
-    check(dropped?.componentId === "sql-server" &&
+    check(dropped?.componentId === "application-gateway" &&
       Math.abs(dropped.x - (250 - matrix.e) / matrix.a) < .01 &&
       Math.abs(dropped.y - (210 - matrix.f) / matrix.d) < .01, "drop coordinates account for sidebar and zoom");
-    host({ ...scene, nodes: [...scene.nodes, { id: "manual", label: "SQL Server", kind: "data_store",
-      centerX: dropped.x, centerY: dropped.y, width: 190, height: 70, locked: true }] });
+    host({ ...scene, nodes: [...scene.nodes, { id: "manual", label: "Azure Application Gateway", kind: "technology",
+      centerX: dropped.x, centerY: dropped.y, width: 260, height: 116, locked: true, svg: appGateway,
+      desc: "Regional layer 7 load balancer and web application firewall." }] });
     check(viewport.getAttribute("transform") === transform, "manual drop does not trigger auto-fit");
     check(document.querySelector(".zoom").getBoundingClientRect().left >= rect.left, "zoom controls outside library");
+    const manual = document.querySelector('.node[data-id="manual"]');
+    const manualCard = manual.querySelector(".node-card").getBBox();
+    check(manual.querySelector(".node-art image")?.getAttribute("href") ===
+      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(appGateway), "official artwork preserved unchanged");
+    for (const selector of [".node-label", ".node-desc"]) {
+      const text = manual.querySelector(selector).getBBox();
+      check(text.x >= manualCard.x && text.x + text.width <= manualCard.x + manualCard.width &&
+        text.y >= manualCard.y && text.y + text.height <= manualCard.y + manualCard.height,
+        `${selector} contained in node card`);
+    }
     host({ type: "theme", theme: "light" });
     check(document.documentElement.dataset.theme === "light", "light theme");
     check(window.__errors.length === 0, "no browser errors");

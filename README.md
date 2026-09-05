@@ -302,19 +302,21 @@ mechanisms keep the board from degenerating into identical rectangles:
 **Icons.** Every node carries a vector icon drawn inside its shape. `IconRegistry`
 resolves one from the label for ~140 known technologies and concepts — Purview, Fabric,
 Power BI, Defender, Entra, Copilot, SQL, Kubernetes — falling back to a per-kind default.
-Icons are embedded [Lucide](https://lucide.dev) SVG paths (ISC licence), so they render
-crisply at any zoom, take the node's own colour, and work fully offline with no network
+Fallback icons are embedded [Lucide](https://lucide.dev) SVG paths (ISC licence), so they render
+crisply at any zoom and work fully offline with no network
 fetch. Matching is whole-word, so "Staging environment" doesn't pick up a price tag.
 
-### Official Azure icons (optional)
+### Official Azure architecture icons
 
-For diagrams of Azure workloads you can have AudioBoarder draw nodes with Microsoft's
-real product artwork instead of the generic icons.
+The library and canvas share a curated, embedded set of Microsoft's official Azure
+architecture SVGs. Front Door, Application Gateway, Load Balancer, Firewall and other
+Azure services have recognizable product artwork without any additional setup.
+Other components use meaningful architecture symbols, not empty placeholder boxes.
 
-The icon set is **not** shipped with AudioBoarder. Microsoft's terms permit copying and
-displaying the icons *only* for architectural diagrams, training material and
-documentation, so you download the set yourself — which is where you accept those terms
-— and point the app at it:
+The selected Microsoft SVGs are distributed unchanged only for architectural diagrams
+and the component previews used to build them. Their source, terms and hashes are
+included with the assets. Product names remain beside icons. An optional larger or
+updated local set can be configured:
 
 1. Download the SVG icons from
    [Azure architecture icons](https://learn.microsoft.com/azure/architecture/icons/).
@@ -326,7 +328,9 @@ documentation, so you download the set yourself — which is where you accept th
 ```
 
 Icons are rendered verbatim — never cropped, flipped, rotated or recoloured — per those
-terms. If the path is missing or unreadable the app silently uses its bundled icons.
+terms. If the optional path is absent, the embedded artwork and architecture symbols
+remain available. Card labels and descriptions wrap inside the node bounds, and new
+library drops are sized from their content.
 
 **System boundaries.** Containers nest the way real topologies do — subscription >
 virtual network > subnet > resource — each drawn as a labelled box with an optional

@@ -5,13 +5,10 @@ namespace AudioBoarder.Core.Scene;
 /// <summary>
 /// Optional index over Microsoft's official Azure architecture icons.
 /// <para>
-/// The icons are NOT redistributed with AudioBoarder. Microsoft's terms permit
-/// copying and displaying them "only for the permitted use" — architectural
-/// diagrams, training material and documentation — so the user downloads the set
-/// themselves from
-/// <see href="https://learn.microsoft.com/azure/architecture/icons/"/> (accepting
-/// the terms at that point) and points the app at the extracted folder. When no
-/// folder is configured the app falls back to its bundled Lucide icons.
+/// This optional user-supplied set extends or overrides the curated artwork
+/// embedded by <see cref="ComponentIconVisuals"/>. Microsoft's icons are used
+/// only in architectural diagrams and their library previews, under the terms at
+/// <see href="https://learn.microsoft.com/azure/architecture/icons/"/>.
 /// </para>
 /// <para>
 /// Microsoft's guidance also requires that icons are never cropped, flipped,

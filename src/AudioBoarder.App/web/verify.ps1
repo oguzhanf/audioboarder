@@ -32,6 +32,10 @@ $html = $encoding.GetString($assets["/index.html"]).Replace("<head>", "<head>`n$
 $html = $html.Replace("</body>", '<pre id="verification-result"></pre><script type="module" src="/verify-browser.js"></script></body>')
 $assets["/verify.html"] = $encoding.GetBytes($html)
 $assets["/verify-browser.js"] = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot "verify-browser.js"))
+foreach ($icon in @("azure-front-door", "application-gateway")) {
+    $assets["/$icon.svg"] = [IO.File]::ReadAllBytes(
+        (Join-Path $PSScriptRoot "..\..\AudioBoarder.Core\Assets\AzureIcons\$icon.svg"))
+}
 $server = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $process = $null
 try {

@@ -53,9 +53,7 @@ public static class SceneToCanvasJson
                         CenterY = layout.Nodes[n.Id].CenterY,
                         Width = layout.Nodes[n.Id].Width,
                         Height = layout.Nodes[n.Id].Height,
-                        // Official Azure artwork when the user has pointed us at the
-                        // icon set; the renderer falls back to a bundled icon otherwise.
-                        Svg = ResolveOfficialIcon(icons, n.Label),
+                        Svg = ComponentIconVisuals.ForNode(n, icons).Svg,
                     })
                     .ToArray(),
                 Edges = graph.Edges.Values
@@ -99,16 +97,6 @@ public static class SceneToCanvasJson
         }
 
         return JsonSerializer.Serialize(payload, Options);
-    }
-
-    /// <summary>
-    /// Official Azure icon markup for a label, or null to fall back. Icons are sent
-    /// verbatim: Microsoft's terms forbid cropping, flipping, rotating or recolouring.
-    /// </summary>
-    private static string? ResolveOfficialIcon(AzureIconLibrary icons, string? label)
-    {
-        var path = icons.FindPath(label);
-        return path is null ? null : icons.ReadSvg(path);
     }
 
     /// <summary>NodeKind.DataStore -> "data_store", matching the LLM DSL vocabulary.</summary>

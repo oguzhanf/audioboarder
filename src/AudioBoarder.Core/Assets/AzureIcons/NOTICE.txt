@@ -1,0 +1,16 @@
+Microsoft Azure architecture icons
+Source: Azure Architecture Center, Azure Public Service Icons V24
+https://learn.microsoft.com/azure/architecture/icons/
+https://arch-center.azureedge.net/icons/Azure_Public_Service_Icons_V24.zip
+
+These Microsoft icons are included unchanged only for architectural diagrams
+and their component-library previews. They do not represent AudioBoarder.
+
+Microsoft permits the use of these icons in architectural diagrams, training
+materials, or documentation. You can copy, distribute, and display the icons
+only for the permitted use unless granted explicit permission by Microsoft.
+Microsoft reserves all other rights.
+
+Do not crop, flip, rotate, distort, recolor, or change the icon shape.
+Display the product name near its icon. All other library symbols are the
+bundled Lucide architecture symbols, not Microsoft product logos.

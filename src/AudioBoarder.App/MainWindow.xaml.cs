@@ -258,6 +258,7 @@ public partial class MainWindow : FluentWindow
     {
         var component = AudioBoarder.Core.Scene.MicrosoftComponentCatalog.Find(e.Change.ComponentId);
         if (component is null) return;
+        var size = AudioBoarder.Core.Scene.MicrosoftComponentCatalog.MeasureCard(component);
 
         var node = new AudioBoarder.Core.Scene.SceneNode
         {
@@ -268,8 +269,8 @@ public partial class MainWindow : FluentWindow
             Description = component.Description,
             X = e.Change.X,
             Y = e.Change.Y,
-            Width = 190,
-            Height = 70,
+            Width = size.Width,
+            Height = size.Height,
         };
 
         if (_viewModel.Scene.TryAddUserNode(node))

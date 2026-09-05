@@ -743,6 +743,9 @@ public partial class MainViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(payload);
         _sessions.Apply(Scene, payload);
+        // Repair only the exact undersized defaults produced by the first library
+        // release; keep positions and every other saved/user-defined size unchanged.
+        var repairedDrops = MicrosoftComponentCatalog.RepairLegacyDropSizes(Scene);
         // Only legacy v0 sessions need geometry modernization. V1 geometry is an
         // explicit user/session field and must round-trip without being overwritten.
         if (payload.WasMigratedFromV0)
@@ -758,6 +761,7 @@ public partial class MainViewModel : ObservableObject
         ExportExcalidrawCommand.NotifyCanExecuteChanged();
         RefineDiagramCommand.NotifyCanExecuteChanged();
         StatusMessage = $"Restored session from {payload.SavedAt.LocalDateTime:g}.";
+        if (repairedDrops > 0) NotifyUserSceneEdited();
     }
 
     public void NotifyUserSceneEdited()

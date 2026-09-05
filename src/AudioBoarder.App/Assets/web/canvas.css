@@ -153,12 +153,18 @@ body.library-collapsed .component-source { display: none; }
   font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
 }
 .component-item {
+  display: flex; align-items: center; gap: 10px;
   padding: 8px 9px; border: 1px solid transparent; border-radius: 7px;
   background: var(--plate); color: var(--ink); cursor: grab; user-select: none;
 }
+.component-preview { width: 38px; height: 38px; padding: 4px; flex: 0 0 38px; object-fit: contain; background: #fff; border-radius: 6px; }
+.component-copy { min-width: 0; }
+.component-copy strong { overflow-wrap: anywhere; }
+.component-item .component-copy span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.component-results { scrollbar-color: var(--ink-dim) var(--plate); scrollbar-width: thin; }
 .component-item:hover, .component-item:focus { border-color: var(--accent); outline: none; }
 .component-item strong { display: block; font-size: 12px; }
-.component-item span { display: block; margin-top: 2px; color: var(--ink-dim); font-size: 10px; line-height: 1.25; }
+.component-item span { display: block; margin-top: 3px; color: var(--ink-mid); font-size: 11px; line-height: 1.35; }
 .component-source { color: var(--accent); font-size: 10px; text-decoration: none; }
 .drop-target { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
@@ -215,7 +221,7 @@ body.library-collapsed .component-source { display: none; }
 .node-desc {
   font-size: 11px;
   font-weight: 450;
-  fill: var(--ink-dim);
+  fill: var(--ink-mid);
   dominant-baseline: middle;
 }
 .node-icon {

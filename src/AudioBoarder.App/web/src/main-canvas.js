@@ -5,7 +5,7 @@
     host -> js : postMessage(json)  /  window.loadScene(json)
     js -> host : { type: "ready" | "error" }
 */
-import { renderScene, bounds } from "./canvas.js";
+import { renderScene, bounds, iconDataUrl } from "./canvas.js";
 
 const svg = document.getElementById("canvas");
 const stage = document.getElementById("stage");
@@ -77,7 +77,17 @@ function renderComponentLibrary() {
     name.textContent = item.name;
     const description = document.createElement("span");
     description.textContent = item.description;
-    entry.append(name, description);
+    const preview = document.createElement("img");
+    preview.className = "component-preview";
+    preview.src = iconDataUrl(item.svg);
+    preview.alt = "";
+    preview.draggable = false;
+    preview.title = item.iconIsOfficial ? "Official Microsoft architecture icon" : "Architecture symbol";
+    const copy = document.createElement("div");
+    copy.className = "component-copy";
+    copy.append(name, description);
+    entry.append(preview, copy);
+    entry.setAttribute("aria-label", `Drag ${item.name} onto the canvas`);
     entry.addEventListener("dragstart", (event) => {
       event.dataTransfer.setData("application/x-audioboarder-component", item.id);
       event.dataTransfer.effectAllowed = "copy";

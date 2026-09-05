@@ -34,3 +34,6 @@
 # out of EOL conversion (rewriting LF to CRLF would churn every byte of it).
 src/AudioBoarder.App/Assets/web/** linguist-vendored
 src/AudioBoarder.App/Assets/web/** -text
+
+# Official architecture SVGs remain byte-identical to Microsoft's permitted-use originals.
+src/AudioBoarder.Core/Assets/AzureIcons/*.svg -text linguist-vendored

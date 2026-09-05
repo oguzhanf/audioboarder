@@ -123,6 +123,11 @@ $noticeLines.Add("")
 $noticeLines.Add("This inventory is generated from resolved dependency manifests. The offline canvas has no JavaScript package dependencies.")
 $noticeLines.Add("License texts remain available from each package's source or package page.")
 $noticeLines.Add("")
+$iconNotice = Join-Path $PSScriptRoot "..\src\AudioBoarder.Core\Assets\AzureIcons\NOTICE.txt"
+if (Test-Path -LiteralPath $iconNotice) {
+    $noticeLines.Add([IO.File]::ReadAllText($iconNotice))
+    $noticeLines.Add("")
+}
 foreach ($package in $packages.Values | Sort-Object name, versionInfo) {
     $noticeLines.Add("$($package.name) $($package.versionInfo) | $($package.licenseDeclared) | $($package.downloadLocation)")
 }

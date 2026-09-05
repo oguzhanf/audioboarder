@@ -3,6 +3,50 @@
   converts centres to SVG top-left coordinates and never performs layout.
 */
 const SVG = "http://www.w3.org/2000/svg";
+const textMeasure = document.createElement("canvas").getContext("2d");
+
+export function iconDataUrl(svg) {
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg ||
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="#0078d4" stroke-width="2" d="M4 4h16v16H4zM4 10h16M10 10v10"/></svg>');
+}
+
+function wrappedLines(text, width, font, maximum) {
+  if (!text || maximum < 1) return [];
+  textMeasure.font = font;
+  const lines = [];
+  let line = "";
+  for (const word of String(text).trim().split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && textMeasure.measureText(candidate).width > width) {
+      lines.push(line);
+      line = "";
+    }
+    for (const letter of (line ? ` ${word}` : word)) {
+      if (line && textMeasure.measureText(line + letter).width > width) {
+        lines.push(line);
+        line = "";
+      }
+      line += letter;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > maximum) {
+    lines.length = maximum;
+    let last = lines[maximum - 1];
+    while (last && textMeasure.measureText(last + "\u2026").width > width) last = last.slice(0, -1);
+    lines[maximum - 1] = last + "\u2026";
+  }
+  return lines;
+}
+
+function setTextLines(element, lines, x, y, lineHeight) {
+  element.replaceChildren();
+  lines.forEach((line, index) => {
+    const span = el("tspan", { x, y: y + index * lineHeight });
+    span.textContent = line;
+    element.appendChild(span);
+  });
+}
 
 const ICONS = {
   box: "M4 4h16v16H4z",
@@ -247,24 +291,31 @@ function updateNode(group, item) {
   setAttrs(card, { class: "node-card", x, y, width: item.width, height: item.height, rx: 8 });
   icon.replaceChildren();
   if (item.svg) {
-    setAttrs(icon, { class: "node-art", transform: `translate(${x + 10},${item.centerY - 13})` });
-    const parsed = new DOMParser().parseFromString(item.svg, "image/svg+xml").documentElement;
-    if (parsed?.nodeName.toLowerCase() === "svg") {
-      parsed.setAttribute("width", "26");
-      parsed.setAttribute("height", "26");
-      icon.appendChild(document.importNode(parsed, true));
-    }
+    setAttrs(icon, { class: "node-art", transform: `translate(${x + 12},${item.centerY - 20})` });
+    icon.appendChild(el("rect", { width: 40, height: 40, rx: 6, fill: "#fff" }));
+    icon.appendChild(el("image", { href: iconDataUrl(item.svg), x: 4, y: 4,
+      width: 32, height: 32, preserveAspectRatio: "xMidYMid meet" }));
   } else {
     setAttrs(icon, { class: "node-glyph", transform: `translate(${x + 12},${item.centerY - 11}) scale(.92)` });
     icon.appendChild(el("path", { class: "node-icon", d: ICONS[iconName(item)] }));
   }
-  setAttrs(label, {
-    class: "node-label", x: x + 42,
-    y: item.desc ? item.centerY - 8 : item.centerY,
-  });
-  label.textContent = item.label || "";
-  setAttrs(desc, { class: "node-desc", x: x + 42, y: item.centerY + 11 });
-  desc.textContent = item.desc || "";
+  const textX = x + 64;
+  const textWidth = Math.max(12, item.width - 78);
+  const availableHeight = Math.max(16, item.height - 24);
+  setAttrs(label, { class: "node-label" });
+  setAttrs(desc, { class: "node-desc" });
+  const labelStyle = getComputedStyle(label);
+  const descStyle = getComputedStyle(desc);
+  const labelLines = wrappedLines(item.label, textWidth,
+    `${labelStyle.fontWeight} ${labelStyle.fontSize} ${labelStyle.fontFamily}`,
+    Math.min(2, Math.floor(availableHeight / 16)));
+  const descLines = wrappedLines(item.desc, textWidth,
+    `${descStyle.fontWeight} ${descStyle.fontSize} ${descStyle.fontFamily}`,
+    Math.min(3, Math.floor((availableHeight - labelLines.length * 16 - 4) / 14)));
+  const textHeight = labelLines.length * 16 + (descLines.length ? 4 + descLines.length * 14 : 0);
+  const textTop = item.centerY - textHeight / 2;
+  setTextLines(label, labelLines, textX, textTop + 8, 16);
+  setTextLines(desc, descLines, textX, textTop + labelLines.length * 16 + 11, 14);
   setAttrs(pin, { class: "node-pin", cx: x + item.width - 9, cy: y + 9, r: 3 });
   title.textContent = `${item.desc ? `${item.label} — ${item.desc}` : item.label || ""}. ` +
     `${item.locked ? "Pinned" : "Unpinned"}; double-click or press Enter to toggle.`;

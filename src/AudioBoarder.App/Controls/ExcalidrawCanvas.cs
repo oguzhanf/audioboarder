@@ -26,7 +26,6 @@ public sealed class ExcalidrawCanvas : UserControl
     private string? _pendingJson;
     private string _theme = "light";
     private bool _initFailed;
-    private readonly string _componentLibraryJson = MicrosoftComponentCatalog.ToCanvasJson();
 
     public SceneGraph? Scene { get; set; }
 
@@ -101,7 +100,7 @@ public sealed class ExcalidrawCanvas : UserControl
                     // Push the theme before the scene so the first paint is correct.
                     _web.CoreWebView2.PostWebMessageAsString(
                         $"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
-                    _web.CoreWebView2.PostWebMessageAsString(_componentLibraryJson);
+                    _web.CoreWebView2.PostWebMessageAsString(MicrosoftComponentCatalog.ToCanvasJson(AzureIcons));
                     if (_pendingJson is not null)
                     {
                         _web.CoreWebView2.PostWebMessageAsString(_pendingJson);

@@ -100,6 +100,16 @@ try {
     $guid = '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'
     $privateMaterial =
         '(?i)(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AccountKey=|SharedAccessSignature=)'
+    $iconHashes = @{}
+    $iconManifest = Join-Path $root "src\AudioBoarder.Core\Assets\AzureIcons\SHA256SUMS.txt"
+    if (Test-Path -LiteralPath $iconManifest) {
+        foreach ($line in Get-Content -LiteralPath $iconManifest) {
+            if ($line -notmatch '^(?<hash>[0-9a-f]{64}) \*(?<name>[a-z0-9-]+\.svg)$') {
+                throw "Invalid architecture icon manifest."
+            }
+            $iconHashes[$Matches.name] = $Matches.hash
+        }
+    }
 
     foreach ($relative in $tracked) {
         $path = Join-Path $root $relative
@@ -135,12 +145,18 @@ try {
                 $relative -eq "src/AudioBoarder.App/app.manifest" -or
                 $relative -eq "src/AudioBoarder.App/Updates/UpdateIntegrity.cs" -or
                 $relative -eq "scripts/scan-repository.ps1"
+            # Microsoft's unchanged SVGs use GUIDs as drawing element/gradient IDs.
+            # Only byte-identical assets pinned in the architecture-icon manifest qualify.
+            $iconName = [IO.Path]::GetFileName($relative)
+            $pinnedIcon = $relative.StartsWith("src/AudioBoarder.Core/Assets/AzureIcons/") -and
+                $iconHashes.ContainsKey($iconName) -and
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ieq $iconHashes[$iconName]
             $onlyZeroPlaceholder = [Regex]::Matches($text, $guid) |
                 ForEach-Object Value |
                 Where-Object { $_ -ne "00000000-0000-0000-0000-000000000000" } |
                 Measure-Object |
                 Select-Object -ExpandProperty Count
-            if (!$allowedInstallerGuid -and !$structuralGuidFile -and $onlyZeroPlaceholder -gt 0) {
+            if (!$allowedInstallerGuid -and !$structuralGuidFile -and !$pinnedIcon -and $onlyZeroPlaceholder -gt 0) {
                 $findings.Add("${relative}: unexpected literal GUID")
             }
         }

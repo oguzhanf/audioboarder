@@ -270,14 +270,20 @@ public sealed class SceneToExcalidrawConverter
         SceneNode node, NodeBox box, string strokeColor, Dictionary<string, object> files, long now)
     {
         var iconName = node.EffectiveIconName;
-        var fileId = $"icon_{iconName}_{Sanitize(strokeColor)}";
+        var visual = ComponentIconVisuals.ForNode(node);
+        var svgBytes = System.Text.Encoding.UTF8.GetBytes(visual.Svg);
+        var fileId = visual.IsOfficial
+            ? "microsoft_" + System.Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(svgBytes))[..16]
+            : $"icon_{iconName}_{Sanitize(strokeColor)}";
         if (!files.ContainsKey(fileId))
         {
             files[fileId] = new ExcalidrawFile
             {
                 Id = fileId,
                 MimeType = "image/svg+xml",
-                DataURL = IconRegistry.RenderDataUrl(iconName, strokeColor, IconSize),
+                DataURL = visual.IsOfficial
+                    ? "data:image/svg+xml;base64," + System.Convert.ToBase64String(svgBytes)
+                    : IconRegistry.RenderDataUrl(iconName, strokeColor, IconSize),
                 Created = now,
             };
         }

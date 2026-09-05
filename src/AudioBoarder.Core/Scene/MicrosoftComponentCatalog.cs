@@ -102,6 +102,33 @@ public static class MicrosoftComponentCatalog
             ? null
             : All.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.Ordinal));
 
+    public static (double Width, double Height) MeasureCard(MicrosoftComponentDefinition component)
+    {
+        var size = NodeSizer.Measure(component.Name, component.Description, true, component.Kind);
+        return (Math.Max(260, size.Width), Math.Max(104, size.Height));
+    }
+
+    public static int RepairLegacyDropSizes(SceneGraph scene)
+    {
+        var repaired = 0;
+        lock (scene.SyncRoot)
+        {
+            foreach (var node in scene.Nodes.Values)
+            {
+                if (!node.Locked || node.Width != 190 || node.Height != 70 ||
+                    !node.X.HasValue || !node.Y.HasValue) continue;
+                var component = All.FirstOrDefault(c =>
+                    node.Id.StartsWith($"user-{c.Id}-", StringComparison.Ordinal) &&
+                    node.Label == c.Name && node.Description == c.Description);
+                if (component is null) continue;
+                var size = MeasureCard(component);
+                if (scene.TryUpdateNodeGeometry(node.Id, node.X.Value, node.Y.Value, size.Width, size.Height, true))
+                    repaired++;
+            }
+        }
+        return repaired;
+    }
+
     public static IReadOnlyList<MicrosoftComponentDefinition> Search(string? query, int limit = 40)
     {
         if (limit <= 0) return [];
@@ -117,11 +144,20 @@ public static class MicrosoftComponentCatalog
             .ToArray();
     }
 
-    public static string ToCanvasJson() => JsonSerializer.Serialize(new
+    public static string ToCanvasJson(AzureIconLibrary? icons = null) => JsonSerializer.Serialize(new
     {
         type = "component-library",
         source = SourceUrl,
-        components = All,
+        components = All.Select(component =>
+        {
+            var visual = ComponentIconVisuals.ForComponent(component, icons);
+            return new
+            {
+                component.Id, component.Name, component.Category, component.Kind,
+                component.Icon, component.Description, component.Aliases,
+                visual.Svg, IconIsOfficial = visual.IsOfficial,
+            };
+        }),
     }, JsonOptions);
 
     public static string ToPromptVocabulary() =>

@@ -63,6 +63,10 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Resource>
     <!-- Vendored, self-contained SVG canvas bundle (offline). -->
+    <None Include="..\AudioBoarder.Core\Assets\AzureIcons\NOTICE.txt"
+          Link="Assets\AzureIcons\NOTICE.txt"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
     <None Update="Assets\web\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
