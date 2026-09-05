@@ -59,7 +59,7 @@ public class AzureCredentialProviderTests
             RestoreResult = new AzureCredentialSession(
                 credential,
                 "  user@example.com\r\n",
-                "11111111-1111-1111-1111-111111111111.tenant"),
+                $"{Guid.Empty}.tenant"),
         };
         var provider = CreateProvider(backend);
 
@@ -69,7 +69,7 @@ public class AzureCredentialProviderTests
         provider.Snapshot.Should().Be(new AzureCredentialSnapshot(
             AzureCredentialState.SignedIn,
             "user@example.com"));
-        provider.UserObjectId.Should().Be("11111111-1111-1111-1111-111111111111");
+        provider.UserObjectId.Should().Be(Guid.Empty.ToString());
         provider.TryGetSignedInCredential(out var restoredCredential).Should().BeTrue();
         restoredCredential.Should().BeSameAs(credential);
     }

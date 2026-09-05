@@ -56,8 +56,10 @@ public sealed class SettingsService
             Merge(defaults, ReadObject(_portableLocalPath));
         var local = ReadObject(_localPath);
         Merge(defaults, local);
-        return defaults["AudioBoarder"]?.Deserialize<AudioBoarderSettings>(SerializerOptions)
-               ?? new AudioBoarderSettings();
+        var settings = defaults["AudioBoarder"]?.Deserialize<AudioBoarderSettings>(SerializerOptions)
+                       ?? new AudioBoarderSettings();
+        settings.ApplyActiveModelAccount();
+        return settings;
     }
 
     public async Task SaveAsync(
@@ -90,6 +92,8 @@ public sealed class SettingsService
         var transcription = EnsureObject(root, "CloudTranscription");
         Set(transcription, "Backend", settings.CloudTranscription.Backend);
         Set(transcription, "DeploymentName", settings.CloudTranscription.DeploymentName);
+        Set(transcription, "Endpoint", settings.CloudTranscription.Endpoint);
+        Set(transcription, "Model", settings.CloudTranscription.Model);
         Set(transcription, "Language", settings.CloudTranscription.Language);
         Set(transcription, "WindowSeconds", settings.CloudTranscription.WindowSeconds);
         Set(transcription, "SilenceFlushMs", settings.CloudTranscription.SilenceFlushMs);
@@ -105,9 +109,12 @@ public sealed class SettingsService
         var azure = EnsureObject(root, "AzureOpenAI");
         Set(azure, "TenantId", settings.AzureOpenAI.TenantId);
         Set(azure, "SubscriptionId", settings.AzureOpenAI.SubscriptionId);
+        Set(azure, "AccountResourceId", settings.AzureOpenAI.AccountResourceId);
         Set(azure, "Endpoint", settings.AzureOpenAI.Endpoint);
         Set(azure, "DeploymentName", settings.AzureOpenAI.DeploymentName);
         Set(azure, "FallbackDeploymentName", settings.AzureOpenAI.FallbackDeploymentName);
+        Set(azure, "Model", settings.AzureOpenAI.Model);
+        Set(azure, "FallbackModel", settings.AzureOpenAI.FallbackModel);
         Set(azure, "UseManagedIdentity", settings.AzureOpenAI.UseManagedIdentity);
         Set(azure, "AutoDiscover", settings.AzureOpenAI.AutoDiscover);
         Set(azure, "PreferredRegion", settings.AzureOpenAI.PreferredRegion);
@@ -116,6 +123,8 @@ public sealed class SettingsService
             "ApiKey",
             secrets.AzureOpenAIApiKey,
             secrets.ClearAzureOpenAIApiKey);
+        Set(root, "ActiveModelAccountId", settings.ActiveModelAccountId);
+        Set(root, "ModelAccounts", settings.ModelAccounts);
 
         var speech = EnsureObject(root, "AzureSpeech");
         Set(speech, "Region", settings.AzureSpeech.Region);
@@ -139,6 +148,8 @@ public sealed class SettingsService
         var images = EnsureObject(root, "ImageGeneration");
         Set(images, "Enabled", settings.ImageGeneration.Enabled);
         Set(images, "DeploymentName", settings.ImageGeneration.DeploymentName);
+        Set(images, "Endpoint", settings.ImageGeneration.Endpoint);
+        Set(images, "Model", settings.ImageGeneration.Model);
 
         var directory = Path.GetDirectoryName(_localPath);
         if (!string.IsNullOrEmpty(directory))

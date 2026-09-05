@@ -3,8 +3,10 @@ using System.Windows;
 using System.Windows.Input;
 using System.ComponentModel;
 using AudioBoarder.App.Configuration;
+using AudioBoarder.App.Auth;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
+using AudioBoarder.Services.LLM;
 using Microsoft.Extensions.Options;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
@@ -24,6 +26,9 @@ public partial class MainWindow : FluentWindow
     private readonly SettingsService _settingsService;
     private readonly LocalDataService _localDataService;
     private readonly ILocalDataDeletionConfirmation _deletionConfirmation;
+    private readonly IAzureModelInventory _inventory;
+    private readonly IAzureCredentialProvider _credentials;
+    private readonly IAzureProvisioningService _provisioning;
     private string _themePreference = "System";
     private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
@@ -34,13 +39,19 @@ public partial class MainWindow : FluentWindow
         IOptions<AudioBoarderSettings> settings,
         SettingsService settingsService,
         LocalDataService localDataService,
-        ILocalDataDeletionConfirmation deletionConfirmation)
+        ILocalDataDeletionConfirmation deletionConfirmation,
+        IAzureModelInventory inventory,
+        IAzureCredentialProvider credentials,
+        IAzureProvisioningService provisioning)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _settingsService = settingsService;
         _localDataService = localDataService;
         _deletionConfirmation = deletionConfirmation;
+        _inventory = inventory;
+        _credentials = credentials;
+        _provisioning = provisioning;
         DataContext = viewModel;
         ApplyThemePreference(settings.Value.Theme);
         Loaded += OnLoaded;
@@ -49,6 +60,7 @@ public partial class MainWindow : FluentWindow
         Whiteboard.Scene = viewModel.Scene;
         Whiteboard.AzureIcons = azureIcons;
         Whiteboard.UserSceneChanged += OnWhiteboardUserSceneChanged;
+        Whiteboard.ComponentDropped += OnWhiteboardComponentDropped;
         Whiteboard.Refresh();
         viewModel.SceneInvalidated += (_, _) =>
         {
@@ -88,6 +100,7 @@ public partial class MainWindow : FluentWindow
         ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
 
         Whiteboard.UserSceneChanged -= OnWhiteboardUserSceneChanged;
+        Whiteboard.ComponentDropped -= OnWhiteboardComponentDropped;
     }
 
     private void OnShowWelcome(object sender, RoutedEventArgs e)
@@ -134,13 +147,17 @@ public partial class MainWindow : FluentWindow
     private async void OnOpenSettingsMenuItem(object sender, RoutedEventArgs e)
         => await ShowSettingsAsync();
 
-    private async Task ShowSettingsAsync()
+    private async void OnConfigureAzure(object sender, RoutedEventArgs e)
+        => await ShowSettingsAsync(showAzure: true);
+
+    private async Task ShowSettingsAsync(bool showAzure = false)
     {
         var window = new SettingsWindow(
-            _settingsService, _localDataService, _deletionConfirmation)
+            _settingsService, _localDataService, _deletionConfirmation, _inventory, _credentials, _provisioning)
         {
             Owner = this,
         };
+        if (showAzure) window.ShowAzureSection();
 
         if (window.ShowDialog() != true)
             return;
@@ -203,6 +220,31 @@ public partial class MainWindow : FluentWindow
         if (updated)
         {
             _viewModel.NotifyUserSceneEdited();
+        }
+    }
+
+    private void OnWhiteboardComponentDropped(object? sender, CanvasComponentDroppedEventArgs e)
+    {
+        var component = AudioBoarder.Core.Scene.MicrosoftComponentCatalog.Find(e.Change.ComponentId);
+        if (component is null) return;
+
+        var node = new AudioBoarder.Core.Scene.SceneNode
+        {
+            Id = $"user-{component.Id}-{Guid.NewGuid():N}",
+            Kind = component.Kind,
+            Label = component.Name,
+            Icon = component.Icon,
+            Description = component.Description,
+            X = e.Change.X,
+            Y = e.Change.Y,
+            Width = 190,
+            Height = 70,
+        };
+
+        if (_viewModel.Scene.TryAddUserNode(node))
+        {
+            _viewModel.NotifyUserSceneEdited();
+            Whiteboard.Refresh();
         }
     }
 

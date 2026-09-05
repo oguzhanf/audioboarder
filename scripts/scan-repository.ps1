@@ -7,8 +7,19 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
-function Test-IsCredentialPlaceholder([string]$Value) {
+function Test-IsCredentialPlaceholder([string]$Value, [string]$FilePath = "") {
     $candidate = $Value.Trim().Trim('"', "'")
+    # These exact values are historical HTTP/settings test fixtures, not credentials.
+    # Keep the exception file-scoped so production assignments remain findings.
+    $fixturePath = $FilePath.Replace('\', '/')
+    if ($fixturePath -eq "tests/AudioBoarder.Tests/App/SettingsServiceTests.cs" -and
+        @("existing-openai", "existing-speech", "old-openai", "old-speech", "portable-secret") -ccontains $candidate) {
+        return $true
+    }
+    if ($fixturePath -eq "tests/AudioBoarder.Tests/Transcription/CloudTranscriptionReliabilityTests.cs" -and
+        @("expired-key", "rejected-key", "stale-key", "current-key") -ccontains $candidate) {
+        return $true
+    }
     if ([string]::IsNullOrWhiteSpace($candidate) -or
         $candidate -match '^(?i:null|none|nil)$') {
         return $true
@@ -26,7 +37,7 @@ function Test-IsCredentialPlaceholder([string]$Value) {
     $false
 }
 
-function Find-CredentialAssignments([string]$Text, [string]$Label) {
+function Find-CredentialAssignments([string]$Text, [string]$Label, [string]$FilePath = $Label) {
     $findings = [System.Collections.Generic.List[string]]::new()
     $quotedCredentialName =
         '(?:[A-Za-z0-9_-]*(?:Api[_-]?Key|(?:Api|Access|Auth|Bearer|Refresh|Client)[_-]?Token|Client[_-]?Secret))'
@@ -40,7 +51,7 @@ function Find-CredentialAssignments([string]$Text, [string]$Label) {
     foreach ($pattern in @($quotedAssignment, $unquotedAssignment)) {
         foreach ($match in [Regex]::Matches($Text, $pattern)) {
             $value = $match.Groups["value"].Value
-            if (!(Test-IsCredentialPlaceholder $value)) {
+            if (!(Test-IsCredentialPlaceholder $value $FilePath)) {
                 $findings.Add("${Label}: non-placeholder API key/token/client secret")
             }
         }
@@ -58,10 +69,13 @@ function Invoke-ScannerSelfTest {
         @{ Text = '{ "ApiKey": "" }'; Detect = $false },
         @{ Text = 'ApiKey = "test-key"'; Detect = $false },
         @{ Text = 'AUDIOBOARDER_LIVE_API_KEY: ${{ secrets.AUDIOBOARDER_LIVE_API_KEY }}'; Detect = $false },
-        @{ Text = 'client_secret = <set-in-secret-store>'; Detect = $false }
+        @{ Text = 'client_secret = <set-in-secret-store>'; Detect = $false },
+        @{ Text = 'ApiKey = "expired-key"'; Path = 'tests/AudioBoarder.Tests/Transcription/CloudTranscriptionReliabilityTests.cs'; Detect = $false },
+        @{ Text = 'ApiKey = "expired-key"'; Path = 'src/Production.cs'; Detect = $true },
+        @{ Text = 'ApiKey = "actual-secret-1234"'; Path = 'tests/AudioBoarder.Tests/Transcription/CloudTranscriptionReliabilityTests.cs'; Detect = $true }
     )
     foreach ($fixture in $fixtures) {
-        $actual = @(Find-CredentialAssignments $fixture.Text "fixture").Count
+        $actual = @(Find-CredentialAssignments $fixture.Text "fixture" ([string]$fixture.Path)).Count
         if (($actual -gt 0) -ne $fixture.Detect) {
             throw "Secret scanner self-test failed for fixture: $($fixture.Text)"
         }
@@ -137,7 +151,7 @@ try {
     }
 
     if ($IncludeHistory) {
-        $history = git --no-pager log --all -p -- . `
+        $history = git --no-pager log --all -p --format= -- . `
             ":(exclude)src/AudioBoarder.App/Assets/web/assets/*" `
             ":(exclude)scripts/scan-repository.ps1"
         if ($LASTEXITCODE -ne 0) { throw "git history scan failed." }
@@ -146,7 +160,19 @@ try {
         if ($historyText -match $privateMaterial) {
             $findings.Add("git history: credential-like material")
         }
-        foreach ($finding in Find-CredentialAssignments $historyText "git history") {
+        $historyPath = ""
+        $chunk = [Text.StringBuilder]::new()
+        foreach ($line in $history) {
+            if ($line -match '^diff --git a/(.+) b/(.+)$') {
+                foreach ($finding in Find-CredentialAssignments $chunk.ToString() "git history: $historyPath" $historyPath) {
+                    $findings.Add($finding)
+                }
+                $chunk.Clear() | Out-Null
+                $historyPath = $Matches[2]
+            }
+            $chunk.AppendLine($line) | Out-Null
+        }
+        foreach ($finding in Find-CredentialAssignments $chunk.ToString() "git history: $historyPath" $historyPath) {
             $findings.Add($finding)
         }
     }

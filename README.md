@@ -13,10 +13,10 @@ exported as a `.excalidraw` file you can keep editing, or as a PNG.
 Built on WPF + SkiaSharp + WebView2. The live editor is a vendored offline SVG
 surface; Excalidraw remains an editable export format.
 
-**Release status:** v0.7.0 is the current published release and its prerelease cycle is
-complete. The 0.8.0 work on `release-readiness` is still **pre-release** until the
-offline, semantic, installer, privacy, artifact, and signing gates documented below
-pass. Do not treat a branch build as a published release.
+**Release status:** the 0.8.0 line is distributed as **unsigned previews** while
+production signing is being configured. Preview downloads are available on
+[GitHub Releases](https://github.com/oguzhanf/audioboarder/releases); they are not
+offered by the signed stable automatic updater. A branch build is not a published release.
 
 ---
 
@@ -91,6 +91,41 @@ Three health indicators fill in independently — **Audio devices**, **Transcrip
 **Azure OpenAI** — shown as coloured dots in the status bar, and toolbar buttons enable
 as each subsystem becomes ready. If you have no cloud transcription deployment, Whisper
 downloads `ggml-base.bin` (~148 MB) once.
+
+After Microsoft sign-in (including a restored login), a **native Azure setup wizard**
+opens if the selected subscription, resource, or required deployment is unavailable.
+It distinguishes missing subscriptions/resources/models from permission, network, and
+service failures. The wizard lists Azure OpenAI and Microsoft Foundry (`AIServices`)
+resources and their ready, supported model deployments.
+
+If services are missing, **Create Azure OpenAI** or **Create Foundry resource** opens
+a native creation dialog using the same verified Azure sign-in. Choose an existing
+resource group (or explicitly create one), region, resource name and public-network
+setting. New resources use Entra authentication with API keys disabled; configure
+private connectivity if public access is off.
+
+On **Models**, **Deploy chat model**, **Deploy transcription**, and **Deploy image model**
+list compatible model versions and on-demand SKUs available to the target resource.
+Choose a unique deployment name and capacity; quota is displayed where Azure allows
+it to be read. Capacity units depend on the model/SKU. Provisioned-throughput and
+batch-only SKUs are not offered. Every write requires explicit confirmation of the
+target configuration and potential Azure charges. Azure enforces permissions, quota,
+regional capacity, marketplace terms and policy; the app does not grant roles or
+accept marketplace terms on your behalf.
+
+Completed deployments are refreshed into the picker and selected for their role.
+Existing resource/deployment names are rejected rather than intentionally updated.
+**Stop waiting** stops monitoring, not the Azure operation; refresh before retrying.
+Cancelling setup does not delete a resource already created in Azure.
+A Microsoft login alone does not imply an Azure subscription or model inference access.
+Foundry hub connections and incompatible/realtime-only model APIs are not supported
+deployment targets.
+
+Choose a primary chat model, an optional fast model in the same resource, and optional
+cloud transcription and image models. Image generation is not required; **local Whisper**
+can be used without an Azure transcription deployment. **Not now** leaves configuration
+unchanged. A completed initial setup saves the selected account profile locally and
+applies it before service initialization.
 
 Then **Listen** → talk, and the board grows on its own as the conversation develops.
 **Refine** runs a deeper pass (optionally with an instruction like "group the security
@@ -202,6 +237,18 @@ $env:AUDIOBOARDER_AudioBoarder__AzureOpenAI__DeploymentName = "my-deployment"
 ```
 
 ### Choosing the model
+
+Open **Settings > Azure > Choose resources and models** to reuse the native picker.
+Selections are stored with their resource endpoints and actual model identity, so custom
+deployment aliases still use the appropriate inference client and identical deployment names
+in different resources do not get confused. Explicit choices disable automatic
+reranking and remain selected after restart. Use **Save & Restart** after changing
+models in Settings; this avoids switching providers in the middle of live capture.
+
+For a new tenant, add a **New profile**, enter the tenant ID, and **Save & Restart**
+before signing in and selecting its resources. No resource is moved or deleted by
+switching a local profile. You still need subscriptions, deployments, and permissions
+in the destination tenant.
 
 `FoundryDiscovery` scans every Cognitive Services account in the subscription and ranks
 chat deployments by **parsed version**, then capability tier
@@ -351,7 +398,8 @@ SVG renderer hosted in WebView2 — it is not an embedded Excalidraw editor. Tex
 cards, boundaries and bezier branches are rendered from authoritative .NET geometry, with
 secondary associations de-emphasised so the structure reads. The bundle lives in
 `src/AudioBoarder.App/Assets/web` and is
-rebuilt from the Vite source in `src/AudioBoarder.App/web` (see that folder's README).
+packaged from the plain JavaScript/CSS source in `src/AudioBoarder.App/web` using
+PowerShell, without Node.js (see that folder's README).
 Drag any node to pin it; pinned nodes keep their position through later layout passes.
 
 **Export Excalidraw** is an editable export only. It emits a real `.excalidraw` document via
@@ -432,10 +480,8 @@ dotnet restore AudioBoarder.sln
 dotnet build AudioBoarder.sln -c Release
 dotnet test AudioBoarder.sln -c Release --filter "Category!=LiveModel"
 cd src\AudioBoarder.App\web
-npm ci
-npm run build
-# Start `npm run preview` in one terminal, then:
-node verify.cjs "http://127.0.0.1:5566/"
+.\build-bundle.ps1
+.\verify.ps1
 ```
 
 The browser verifier runs the committed custom SVG canvas in headless Edge, the same engine

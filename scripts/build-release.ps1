@@ -153,36 +153,9 @@ try {
         & "$root\scripts\scan-repository.ps1" -SelfTest
     } "Test repository secret scanner fixtures"
     Invoke-Checked { dotnet restore AudioBoarder.sln } "Restore .NET dependencies"
-    Push-Location $webDirectory
-    try {
-        Invoke-Checked { npm ci } "Install exact web dependencies"
-        Invoke-Checked { npm run build } "Build custom SVG canvas"
-
-        $preview = Start-Process -FilePath (Get-Command node).Source `
-            -ArgumentList @("node_modules\vite\bin\vite.js", "preview", "--host", "127.0.0.1", "--port", "5566", "--strictPort") `
-            -WorkingDirectory $webDirectory -PassThru
-        try {
-            $ready = $false
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-                try {
-                    Invoke-WebRequest -Uri "http://127.0.0.1:5566/" -UseBasicParsing -TimeoutSec 2 | Out-Null
-                    $ready = $true
-                    break
-                }
-                catch { Start-Sleep -Milliseconds 500 }
-            }
-            if (!$ready) { throw "Vite preview did not become ready." }
-            Invoke-Checked {
-                node verify.cjs "http://127.0.0.1:5566/" "" (Join-Path $stagingDirectory "svg-verify.png")
-            } "Verify SVG canvas in headless Edge"
-        }
-        finally {
-            if (!$preview.HasExited) { Stop-Process -Id $preview.Id -Force }
-        }
-    }
-    finally {
-        Pop-Location
-    }
+    & (Join-Path $webDirectory "build-bundle.ps1")
+    & (Join-Path $webDirectory "verify.ps1") `
+        -ResultPath (Join-Path $stagingDirectory "canvas-verification.json")
 
     $commonProperties = @(
         "-p:Version=$Version",
@@ -214,7 +187,6 @@ try {
     } "Resolve dependency inventory"
     & "$root\scripts\New-Sbom.ps1" `
         -DotNetPackagesJson $dotnetPackages `
-        -PackageLockJson (Join-Path $webDirectory "package-lock.json") `
         -Version $Version -Commit $commit -OutputPath $sbomPath -NoticesPath $noticesPath
 
     Invoke-Checked {

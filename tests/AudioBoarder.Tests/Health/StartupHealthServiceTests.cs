@@ -6,6 +6,7 @@ using AudioBoarder.App.Auth;
 using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Health;
 using AudioBoarder.App.ViewModels;
+using AudioBoarder.App.Setup;
 using AudioBoarder.Services.Imaging;
 using AudioBoarder.Services.LLM;
 using AudioBoarder.Services.Transcription.Cloud;
@@ -302,6 +303,48 @@ public class StartupHealthServiceTests
         events.Should().Equal("sign-in", "checking", "run-all");
     }
 
+    [Fact]
+    public async Task InteractiveLoginChecksSetupBeforeStartingAllServiceProbes()
+    {
+        var events = new List<string>();
+        var credentials = new FakeCredentialProvider { Events = events };
+        var coordinator = new AzureSignInCoordinator(
+            credentials, new FakeHealthRunner(events), new FakeSetupCoordinator(events));
+
+        await coordinator.SignInAndRefreshAsync(CancellationToken.None);
+
+        events.Should().Equal("sign-in", "checking", "setup", "run-all");
+    }
+
+    [Fact]
+    public async Task CancelledLoginDoesNotOpenSetupOrRunProbes()
+    {
+        var events = new List<string>();
+        var credentials = new FakeCredentialProvider
+        {
+            Events = events,
+            SignInResult = (false, "cancelled"),
+        };
+        var coordinator = new AzureSignInCoordinator(
+            credentials, new FakeHealthRunner(events), new FakeSetupCoordinator(events));
+
+        await coordinator.SignInAndRefreshAsync(CancellationToken.None);
+
+        events.Should().Equal("sign-in");
+    }
+
+    [Fact]
+    public async Task EmptyDiscoveryOffersConfigurationRatherThanGenericFailure()
+    {
+        var service = CreateService(AutoDiscoverySettings(), Credential(AzureCredentialState.SignedIn),
+            discovery: new FakeDiscovery(new DiscoveryResult(
+                false, null, null, null, null, null, null, null, null, null, null, null, "No resources.")));
+
+        await service.RunLlmAsync();
+
+        AssertState(service, ComponentStatus.ActionRequired, HealthAction.Configure, HealthCondition.ConfigurationRequired);
+    }
+
     private static AudioBoarderSettings AutoDiscoverySettings()
     {
         var settings = new AudioBoarderSettings();
@@ -446,6 +489,15 @@ public class StartupHealthServiceTests
         public Task RunAllAsync(CancellationToken ct = default)
         {
             events.Add("run-all");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeSetupCoordinator(List<string> events) : IAzureSetupCoordinator
+    {
+        public Task EnsureConfiguredAsync(CancellationToken ct = default)
+        {
+            events.Add("setup");
             return Task.CompletedTask;
         }
     }

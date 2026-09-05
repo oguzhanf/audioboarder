@@ -422,7 +422,7 @@ public class ContinuousDiagrammerTests
         var pipeline = new AudioPipeline(Array.Empty<IAudioCaptureSource>(),
             new ScriptedTranscriptionService(Array.Empty<(TranscriptSpeaker, string)>()),
             new PassThroughVoiceActivityDetector(), buffer);
-        var generator = new RecordingModeGenerator();
+        var generator = new RecordingModeGenerator(TimeSpan.FromMilliseconds(200));
         var scene = new SceneGraph();
         var orchestrator = new DiagramOrchestrator(
             generator, new LayeredLayoutEngine(), buffer, scene);
@@ -578,22 +578,36 @@ public class ContinuousDiagrammerTests
     {
         private readonly object _gate = new();
         private readonly List<GenerationMode> _modes = new();
+        private readonly TimeSpan _fastDelay;
+
+        public RecordingModeGenerator(TimeSpan? fastDelay = null)
+        {
+            _fastDelay = fastDelay ?? TimeSpan.Zero;
+        }
+
         public string Name => "recording";
         public IReadOnlyList<GenerationMode> Modes
         {
             get { lock (_gate) return _modes.ToArray(); }
         }
 
-        public Task<ScenePatchResponse> GenerateAsync(ScenePatchRequest request, CancellationToken ct)
+        public async Task<ScenePatchResponse> GenerateAsync(
+            ScenePatchRequest request,
+            CancellationToken ct)
         {
             lock (_gate) _modes.Add(request.Mode);
+            if (request.Mode == GenerationMode.ContinuousExtraction &&
+                _fastDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(_fastDelay, ct);
+            }
             var patch = request.Mode == GenerationMode.ContinuousExtraction
                 ? new ScenePatch(new ScenePatchOperation[]
                 {
                     new AddNode("pause-fact", NodeKind.Process, "Pause fact"),
                 })
                 : new ScenePatch(Array.Empty<ScenePatchOperation>());
-            return Task.FromResult(new ScenePatchResponse(patch, Name, TimeSpan.Zero));
+            return new ScenePatchResponse(patch, Name, TimeSpan.Zero);
         }
     }
 

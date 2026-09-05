@@ -141,7 +141,7 @@ public static class ServiceCollectionExtensions
         });
 
         static ITranscriptionService ResolveCloud(IServiceProvider sp, CloudTranscriptionOptions cloud)
-            => cloud.DeploymentName?.StartsWith("MAI-", StringComparison.OrdinalIgnoreCase) == true
+            => cloud.IsMaiModel
                 ? sp.GetRequiredService<MaiTranscribeService>()
                 : sp.GetRequiredService<OpenAITranscribeService>();
         // NOTE: We intentionally do NOT register ITranscriptionService as a DI singleton.

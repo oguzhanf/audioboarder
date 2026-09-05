@@ -36,11 +36,7 @@ public sealed class SmartScenePatchGenerator : IScenePatchGenerator
     {
         // Continuous mode prefers the fast deployment (e.g. gpt-5.3-chat) over the
         // primary pro/reasoning model so realtime updates stay snappy.
-        var deploymentName = request.IsContinuous && !string.IsNullOrWhiteSpace(_options.FallbackDeploymentName)
-            ? _options.FallbackDeploymentName
-            : _options.DeploymentName;
-
-        var first = PickByModelName(deploymentName);
+        var first = PickByModelName(_options.GetModelName(request.IsContinuous));
         var second = first == _chat ? (IScenePatchGenerator)_responses : _chat;
         try
         {
@@ -61,7 +57,7 @@ public sealed class SmartScenePatchGenerator : IScenePatchGenerator
     {
         if (string.IsNullOrEmpty(name)) return _chat;
         var lower = name.ToLowerInvariant();
-        if (lower.Contains("gpt-5") || lower.StartsWith("o1") || lower.StartsWith("o3") || lower.Contains("reasoning"))
+        if (AzureOpenAIScenePatchGenerator.IsReasoningModel(lower) || lower.Contains("reasoning"))
             return _responses;
         return _chat;
     }

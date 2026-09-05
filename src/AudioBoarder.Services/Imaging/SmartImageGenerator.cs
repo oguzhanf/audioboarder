@@ -35,7 +35,7 @@ public sealed class SmartImageGenerator : IImageGenerator
 
     public async Task<ImageGenerationResponse> GenerateAsync(ImageGenerationRequest request, CancellationToken ct)
     {
-        var first = _preferred ?? PickByModelName(_options.DeploymentName);
+        var first = _preferred ?? PickByModelName(_options.EffectiveModelName);
         var second = first == _mai ? (IImageGenerator)_openai : _mai;
         try
         {

@@ -84,6 +84,11 @@ public sealed class LocalDataService
             if (File.Exists(path))
                 File.Delete(path);
         }
+        if (Directory.Exists(_root))
+        {
+            foreach (var path in Directory.EnumerateFiles(_root, "auth-record-*.json"))
+                File.Delete(path);
+        }
 
         foreach (var directoryName in LocalDirectories)
         {

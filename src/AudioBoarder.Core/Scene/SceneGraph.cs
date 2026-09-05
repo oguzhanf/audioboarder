@@ -132,6 +132,27 @@ public sealed class SceneGraph
     public bool ContainsNote(string id) => _notes.ContainsKey(id);
     public bool ContainsImage(string id) => _images.ContainsKey(id);
 
+    public bool TryAddUserNode(SceneNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (string.IsNullOrWhiteSpace(node.Id) ||
+            string.IsNullOrWhiteSpace(node.Label) ||
+            !node.X.HasValue || !node.Y.HasValue ||
+            !double.IsFinite(node.X.Value) || !double.IsFinite(node.Y.Value) ||
+            !double.IsFinite(node.Width) || !double.IsFinite(node.Height) ||
+            node.Width <= 0 || node.Height <= 0)
+            return false;
+
+        lock (SyncRoot)
+        {
+            if (_nodes.ContainsKey(node.Id)) return false;
+            node.Locked = true;
+            node.LifecycleState = ElementLifecycleState.UserEdited;
+            AddNode(node);
+            return true;
+        }
+    }
+
     public bool TryUpdateNodeGeometry(
         string id, double x, double y, double width, double height, bool locked)
     {

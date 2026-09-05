@@ -32,6 +32,7 @@ public sealed class LocalDataServiceTests : IDisposable
     {
         Directory.CreateDirectory(_root);
         await File.WriteAllTextAsync(Path.Combine(_root, "ui-state.json"), "{}");
+        await File.WriteAllTextAsync(Path.Combine(_root, "auth-record-a1b2c3.json"), "{}");
         await File.WriteAllTextAsync(Path.Combine(_root, "keep.txt"), "keep");
         var resetCalled = false;
         var service = new LocalDataService(_root, _ =>
@@ -45,6 +46,7 @@ public sealed class LocalDataServiceTests : IDisposable
         deleted.Should().BeTrue();
         resetCalled.Should().BeTrue();
         File.Exists(Path.Combine(_root, "ui-state.json")).Should().BeFalse();
+        File.Exists(Path.Combine(_root, "auth-record-a1b2c3.json")).Should().BeFalse();
         File.Exists(Path.Combine(_root, "keep.txt")).Should().BeTrue();
     }
 

@@ -155,6 +155,71 @@ public sealed class SettingsServiceTests : IDisposable
         (await File.ReadAllTextAsync(local)).Should().Be("{ invalid");
     }
 
+    [Fact]
+    public async Task ModelAccountProfilesPersistAndApplyTheSelectedTenant()
+    {
+        Directory.CreateDirectory(_root);
+        var defaults = Path.Combine(_root, "appsettings.json");
+        var local = Path.Combine(_root, "appsettings.Local.json");
+        await File.WriteAllTextAsync(defaults, """{"AudioBoarder":{}}""");
+        var service = new SettingsService(defaults, local);
+        var settings = service.Load();
+        settings.ModelAccounts.Add(new ModelAccountSettings
+        {
+            Id = "new-tenant",
+            Name = "New tenant",
+            TenantId = Guid.Empty.ToString(),
+            Endpoint = "https://new.openai.azure.com/",
+            PrimaryDeployment = "gpt-release",
+            TranscriptionDeployment = "transcribe-release",
+        });
+        settings.ActiveModelAccountId = "new-tenant";
+
+        await service.SaveAsync(settings, new SettingsSecrets(null, null));
+        var loaded = service.Load();
+
+        loaded.ModelAccounts.Should().ContainSingle();
+        loaded.AzureOpenAI.TenantId.Should().Be(Guid.Empty.ToString());
+        loaded.AzureOpenAI.DeploymentName.Should().Be("gpt-release");
+        loaded.CloudTranscription.DeploymentName.Should().Be("transcribe-release");
+    }
+
+    [Fact]
+    public async Task ExplicitRoleSelectionsKeepAccountEndpointsAndDisableRerankingOnReload()
+    {
+        Directory.CreateDirectory(_root);
+        var service = new SettingsService(Path.Combine(_root, "defaults.json"), Path.Combine(_root, "settings.json"));
+        var settings = new AudioBoarderSettings();
+        settings.AzureOpenAI.TenantId = "test-tenant";
+        settings.AzureOpenAI.Endpoint = "https://chat.example/";
+        settings.AzureOpenAI.DeploymentName = "chosen-chat";
+        settings.AzureOpenAI.AccountResourceId = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/chat";
+        settings.AzureOpenAI.AutoDiscover = false;
+        settings.CloudTranscription.Endpoint = "https://audio.example/";
+        settings.CloudTranscription.DeploymentName = "chosen-audio";
+        settings.CloudTranscription.Model = new("https://audio.example/", "chosen-audio", "MAI-Transcribe-1");
+        settings.CloudTranscription.Backend = "cloud";
+        settings.ImageGeneration.Endpoint = "https://image.example/";
+        settings.ImageGeneration.DeploymentName = "chosen-image";
+        settings.ImageGeneration.Enabled = true;
+        var profile = new ModelAccountSettings();
+        profile.CaptureFrom(settings.AzureOpenAI, settings.CloudTranscription, settings.ImageGeneration);
+        settings.ModelAccounts.Add(profile);
+        settings.ActiveModelAccountId = profile.Id;
+
+        await service.SaveAsync(settings, new SettingsSecrets(null, null, ClearAzureOpenAIApiKey: true));
+        var restored = service.Load();
+
+        restored.AzureOpenAI.AutoDiscover.Should().BeFalse();
+        restored.AzureOpenAI.AccountResourceId.Should().Be(settings.AzureOpenAI.AccountResourceId);
+        restored.CloudTranscription.Endpoint.Should().Be("https://audio.example/");
+        restored.CloudTranscription.Backend.Should().Be("cloud");
+        restored.CloudTranscription.Model!.Resolve(restored.CloudTranscription.Endpoint,
+            restored.CloudTranscription.DeploymentName).Should().Be("MAI-Transcribe-1");
+        restored.ImageGeneration.Endpoint.Should().Be("https://image.example/");
+        restored.ImageGeneration.Enabled.Should().BeTrue();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

@@ -224,7 +224,7 @@ public sealed class FoundryDiscovery : IFoundryDiscovery
         return current == DiscoveryFailureKind.None ? next : current;
     }
 
-    private static DiscoveryFailureKind ClassifyFailure(Exception ex)
+    internal static DiscoveryFailureKind ClassifyFailure(Exception ex)
     {
         if (ex is AuthenticationFailedException { InnerException: { } innerException })
         {
@@ -238,8 +238,10 @@ public sealed class FoundryDiscovery : IFoundryDiscovery
         {
             return request.Status switch
             {
+                0 => DiscoveryFailureKind.Network,
                 (int)HttpStatusCode.Unauthorized => DiscoveryFailureKind.Authentication,
                 (int)HttpStatusCode.Forbidden => DiscoveryFailureKind.AccessDenied,
+                (int)HttpStatusCode.RequestTimeout => DiscoveryFailureKind.Service,
                 (int)HttpStatusCode.TooManyRequests => DiscoveryFailureKind.RateLimited,
                 >= 500 => DiscoveryFailureKind.Service,
                 _ => DiscoveryFailureKind.Unknown,
@@ -267,26 +269,29 @@ public sealed class FoundryDiscovery : IFoundryDiscovery
         public string? Model => Deployment.Data.Properties.Model?.Name;
     }
 
-    private static bool IsChatModel(string? name)
+    internal static bool IsChatModel(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
         var lower = name.ToLowerInvariant();
         // Exclude transcription/image/embedding/etc.
-        if (lower.Contains("transcribe") || lower.Contains("image") || lower.Contains("embedding") ||
+        if (lower.Contains("transcrib") || lower.Contains("transcription") ||
+            lower.Contains("image") || lower.Contains("embed") ||
             lower.Contains("voice") || lower.Contains("speech") || lower.Contains("audio") ||
-            lower.Contains("dall-e")) return false;
-        return lower.Contains("gpt") || lower.StartsWith("o1") || lower.StartsWith("o3") ||
+            lower.Contains("dall-e") || lower.Contains("realtime") || lower.Contains("real-time") ||
+            lower.Contains("whisper") || lower.Contains("tts") || lower.Contains("video") ||
+            lower.Contains("moderation") || lower.Contains("rerank")) return false;
+        return lower.Contains("gpt") || lower.StartsWith("o1") || lower.StartsWith("o3") || lower.StartsWith("o4") ||
                lower.Contains("deepseek") || lower.Contains("mai-ds") || lower.Contains("mai-1") || lower.Contains("phi");
     }
 
-    private static bool IsImageModel(string? name)
+    internal static bool IsImageModel(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
         var lower = name.ToLowerInvariant();
         return lower.Contains("image") || lower.Contains("dall-e");
     }
 
-    private static bool IsTranscribeModel(string? name)
+    internal static bool IsTranscribeModel(string? name)
     {
         if (string.IsNullOrEmpty(name)) return false;
         var lower = name.ToLowerInvariant();

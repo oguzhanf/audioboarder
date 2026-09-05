@@ -7,6 +7,7 @@ using AudioBoarder.App.Health;
 using AudioBoarder.App.HealthCheck;
 using AudioBoarder.App.Logging;
 using AudioBoarder.App.Sessions;
+using AudioBoarder.App.Setup;
 using AudioBoarder.App.Updates;
 using AudioBoarder.App.ViewModels;
 using AudioBoarder.Core.Rendering;
@@ -157,6 +158,8 @@ public partial class App : Application
         }
         catch (Exception ex) { Log.Warning(ex, "Silent restore threw"); }
 
+        await services.GetRequiredService<IAzureSetupCoordinator>().EnsureConfiguredAsync();
+
         // Hand the signed-in credential chain to both transcription stacks so
         // readiness validates the same cached data-plane identity before listening.
         try
@@ -244,6 +247,9 @@ public partial class App : Application
         var settingsSection = builder.Configuration.GetSection("AudioBoarder");
         builder.Services.Configure<AudioBoarderSettings>(settingsSection);
         var settings = settingsSection.Get<AudioBoarderSettings>() ?? new AudioBoarderSettings();
+        settings.ApplyActiveModelAccount();
+        builder.Services.PostConfigure<AudioBoarderSettings>(configured =>
+            configured.ApplyActiveModelAccount());
         Controls.UiPerformanceTelemetry.Enabled =
             settings.Diagnostics.EnableLocalPerformanceTelemetry;
 
@@ -253,6 +259,8 @@ public partial class App : Application
             opts.Endpoint = az.Endpoint;
             opts.DeploymentName = az.DeploymentName;
             opts.FallbackDeploymentName = az.FallbackDeploymentName;
+            opts.Model = az.Model;
+            opts.FallbackModel = az.FallbackModel;
             opts.TenantId = az.TenantId;
             opts.ApiKey = az.ApiKey;
             opts.UseManagedIdentity = az.UseManagedIdentity;
@@ -264,11 +272,12 @@ public partial class App : Application
         {
             var az = root.Value.AzureOpenAI;
             var img = root.Value.ImageGeneration;
-            opts.Endpoint = az.Endpoint;
+            opts.Endpoint = img.Endpoint ?? az.Endpoint;
             opts.TenantId = az.TenantId;
             opts.ApiKey = az.ApiKey;
             opts.UseManagedIdentity = az.UseManagedIdentity;
             opts.DeploymentName = img.DeploymentName;
+            opts.Model = img.Model;
             opts.OpenAIApiVersion = img.OpenAIApiVersion;
             opts.RequestTimeout = img.RequestTimeout;
         });
@@ -277,11 +286,12 @@ public partial class App : Application
         {
             var az = root.Value.AzureOpenAI;
             var ct = root.Value.CloudTranscription;
-            opts.Endpoint = az.Endpoint;
+            opts.Endpoint = ct.Endpoint ?? az.Endpoint;
             opts.TenantId = az.TenantId;
             opts.ApiKey = az.ApiKey;
             opts.UseManagedIdentity = az.UseManagedIdentity;
             opts.DeploymentName = ct.DeploymentName;
+            opts.Model = ct.Model;
             opts.Language = ct.Language;
             opts.OpenAIApiVersion = ct.OpenAIApiVersion;
             opts.WindowSeconds = ct.WindowSeconds;
@@ -361,6 +371,10 @@ public partial class App : Application
         builder.Services.AddSingleton<Auth.IHealthProbeRunner>(
             sp => sp.GetRequiredService<StartupHealthService>());
         builder.Services.AddSingleton<Auth.AzureSignInCoordinator>();
+        builder.Services.AddSingleton<IAzureModelInventory, AzureModelInventory>();
+        builder.Services.AddSingleton<IAzureProvisioningService, AzureProvisioningService>();
+        builder.Services.AddSingleton<IAzureSetupPresenter, WpfAzureSetupPresenter>();
+        builder.Services.AddSingleton<IAzureSetupCoordinator, AzureSetupCoordinator>();
         builder.Services.AddSingleton<Continuous.ContinuousDiagrammer>();
         builder.Services.AddSingleton(sp => new GitHubUpdateService(
             new HttpClient { Timeout = Timeout.InfiniteTimeSpan },

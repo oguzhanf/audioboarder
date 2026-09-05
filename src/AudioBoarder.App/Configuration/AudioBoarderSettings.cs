@@ -2,12 +2,15 @@ namespace AudioBoarder.App.Configuration;
 
 using AudioBoarder.Core.Scene;
 using AudioBoarder.Services.Transcription.Cloud;
+using AudioBoarder.Services.LLM;
 
 public sealed class AudioBoarderSettings
 {
     public string Theme { get; set; } = "Light";
     public TimeSpan TranscriptWindow { get; set; } = TimeSpan.FromMinutes(5);
     public AzureOpenAISettings AzureOpenAI { get; set; } = new();
+    public string? ActiveModelAccountId { get; set; }
+    public List<ModelAccountSettings> ModelAccounts { get; set; } = [];
     public WhisperSettings Whisper { get; set; } = new();
     public AudioSettings Audio { get; set; } = new();
     public RealtimeSettings Realtime { get; set; } = new();
@@ -50,7 +53,16 @@ public sealed class AudioBoarderSettings
             problems.Add("DiagramIntent.SelectionMode is invalid");
         if (!Enum.IsDefined(DiagramIntent.PinnedIntent))
             problems.Add("DiagramIntent.PinnedIntent is invalid");
+        if (ModelAccounts.GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase).Any(x => x.Count() > 1))
+            problems.Add("Model account profile IDs must be unique");
         return problems;
+    }
+
+    public void ApplyActiveModelAccount()
+    {
+        var profile = ModelAccounts.FirstOrDefault(x =>
+            string.Equals(x.Id, ActiveModelAccountId, StringComparison.OrdinalIgnoreCase));
+        profile?.ApplyTo(AzureOpenAI, CloudTranscription, ImageGeneration);
     }
 
     public sealed class DiagramIntentSettings
@@ -59,12 +71,98 @@ public sealed class AudioBoarderSettings
         public AudioBoarder.Core.Scene.DiagramIntent PinnedIntent { get; set; } =
             AudioBoarder.Core.Scene.DiagramIntent.SoftwareSystemArchitecture;
     }
+
+}
+
+public sealed class ModelAccountSettings
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "Microsoft account";
+    public string? TenantId { get; set; }
+    public string? SubscriptionId { get; set; }
+    public string? AccountResourceId { get; set; }
+    public string? Endpoint { get; set; }
+    public string? PrimaryDeployment { get; set; }
+    public string? FallbackDeployment { get; set; }
+    public string? TranscriptionDeployment { get; set; }
+    public string? TranscriptionEndpoint { get; set; }
+    public string? TranscriptionBackend { get; set; }
+    public string? ImageDeployment { get; set; }
+    public string? ImageEndpoint { get; set; }
+    public bool? ImagesEnabled { get; set; }
+    public bool? AutoDiscover { get; set; }
+    public bool? UseManagedIdentity { get; set; }
+    public string? PreferredRegion { get; set; }
+    public DeployedModelIdentity? PrimaryModel { get; set; }
+    public DeployedModelIdentity? FallbackModel { get; set; }
+    public DeployedModelIdentity? TranscriptionModel { get; set; }
+    public DeployedModelIdentity? ImageModel { get; set; }
+
+    public void CaptureFrom(
+        AzureOpenAISettings azure,
+        CloudTranscriptionSettings transcription,
+        ImageGenerationSettings image)
+    {
+        TenantId = azure.TenantId;
+        SubscriptionId = azure.SubscriptionId;
+        AccountResourceId = azure.AccountResourceId;
+        Endpoint = azure.Endpoint;
+        PrimaryDeployment = azure.DeploymentName;
+        FallbackDeployment = azure.FallbackDeploymentName;
+        TranscriptionDeployment = transcription.DeploymentName;
+        TranscriptionEndpoint = transcription.Endpoint;
+        TranscriptionBackend = transcription.Backend;
+        ImageDeployment = image.DeploymentName;
+        ImageEndpoint = image.Endpoint;
+        ImagesEnabled = image.Enabled;
+        AutoDiscover = azure.AutoDiscover;
+        UseManagedIdentity = azure.UseManagedIdentity;
+        PreferredRegion = azure.PreferredRegion;
+        PrimaryModel = azure.Model;
+        FallbackModel = azure.FallbackModel;
+        TranscriptionModel = transcription.Model;
+        ImageModel = image.Model;
+    }
+
+    public void ApplyTo(
+        AzureOpenAISettings azure,
+        CloudTranscriptionSettings transcription,
+        ImageGenerationSettings image)
+    {
+        if (!string.Equals(azure.TenantId?.Trim(), TenantId?.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(azure.Endpoint?.TrimEnd('/'), Endpoint?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            azure.ApiKey = null;
+        azure.TenantId = TenantId;
+        azure.SubscriptionId = SubscriptionId;
+        azure.AccountResourceId = AccountResourceId;
+        azure.Endpoint = Endpoint;
+        azure.DeploymentName = PrimaryDeployment;
+        azure.FallbackDeploymentName = FallbackDeployment;
+        azure.PreferredRegion = PreferredRegion;
+        transcription.DeploymentName = TranscriptionDeployment;
+        transcription.Endpoint = TranscriptionEndpoint;
+        if (TranscriptionBackend is not null) transcription.Backend = TranscriptionBackend;
+        image.DeploymentName = ImageDeployment;
+        image.Endpoint = ImageEndpoint;
+        if (ImagesEnabled.HasValue) image.Enabled = ImagesEnabled.Value;
+        if (AutoDiscover.HasValue) azure.AutoDiscover = AutoDiscover.Value;
+        if (UseManagedIdentity.HasValue) azure.UseManagedIdentity = UseManagedIdentity.Value;
+        azure.Model = PrimaryModel;
+        azure.FallbackModel = FallbackModel;
+        transcription.Model = TranscriptionModel;
+        image.Model = ImageModel;
+    }
+
+    public override string ToString() => Name;
 }
 
 public sealed class AzureOpenAISettings
 {
+    public DeployedModelIdentity? Model { get; set; }
+    public DeployedModelIdentity? FallbackModel { get; set; }
     public string? TenantId { get; set; }
     public string? SubscriptionId { get; set; }
+    public string? AccountResourceId { get; set; }
     public string? Endpoint { get; set; }
     public string? DeploymentName { get; set; }
     public string? FallbackDeploymentName { get; set; }
@@ -138,7 +236,9 @@ public sealed class RealtimeSettings
 
 public sealed class ImageGenerationSettings
 {
+    public DeployedModelIdentity? Model { get; set; }
     public bool Enabled { get; set; }
+    public string? Endpoint { get; set; }
     /// <summary>Deployment name. Auto-populated from FoundryDiscovery if blank.</summary>
     public string? DeploymentName { get; set; }
     public string OpenAIApiVersion { get; set; } = "2025-04-01-preview";
@@ -147,6 +247,8 @@ public sealed class ImageGenerationSettings
 
 public sealed class CloudTranscriptionSettings
 {
+    public DeployedModelIdentity? Model { get; set; }
+    public string? Endpoint { get; set; }
     /// <summary>"auto"/"cloud" (gpt-4o-transcribe), "speech" (Azure Speech streaming), or "local"/"whisper".</summary>
     public string Backend { get; set; } = "auto";
     /// <summary>Cloud deployment name. Auto-populated from FoundryDiscovery if blank.</summary>

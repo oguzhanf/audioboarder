@@ -29,10 +29,6 @@
             <Setter Property="MinHeight" Value="32" />
             <Setter Property="Margin" Value="0,4" />
         </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="MinHeight" Value="32" />
-            <Setter Property="Margin" Value="0,4" />
-        </Style>
         <Style TargetType="CheckBox">
             <Setter Property="Margin" Value="0,7" />
         </Style>
@@ -65,6 +61,7 @@
                             </Grid.RowDefinitions>
                             <TextBlock Text="Theme" Style="{StaticResource FieldLabel}" />
                             <ComboBox x:Name="ThemeCombo"
+                                      MinHeight="32" Margin="0,4"
                                       Grid.Column="1"
                                       SelectedItem="{Binding Theme}"
                                       AutomationProperties.Name="Application theme" />
@@ -108,11 +105,11 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <TextBlock Text="Default intent mode" Style="{StaticResource FieldLabel}" />
-                            <ComboBox x:Name="IntentModeCombo" Grid.Column="1"
+                            <ComboBox x:Name="IntentModeCombo" Grid.Column="1" MinHeight="32" Margin="0,4"
                                       SelectedItem="{Binding DiagramIntent.SelectionMode}"
                                       AutomationProperties.Name="Default diagram intent mode" />
                             <TextBlock Grid.Row="1" Text="Pinned intent" Style="{StaticResource FieldLabel}" />
-                            <ComboBox x:Name="PinnedIntentCombo" Grid.Row="1" Grid.Column="1"
+                            <ComboBox x:Name="PinnedIntentCombo" Grid.Row="1" Grid.Column="1" MinHeight="32" Margin="0,4"
                                       SelectedItem="{Binding DiagramIntent.PinnedIntent}"
                                       AutomationProperties.Name="Default pinned diagram intent" />
                             <TextBlock Grid.Row="2" Text="Realtime update interval (seconds)" Style="{StaticResource FieldLabel}" />
@@ -179,7 +176,7 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <TextBlock Text="Backend" Style="{StaticResource FieldLabel}" />
-                            <ComboBox x:Name="BackendCombo" Grid.Column="1"
+                            <ComboBox x:Name="BackendCombo" Grid.Column="1" MinHeight="32" Margin="0,4"
                                       SelectedItem="{Binding CloudTranscription.Backend}"
                                       AutomationProperties.Name="Transcription backend" />
                             <TextBlock Grid.Row="1" Text="Language" Style="{StaticResource FieldLabel}" />
@@ -215,10 +212,17 @@
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Azure">
+            <TabItem x:Name="AzureTab" Header="Azure">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="24">
                         <TextBlock Text="Azure" Style="{StaticResource SectionHeading}" />
+                        <ui:Button Content="Choose resources and models..."
+                                   Click="OnChooseModels" HorizontalAlignment="Left"
+                                   Appearance="Primary" Margin="0,0,0,10"
+                                   AutomationProperties.Name="Choose Azure resources and models" />
+                        <TextBlock Text="Browse deployed models under your signed-in account, or set up Azure OpenAI / Foundry if none are available. Model and tenant changes take effect with Save &amp; Restart."
+                                   TextWrapping="Wrap" Margin="0,0,0,18"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="230" />
@@ -236,42 +240,60 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <TextBlock Text="Tenant ID" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Column="1" Text="{Binding AzureOpenAI.TenantId}"
+                            <TextBlock Text="Model account profile" Style="{StaticResource FieldLabel}" />
+                            <StackPanel Grid.Column="1">
+                                <ComboBox x:Name="ModelAccountCombo"
+                                          MinHeight="32" Margin="0,4"
+                                          SelectionChanged="OnModelAccountSelectionChanged"
+                                          AutomationProperties.Name="Model account profile" />
+                                <TextBox x:Name="ModelAccountNameBox"
+                                             ToolTip="A local name such as New tenant production" />
+                                <WrapPanel>
+                                    <ui:Button Margin="0,4,8,4" Content="New profile"
+                                               Click="OnNewModelAccountProfile" />
+                                    <ui:Button Margin="8,4,0,4" Content="Save profile"
+                                               Click="OnSaveModelAccountProfile" />
+                                    <ui:Button Margin="8,4,0,4" Content="Delete profile"
+                                               Click="OnDeleteModelAccountProfile" />
+                                </WrapPanel>
+                            </StackPanel>
+                            <TextBlock Grid.Row="1" Text="Tenant ID" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AzureOpenAI.TenantId}"
                                      AutomationProperties.Name="Azure tenant ID" />
-                            <TextBlock Grid.Row="1" Text="Subscription ID" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AzureOpenAI.SubscriptionId}"
+                            <TextBlock Grid.Row="2" Text="Subscription ID" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding AzureOpenAI.SubscriptionId}"
                                      AutomationProperties.Name="Azure subscription ID" />
-                            <TextBlock Grid.Row="2" Text="Endpoint" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding AzureOpenAI.Endpoint}" />
-                            <TextBlock Grid.Row="3" Text="Primary model deployment" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding AzureOpenAI.DeploymentName}" />
-                            <TextBlock Grid.Row="4" Text="Fallback model deployment" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding AzureOpenAI.FallbackDeploymentName}" />
-                            <TextBlock Grid.Row="5" Text="Preferred region" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding AzureOpenAI.PreferredRegion}" />
-                            <TextBlock Grid.Row="6" Text="Authentication / discovery" Style="{StaticResource FieldLabel}" />
-                            <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal">
+                            <TextBlock Grid.Row="3" Text="Endpoint" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding AzureOpenAI.Endpoint}" />
+                            <TextBlock Grid.Row="4" Text="Primary model deployment" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding AzureOpenAI.DeploymentName}" />
+                            <TextBlock Grid.Row="5" Text="Fallback model deployment" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding AzureOpenAI.FallbackDeploymentName}" />
+                            <TextBlock Grid.Row="6" Text="Preferred region" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding AzureOpenAI.PreferredRegion}" />
+                            <TextBlock Grid.Row="7" Text="Authentication / discovery" Style="{StaticResource FieldLabel}" />
+                            <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal">
                                 <CheckBox IsChecked="{Binding AzureOpenAI.UseManagedIdentity}"
                                           Content="Managed identity / Azure sign-in" />
                                 <CheckBox Margin="18,7,0,7" IsChecked="{Binding AzureOpenAI.AutoDiscover}"
                                           Content="Auto-discover deployments" />
                             </StackPanel>
-                            <TextBlock Grid.Row="7" Text="Optional Azure OpenAI API key" Style="{StaticResource FieldLabel}" />
-                            <StackPanel Grid.Row="7" Grid.Column="1">
+                            <TextBlock Grid.Row="8" Text="Optional Azure OpenAI API key" Style="{StaticResource FieldLabel}" />
+                            <StackPanel Grid.Row="8" Grid.Column="1">
                                 <PasswordBox x:Name="AzureOpenAIApiKeyBox"
                                              MinHeight="32" Margin="0,4"
                                              AutomationProperties.Name="Azure OpenAI API key" />
                                 <CheckBox x:Name="ClearAzureOpenAIApiKeyBox"
                                           Content="Remove the saved Azure OpenAI API key" />
                             </StackPanel>
-                            <TextBlock Grid.Row="8" Text="Speech region" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding AzureSpeech.Region}" />
-                            <TextBlock Grid.Row="9" Text="Speech resource ID" Style="{StaticResource FieldLabel}" />
-                            <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding AzureSpeech.ResourceId}" />
-                            <TextBlock Grid.Row="10" Text="Optional Speech API key" Style="{StaticResource FieldLabel}" />
-                            <StackPanel Grid.Row="10" Grid.Column="1">
+                            <TextBlock Grid.Row="9" Text="Speech region" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding AzureSpeech.Region}" />
+                            <TextBlock Grid.Row="10" Text="Speech resource ID" Style="{StaticResource FieldLabel}" />
+                            <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding AzureSpeech.ResourceId}" />
+                            <TextBlock Grid.Row="11" Text="Optional Speech API key" Style="{StaticResource FieldLabel}" />
+                            <StackPanel Grid.Row="11" Grid.Column="1">
                                 <PasswordBox x:Name="AzureSpeechApiKeyBox"
                                              MinHeight="32" Margin="0,4"
                                              AutomationProperties.Name="Azure Speech API key" />

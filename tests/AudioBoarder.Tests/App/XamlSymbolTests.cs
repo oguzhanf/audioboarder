@@ -114,6 +114,38 @@ public class XamlSymbolTests
         content.Should().NotContain("DropShadowEffect");
     }
 
+    [Fact]
+    public void NativeAzureSetupAndSettingsExposeTheSameResourceAndModelPicker()
+    {
+        var path = Path.Combine(AppRoot(), "Setup", "AzureSetupWindow.xaml");
+        XDocument.Load(path).Root.Should().NotBeNull();
+        var content = File.ReadAllText(path);
+        content.Should().Contain("1. Services");
+        content.Should().Contain("2. Models");
+        content.Should().Contain("3. Review");
+        content.Should().Contain("AutomationProperties.Name=\"Primary diagram model\"");
+        content.Should().Contain("AutomationProperties.Name=\"Cloud transcription model\"");
+        content.Should().Contain("AutomationProperties.Name=\"Image generation model\"");
+        content.Should().Contain("AutomationProperties.Name=\"Cancel Azure setup\"");
+        content.Should().Contain("never provisions billable resources automatically");
+        File.ReadAllText(Path.Combine(AppRoot(), "SettingsWindow.xaml")).Should()
+            .Contain("AutomationProperties.Name=\"Choose Azure resources and models\"");
+    }
+
+    [Theory]
+    [InlineData("SettingsWindow.xaml")]
+    [InlineData("Setup\\AzureSetupWindow.xaml")]
+    [InlineData("Setup\\AzureProvisioningWindow.xaml")]
+    public void DropdownsDoNotReplaceTheApplicationThemeWithAnUnbasedStyle(string relativePath)
+    {
+        var document = XDocument.Load(Path.Combine(AppRoot(), relativePath));
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        document.Descendants(xaml + "Style")
+            .Where(style => (string?)style.Attribute("TargetType") == "ComboBox")
+            .Should().NotContain(style => style.Attribute("BasedOn") == null,
+                "a local unbased ComboBox style restores a white system popup but leaves dark-theme item text white");
+    }
+
     /// <summary>Walks up from the test binaries to the app project.</summary>
     private static string AppRoot()
     {

@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using Azure.Core;
 using Azure.Identity;
 using AudioBoarder.App.Configuration;
@@ -237,8 +239,7 @@ public sealed class AzureCredentialProvider : IAzureCredentialProvider
 
 internal sealed class AzureCredentialBackend : IAzureCredentialBackend
 {
-    private const string CacheName = "AudioBoarder";
-    private static readonly string AuthRecordPath =
+    private static readonly string LegacyAuthRecordPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "AudioBoarder", "auth-record.json");
 
@@ -263,17 +264,26 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
 
     public async Task<AzureCredentialSession?> RestoreAsync(CancellationToken ct)
     {
-        if (!File.Exists(AuthRecordPath)) return null;
+        var authRecordPath = GetAuthRecordPath();
+        var sourcePath = File.Exists(authRecordPath)
+            ? authRecordPath
+            : File.Exists(LegacyAuthRecordPath)
+                ? LegacyAuthRecordPath
+                : null;
+        if (sourcePath is null) return null;
 
         AuthenticationRecord record;
         try
         {
-            await using var fs = File.OpenRead(AuthRecordPath);
+            await using var fs = File.OpenRead(sourcePath);
             record = await AuthenticationRecord.DeserializeAsync(fs, ct).ConfigureAwait(false);
         }
         catch
         {
-            try { File.Delete(AuthRecordPath); } catch { }
+            if (string.Equals(sourcePath, authRecordPath, StringComparison.OrdinalIgnoreCase))
+            {
+                try { File.Delete(authRecordPath); } catch { }
+            }
             return null;
         }
 
@@ -281,7 +291,7 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
         var browser = new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions
         {
             TenantId = string.IsNullOrWhiteSpace(tenant) ? null : tenant,
-            TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = CacheName },
+            TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = GetCacheName() },
             AuthenticationRecord = record,
             DisableAutomaticAuthentication = true,
             AdditionallyAllowedTenants = { "*" },
@@ -290,6 +300,8 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
         using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         probeCts.CancelAfter(TimeSpan.FromSeconds(8));
         _ = await browser.GetTokenAsync(ManagementContext, probeCts.Token).ConfigureAwait(false);
+        if (!string.Equals(sourcePath, authRecordPath, StringComparison.OrdinalIgnoreCase))
+            await SaveRecordAsync(record, authRecordPath, ct).ConfigureAwait(false);
         return new AzureCredentialSession(browser, record.Username, record.HomeAccountId);
     }
 
@@ -299,7 +311,7 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
         var browser = new InteractiveBrowserCredential(new InteractiveBrowserCredentialOptions
         {
             TenantId = string.IsNullOrWhiteSpace(tenant) ? null : tenant,
-            TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = CacheName },
+            TokenCachePersistenceOptions = new TokenCachePersistenceOptions { Name = GetCacheName() },
             AdditionallyAllowedTenants = { "*" },
         });
 
@@ -308,9 +320,7 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(AuthRecordPath)!);
-            await using var fs = File.Create(AuthRecordPath);
-            await record.SerializeAsync(fs, ct).ConfigureAwait(false);
+            await SaveRecordAsync(record, GetAuthRecordPath(), ct).ConfigureAwait(false);
         }
         catch
         {
@@ -318,5 +328,51 @@ internal sealed class AzureCredentialBackend : IAzureCredentialBackend
         }
 
         return new AzureCredentialSession(browser, record.Username, record.HomeAccountId);
+    }
+
+    private static async Task SaveRecordAsync(
+        AuthenticationRecord record,
+        string path,
+        CancellationToken ct)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await using (var fs = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await record.SerializeAsync(fs, ct).ConfigureAwait(false);
+                await fs.FlushAsync(ct).ConfigureAwait(false);
+            }
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
+    private string GetCacheName() => $"AudioBoarder-{GetTenantKey()}";
+
+    private string GetAuthRecordPath() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "AudioBoarder",
+            $"auth-record-{GetTenantKey()}.json");
+
+    private string GetTenantKey()
+    {
+        var tenant = string.IsNullOrWhiteSpace(_settings.AzureOpenAI.TenantId)
+            ? "organizations"
+            : _settings.AzureOpenAI.TenantId.Trim().ToLowerInvariant();
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(tenant));
+        return Convert.ToHexString(hash.AsSpan(0, 8)).ToLowerInvariant();
     }
 }

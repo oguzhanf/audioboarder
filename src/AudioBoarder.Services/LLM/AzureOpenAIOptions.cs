@@ -7,6 +7,8 @@ public sealed class AzureOpenAIOptions
     public string? Endpoint { get; set; }
     public string? DeploymentName { get; set; }
     public string? FallbackDeploymentName { get; set; }
+    public DeployedModelIdentity? Model { get; set; }
+    public DeployedModelIdentity? FallbackModel { get; set; }
     public string? TenantId { get; set; }
     public string? ApiKey { get; set; }
     public bool UseManagedIdentity { get; set; } = true;
@@ -23,6 +25,13 @@ public sealed class AzureOpenAIOptions
 
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(DeploymentName);
+
+    public string? GetModelName(bool continuous)
+    {
+        var useFallback = continuous && !string.IsNullOrWhiteSpace(FallbackDeploymentName);
+        var deployment = useFallback ? FallbackDeploymentName : DeploymentName;
+        return (useFallback ? FallbackModel : Model)?.Resolve(Endpoint, deployment) ?? deployment;
+    }
 
     /// <summary>
     /// Shared grounding and patch rules. Intent-specific architectural guidance is

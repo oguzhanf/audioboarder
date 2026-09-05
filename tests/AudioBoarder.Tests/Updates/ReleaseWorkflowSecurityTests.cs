@@ -51,6 +51,16 @@ public sealed class ReleaseWorkflowSecurityTests
     }
 
     [Fact]
+    public void CanvasReleaseGateUsesNativePackagingAndEdgeWithoutNode()
+    {
+        var root = FindRepositoryRoot();
+        WorkflowText().Should().NotContain("actions/setup-node");
+        var build = File.ReadAllText(Path.Combine(root, "scripts", "build-release.ps1"));
+        build.Should().Contain("build-bundle.ps1").And.Contain("verify.ps1");
+        build.Should().NotContain("npm ci").And.NotContain("npm run").And.NotContain("node verify");
+    }
+
+    [Fact]
     public void SigningCertificateIsDeletedInEverySecretBearingStep()
     {
         var workflow = WorkflowText();

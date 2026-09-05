@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$DotNetPackagesJson,
-    [Parameter(Mandatory)][string]$PackageLockJson,
+    [string]$PackageLockJson,
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$Commit,
     [Parameter(Mandatory)][string]$OutputPath,
@@ -40,32 +40,34 @@ foreach ($project in $dotnet.projects) {
     }
 }
 
-$npm = Get-Content -LiteralPath $PackageLockJson -Raw | ConvertFrom-Json -AsHashtable
-foreach ($entry in $npm.packages.GetEnumerator()) {
-    if ([string]::IsNullOrWhiteSpace($entry.Key)) { continue }
-    $name = if ($entry.Value.name) {
-        [string]$entry.Value.name
-    }
-    else {
-        ([string]$entry.Key -replace '^node_modules/', '') -replace '/node_modules/', '/'
-    }
-    if ([string]::IsNullOrWhiteSpace($name)) { continue }
-    $packageVersion = [string]$entry.Value.version
-    $key = "npm:$name@$packageVersion"
-    $packages[$key] = [ordered]@{
-        SPDXID = ConvertTo-SpdxId $key
-        name = $name
-        versionInfo = $packageVersion
-        downloadLocation = if ($entry.Value.resolved) { [string]$entry.Value.resolved } else { "NOASSERTION" }
-        filesAnalyzed = $false
-        licenseConcluded = "NOASSERTION"
-        licenseDeclared = if ($entry.Value.license) { [string]$entry.Value.license } else { "NOASSERTION" }
-        copyrightText = "NOASSERTION"
-        externalRefs = @([ordered]@{
-            referenceCategory = "PACKAGE-MANAGER"
-            referenceType = "purl"
-            referenceLocator = "pkg:npm/$([Uri]::EscapeDataString($name))@$packageVersion"
-        })
+if ($PackageLockJson) {
+    $npm = Get-Content -LiteralPath $PackageLockJson -Raw | ConvertFrom-Json -AsHashtable
+    foreach ($entry in $npm.packages.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace($entry.Key)) { continue }
+        $name = if ($entry.Value.name) {
+            [string]$entry.Value.name
+        }
+        else {
+            ([string]$entry.Key -replace '^node_modules/', '') -replace '/node_modules/', '/'
+        }
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $packageVersion = [string]$entry.Value.version
+        $key = "npm:$name@$packageVersion"
+        $packages[$key] = [ordered]@{
+            SPDXID = ConvertTo-SpdxId $key
+            name = $name
+            versionInfo = $packageVersion
+            downloadLocation = if ($entry.Value.resolved) { [string]$entry.Value.resolved } else { "NOASSERTION" }
+            filesAnalyzed = $false
+            licenseConcluded = "NOASSERTION"
+            licenseDeclared = if ($entry.Value.license) { [string]$entry.Value.license } else { "NOASSERTION" }
+            copyrightText = "NOASSERTION"
+            externalRefs = @([ordered]@{
+                referenceCategory = "PACKAGE-MANAGER"
+                referenceType = "purl"
+                referenceLocator = "pkg:npm/$([Uri]::EscapeDataString($name))@$packageVersion"
+            })
+        }
     }
 }
 
@@ -118,7 +120,7 @@ $noticeLines.Add("AudioBoarder third-party notices")
 $noticeLines.Add("Version: $Version")
 $noticeLines.Add("Source commit: $Commit")
 $noticeLines.Add("")
-$noticeLines.Add("This inventory is generated from resolved NuGet and npm dependency manifests.")
+$noticeLines.Add("This inventory is generated from resolved dependency manifests. The offline canvas has no JavaScript package dependencies.")
 $noticeLines.Add("License texts remain available from each package's source or package page.")
 $noticeLines.Add("")
 foreach ($package in $packages.Values | Sort-Object name, versionInfo) {

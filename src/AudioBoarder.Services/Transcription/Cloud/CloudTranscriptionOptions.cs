@@ -7,6 +7,9 @@ public sealed class CloudTranscriptionOptions
     public string? Endpoint { get; set; }
     /// <summary>Deployment name. e.g. "gpt-4o-transcribe" or "MAI-Transcribe-1".</summary>
     public string? DeploymentName { get; set; }
+    public AudioBoarder.Services.LLM.DeployedModelIdentity? Model { get; set; }
+    public bool IsMaiModel => (Model?.Resolve(Endpoint, DeploymentName) ?? DeploymentName)?
+        .StartsWith("MAI-", StringComparison.OrdinalIgnoreCase) == true;
     public string? TenantId { get; set; }
     public string? ApiKey { get; set; }
     public bool UseManagedIdentity { get; set; } = true;

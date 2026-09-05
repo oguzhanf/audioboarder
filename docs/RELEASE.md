@@ -1,6 +1,6 @@
 # Release process
 
-v0.7.0 is the current published release. The 0.8.0 `release-readiness` work remains
+The 0.8.0 `release-readiness` work (including v0.8.0-preview.2) remains
 pre-release until every gate below passes. This repository does not automatically create
 tags or GitHub releases.
 
@@ -33,7 +33,7 @@ SBOM and metadata.
 The script fails at the first unsuccessful gate:
 
 1. `dotnet restore`
-2. `npm ci`, Vite build, and headless Edge SVG verification
+2. PowerShell packaging of offline canvas modules and headless Edge SVG/host-bridge verification (no Node.js)
 3. Release .NET build
 4. full offline tests (`Category!=LiveModel`)
 5. offline semantic golden gates

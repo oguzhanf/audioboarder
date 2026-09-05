@@ -9,21 +9,21 @@ handles pan, zoom, accessibility, incremental updates, and drag-to-pin.
 Build the committed bundle:
 
 ```powershell
-npm ci
-npm run build
+.\build-bundle.ps1
 ```
 
 Verify in headless Edge (the WebView2 engine family):
 
 ```powershell
-npm run preview
-# In a second terminal:
-node verify.cjs "http://localhost:5566/"
+.\verify.ps1
 ```
 
-The verifier checks semantic IDs, supplied geometry, groups, edge step/label/protocol/
-authentication/classification metadata, keyed element identity, keyboard/drag pinning,
-console errors, and a screenshot. It does not qualify model semantics; run the .NET
+No Node.js, dependency install, external server, or visible browser window is required.
+The verifier serves only the packaged canvas and fixtures on a temporary .NET loopback
+listener and runs an isolated headless Edge process. It checks the actual string-based
+WebView2 message protocol, component library/search, drop coordinates, viewport preservation,
+supplied geometry, security intent, interaction metadata, keyed identity and pinning.
+It does not qualify model semantics; run the .NET
 `SemanticReleaseGateTests` for all six intents.
 
 Excalidraw is editable export only. `SceneToExcalidrawConverter` remains the `.excalidraw`

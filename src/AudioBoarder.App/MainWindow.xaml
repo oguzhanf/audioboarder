@@ -232,7 +232,7 @@
                                       Visibility="{Binding IsAzureRetryAvailable, Converter={StaticResource BoolVis}}"
                                       AutomationProperties.Name="Retry health checks" />
                             <MenuItem Header="Configure Azure…"
-                                      Click="OnOpenSettingsMenuItem"
+                                      Click="OnConfigureAzure"
                                       Visibility="{Binding IsAzureConfigurationRequired, Converter={StaticResource BoolVis}}"
                                       AutomationProperties.Name="Open Azure configuration" />
                             <MenuItem Header="Settings…"
@@ -622,7 +622,7 @@
                                Margin="0,0,6,0"
                                Visibility="{Binding IsAzureRetryAvailable, Converter={StaticResource BoolVis}}"
                                AutomationProperties.Name="Retry Azure health checks" />
-                    <ui:Button Command="{x:Static local:MainWindow.OpenSettingsCommand}"
+                    <ui:Button Click="OnConfigureAzure"
                                Content="Configure"
                                Height="32"
                                Padding="10,0"

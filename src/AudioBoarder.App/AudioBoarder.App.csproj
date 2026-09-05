@@ -9,8 +9,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\AudioBoarder.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
-    <!-- web/ is the Vite SOURCE for the Excalidraw bundle (incl. node_modules);
-         never let MSBuild glob it. The BUILT bundle lives in Assets/web. -->
+    <!-- web/ contains canvas source and verification tools, not packaged content.
+         The offline canvas payload lives in Assets/web. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);web\**</DefaultItemExcludes>
   </PropertyGroup>
 

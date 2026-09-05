@@ -38,6 +38,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
     private bool _deepInFlight;
     private bool _pendingDeep;
     private bool _pendingDeepCommitsCursor;
+    private bool _deepAfterFast;
     private bool _started;
     private bool _hasCommittedCursor;
     private Task? _fastTask;
@@ -136,6 +137,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
             _pendingFast = false;
             _pendingDeep = false;
             _pendingDeepCommitsCursor = false;
+            _deepAfterFast = false;
             _retryNotBefore = DateTimeOffset.MinValue;
             _lastSafeErrorCode = null;
         }
@@ -167,6 +169,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
             _wakeScheduled = false;
             _pendingDeep = false;
             _pendingDeepCommitsCursor = false;
+            _deepAfterFast = false;
             _retryNotBefore = DateTimeOffset.MinValue;
             _lastSafeErrorCode = null;
         }
@@ -247,7 +250,17 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
             var hasProvisional = HasProvisionalContent();
             var pending = _buffer.ReadAfter(_committedCursor);
             if (trigger == DeepSynthesisTrigger.SpeechPause && !hasProvisional)
+            {
+                if (_fastInFlight || _wakeScheduled ||
+                    pending.Segments.Count >= _settings.MinNewSegments)
+                {
+                    _deepAfterFast = true;
+                    PublishRuntimeLocked(
+                        GenerationRuntimeStage.Queued,
+                        GenerationMode.DeepSynthesis);
+                }
                 return Task.CompletedTask;
+            }
             if (trigger == DeepSynthesisTrigger.MeetingStop &&
                 !hasProvisional && pending.Segments.Count == 0 && _orchestrator.Scene.Nodes.Count == 0)
                 return Task.CompletedTask;
@@ -265,7 +278,11 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
 
     private void OnSegment(object? sender, TranscriptSegment segment)
     {
-        lock (_gate) _lastSpeechAt = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            _lastSpeechAt = DateTimeOffset.UtcNow;
+            _deepAfterFast = false;
+        }
         SchedulePauseCheck();
         MaybeTriggerFast();
         PublishRuntime();
@@ -399,6 +416,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
         finally
         {
             bool runAgain;
+            bool runDeepAfterFast;
             lock (_gate)
             {
                 _fastInFlight = false;
@@ -406,9 +424,15 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
                            (_pendingFast ||
                             _buffer.ReadAfter(_committedCursor).Segments.Count >= _settings.MinNewSegments);
                 _pendingFast = false;
+                runDeepAfterFast = _started && _deepAfterFast && !runAgain;
+                if (runDeepAfterFast) _deepAfterFast = false;
             }
             PublishRuntime();
             if (runAgain) MaybeTriggerFast();
+            if (runDeepAfterFast)
+                _ = RequestDeepAsync(
+                    DeepSynthesisTrigger.SpeechPause,
+                    ct: _cts?.Token ?? CancellationToken.None);
         }
     }
 
@@ -653,6 +677,7 @@ public sealed class ContinuousDiagrammer : IAsyncDisposable
         {
             cts = _pauseCts;
             _pauseCts = null;
+            _deepAfterFast = false;
         }
         cts?.Cancel();
         cts?.Dispose();

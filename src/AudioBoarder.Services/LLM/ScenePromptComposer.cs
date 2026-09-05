@@ -24,7 +24,9 @@ public static class ScenePromptComposer
             _ => throw new ArgumentOutOfRangeException(nameof(request.Mode)),
         };
         return shared.Trim() + "\n\n" + modeRules + "\n\n" +
-               DiagramIntentPromptProfiles.For(request.DiagramIntent, request.IsContinuous);
+               DiagramIntentPromptProfiles.For(request.DiagramIntent, request.IsContinuous) +
+               "\n\nMICROSOFT COMPONENT VOCABULARY (Azure Architecture Center taxonomy; use exact product names when grounded):\n" +
+               MicrosoftComponentCatalog.ToPromptVocabulary();
     }
 
     public static string BuildUserPrompt(ScenePatchRequest request)

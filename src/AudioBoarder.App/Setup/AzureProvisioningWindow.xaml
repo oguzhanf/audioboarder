@@ -1,0 +1,96 @@
+<ui:FluentWindow x:Class="AudioBoarder.App.Setup.AzureProvisioningWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="{Binding Title}" Width="830" Height="790" MinWidth="740" MinHeight="640"
+                 WindowStartupLocation="CenterOwner" WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True" ShowInTaskbar="False">
+    <ui:FluentWindow.Resources>
+        <BooleanToVisibilityConverter x:Key="VisibleWhenTrue" />
+    </ui:FluentWindow.Resources>
+    <Grid Background="{DynamicResource ApplicationBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <ui:TitleBar Title="{Binding Title}" />
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="24,12,24,8">
+            <StackPanel>
+                <TextBlock Text="{Binding Title}" FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding AccountSummary}" TextWrapping="Wrap" Margin="0,12,0,4" />
+                <TextBlock Text="{Binding SubscriptionSummary}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,16" />
+                <StackPanel IsEnabled="{Binding IsIdle}">
+                    <StackPanel Visibility="{Binding IsResourceCreation, Converter={StaticResource VisibleWhenTrue}}">
+                        <TextBlock Text="Resource type" />
+                        <ComboBox SelectedValue="{Binding Kind}" SelectedValuePath="Tag" Margin="0,4,0,12"
+                                  AutomationProperties.Name="New Azure resource type">
+                            <ComboBoxItem Tag="OpenAI" Content="Azure OpenAI" />
+                            <ComboBoxItem Tag="AIServices" Content="Microsoft Foundry (AIServices)" />
+                        </ComboBox>
+                        <TextBlock Text="Resource group" />
+                        <ComboBox IsEditable="True" ItemsSource="{Binding ResourceGroups}"
+                                  Text="{Binding ResourceGroup, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,4"
+                                  AutomationProperties.Name="New resource group" />
+                        <CheckBox Content="Create this resource group if it does not exist"
+                                  IsChecked="{Binding CreateResourceGroup}" Margin="0,0,0,12" />
+                        <TextBlock Text="Region" />
+                        <ComboBox ItemsSource="{Binding Regions}" SelectedItem="{Binding SelectedRegion}"
+                                  DisplayMemberPath="DisplayName" Margin="0,4,0,12"
+                                  AutomationProperties.Name="New Azure resource region" />
+                        <CheckBox IsChecked="{Binding PublicNetworkAccess}" Margin="0,0,0,12"
+                                  Content="Allow public network access (otherwise configure private connectivity)" />
+                    </StackPanel>
+                    <StackPanel Visibility="{Binding IsDeployment, Converter={StaticResource VisibleWhenTrue}}">
+                        <TextBlock Text="Target Azure resource" />
+                        <ComboBox ItemsSource="{Binding Accounts}" SelectedItem="{Binding TargetAccount}"
+                                  DisplayMemberPath="DisplayName" SelectionChanged="OnTargetChanged" Margin="0,4,0,10"
+                                  AutomationProperties.Name="Deployment target resource" />
+                        <ui:Button Content="Refresh available models and quota" Click="OnRefresh"
+                                   HorizontalAlignment="Left" Margin="0,0,0,12"
+                                   AutomationProperties.Name="Refresh deployable models" />
+                        <TextBlock Text="Available model and version" />
+                        <ComboBox ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
+                                  DisplayMemberPath="DisplayName" Margin="0,4,0,12"
+                                  AutomationProperties.Name="Model to deploy" />
+                        <TextBlock Text="Deployment SKU" />
+                        <ComboBox ItemsSource="{Binding Skus}" SelectedItem="{Binding SelectedSku}"
+                                  DisplayMemberPath="DisplayName" Margin="0,4,0,12"
+                                  AutomationProperties.Name="Model deployment SKU" />
+                        <TextBlock Text="Capacity units" />
+                        <TextBox Text="{Binding Capacity, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"
+                                 Margin="0,4,0,6" AutomationProperties.Name="Model deployment capacity" />
+                        <TextBlock Text="{Binding QuotaSummary}" TextWrapping="Wrap" Margin="0,0,0,14"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <TextBlock Text="Name (must not already exist)" />
+                    <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,12"
+                             AutomationProperties.Name="New resource or deployment name" />
+                    <Border Padding="12" CornerRadius="8" Background="{DynamicResource ControlFillColorDefaultBrush}" Margin="0,6,0,12">
+                        <TextBlock Text="{Binding ReviewSummary}" TextWrapping="Wrap"
+                                   AutomationProperties.Name="Azure creation review" />
+                    </Border>
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                               Text="Resource and model use can incur Azure charges. Azure enforces available quota, organizational policy and your permissions. Foundry model terms may require separate acceptance in the Microsoft portal. No roles, marketplace terms or permissions are granted/accepted automatically. New resources use Entra authentication; inference requires Cognitive Services OpenAI User or equivalent access." />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="2" Margin="24,8,24,20">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,0,0,12" MaxHeight="90"
+                       AutomationProperties.Name="Azure provisioning status" AutomationProperties.LiveSetting="Polite" />
+            <CheckBox IsChecked="{Binding Confirmed}" IsEnabled="{Binding IsIdle}" Margin="0,0,0,12"
+                      AutomationProperties.Name="Confirm Azure creation and charges">
+                <TextBlock TextWrapping="Wrap" Text="I confirm this configuration and authorize creating it in my Azure subscription, including any applicable Azure charges." />
+            </CheckBox>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <ui:Button Content="Cancel" Click="OnCancel" IsEnabled="{Binding IsIdle}"
+                           AutomationProperties.Name="Cancel Azure provisioning" />
+                <ui:Button Content="Stop waiting" Click="OnStopWaiting" Margin="8,0,0,0"
+                           Visibility="{Binding IsCreating, Converter={StaticResource VisibleWhenTrue}}" />
+                <ui:Button Content="Create in Azure" Appearance="Primary" Click="OnCreate" Margin="8,0,0,0"
+                           IsEnabled="{Binding CanCreate}" AutomationProperties.Name="Create confirmed Azure resource or deployment" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

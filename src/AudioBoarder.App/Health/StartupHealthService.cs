@@ -415,6 +415,13 @@ public sealed class StartupHealthService : IHealthProbeRunner
                 HealthCondition.ServiceFailure,
                 "Azure discovery is temporarily unavailable. Retry shortly."),
             DiscoveryFailureKind.RateLimited => RateLimited(),
+            DiscoveryFailureKind.None => new HealthState(
+                ComponentStatus.ActionRequired,
+                "Azure OpenAI",
+                "The required Azure resource or chat deployment is missing. Open Configure to set up Azure OpenAI or Microsoft Foundry.",
+                DateTimeOffset.UtcNow,
+                Action: HealthAction.Configure,
+                Condition: HealthCondition.ConfigurationRequired),
             _ => new HealthState(
                 ComponentStatus.Failed,
                 "Azure OpenAI",

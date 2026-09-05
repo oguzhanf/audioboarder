@@ -26,6 +26,7 @@ public sealed class ExcalidrawCanvas : UserControl
     private string? _pendingJson;
     private string _theme = "light";
     private bool _initFailed;
+    private readonly string _componentLibraryJson = MicrosoftComponentCatalog.ToCanvasJson();
 
     public SceneGraph? Scene { get; set; }
 
@@ -35,6 +36,7 @@ public sealed class ExcalidrawCanvas : UserControl
     public AzureIconLibrary? AzureIcons { get; set; }
 
     public event EventHandler<ExcalidrawSceneChangedEventArgs>? UserSceneChanged;
+    public event EventHandler<CanvasComponentDroppedEventArgs>? ComponentDropped;
 
     public ExcalidrawCanvas()
     {
@@ -99,6 +101,7 @@ public sealed class ExcalidrawCanvas : UserControl
                     // Push the theme before the scene so the first paint is correct.
                     _web.CoreWebView2.PostWebMessageAsString(
                         $"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
+                    _web.CoreWebView2.PostWebMessageAsString(_componentLibraryJson);
                     if (_pendingJson is not null)
                     {
                         _web.CoreWebView2.PostWebMessageAsString(_pendingJson);
@@ -110,6 +113,12 @@ public sealed class ExcalidrawCanvas : UserControl
                         UserSceneChanged?.Invoke(this, new ExcalidrawSceneChangedEventArgs(change));
                     else
                         Debug.WriteLine("Ignoring malformed Excalidraw scene-change message.");
+                    break;
+                case "component-drop":
+                    if (TryParseComponentDrop(doc.RootElement, out var dropped))
+                        ComponentDropped?.Invoke(this, new CanvasComponentDroppedEventArgs(dropped));
+                    else
+                        Debug.WriteLine("Ignoring malformed component-drop message.");
                     break;
                 case "error":
                     if (doc.RootElement.TryGetProperty("message", out var message) &&
@@ -245,6 +254,20 @@ public sealed class ExcalidrawCanvas : UserControl
         return true;
     }
 
+    private static bool TryParseComponentDrop(JsonElement root, out CanvasComponentDrop change)
+    {
+        change = default!;
+        var componentId = TryGetString(root, "componentId");
+        var x = TryGetDouble(root, "x");
+        var y = TryGetDouble(root, "y");
+        if (componentId is null || x is null || y is null ||
+            !double.IsFinite(x.Value) || !double.IsFinite(y.Value))
+            return false;
+
+        change = new CanvasComponentDrop(componentId, x.Value, y.Value);
+        return true;
+    }
+
     private static bool TryParseElementChange(JsonElement element, out ExcalidrawSceneElementChange change)
     {
         change = default!;
@@ -345,3 +368,10 @@ public sealed record ExcalidrawViewport(
     double Zoom,
     double? Width,
     double? Height);
+
+public sealed class CanvasComponentDroppedEventArgs(CanvasComponentDrop change) : EventArgs
+{
+    public CanvasComponentDrop Change { get; } = change;
+}
+
+public sealed record CanvasComponentDrop(string ComponentId, double X, double Y);

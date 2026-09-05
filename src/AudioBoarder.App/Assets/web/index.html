@@ -5,11 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="data:," />
     <title>AudioBoarder Whiteboard</title>
-    <link rel="preconnect" href="https://rsms.me/" />
-    <script type="module" crossorigin src="./assets/index-CYCDWAvc.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BpPn3HS7.css">
+    <link rel="stylesheet" href="./canvas.css" />
   </head>
   <body>
+    <aside id="library" class="library" aria-label="Microsoft component library">
+      <div class="library-head">
+        <strong>Components</strong>
+        <button id="libraryToggle" title="Collapse component library" aria-label="Collapse component library">&lsaquo;</button>
+      </div>
+      <input id="componentSearch" type="search" placeholder="Search Azure, Microsoft 365, on-prem..." autocomplete="off" />
+      <div id="componentResults" class="component-results"></div>
+      <a id="componentSource" class="component-source" target="_blank" rel="noreferrer">Azure Architecture Center</a>
+    </aside>
     <div id="stage"><svg id="canvas"></svg></div>
 
     <div class="zoom">
@@ -18,6 +25,7 @@
       <button id="zoomIn" title="Zoom in">+</button>
       <button id="zoomFit" title="Fit to content">Fit</button>
     </div>
-
+
+    <script type="module" src="./main-canvas.js"></script>
   </body>
 </html>

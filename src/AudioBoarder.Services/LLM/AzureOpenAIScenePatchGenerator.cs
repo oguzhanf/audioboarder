@@ -62,11 +62,12 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         };
 
         var attempts = new List<Func<ChatCompletionOptions>>();
-        attempts.Add(() => BuildOptions(deploymentName, useSchema: true));
+        var modelName = _options.GetModelName(request.IsContinuous);
+        attempts.Add(() => BuildOptions(modelName, useSchema: true));
         if (_options.AllowJsonObjectFallback)
         {
-            attempts.Add(() => BuildOptions(deploymentName, useSchema: false, useJsonObject: true));
-            attempts.Add(() => BuildOptions(deploymentName, useSchema: false, useJsonObject: false));
+            attempts.Add(() => BuildOptions(modelName, useSchema: false, useJsonObject: true));
+            attempts.Add(() => BuildOptions(modelName, useSchema: false, useJsonObject: false));
         }
 
         Exception? lastError = null;
@@ -119,7 +120,7 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         throw lastError ?? new InvalidOperationException("All Azure OpenAI completion strategies failed.");
     }
 
-    private ChatCompletionOptions BuildOptions(string deploymentName, bool useSchema, bool useJsonObject = false)
+    private ChatCompletionOptions BuildOptions(string? deploymentName, bool useSchema, bool useJsonObject = false)
     {
         var opts = new ChatCompletionOptions();
         var isReasoning = IsReasoningModel(deploymentName);
@@ -145,13 +146,12 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         return opts;
     }
 
-    private static bool IsReasoningModel(string? deploymentName)
+    internal static bool IsReasoningModel(string? deploymentName)
     {
         if (string.IsNullOrEmpty(deploymentName)) return false;
         var lower = deploymentName.ToLowerInvariant();
-        // Heuristic — Azure considers any gpt-5*, o1*, o3* as reasoning models
-        // and rejects classic Chat Completions parameters like max_tokens.
-        return lower.Contains("gpt-5") || lower.StartsWith("o1") || lower.StartsWith("o3");
+        return FoundryDiscovery.ParseGptVersion(lower).Major >= 5 ||
+               lower.StartsWith("o1") || lower.StartsWith("o3") || lower.StartsWith("o4");
     }
 
     private static string ExtractJson(string raw)

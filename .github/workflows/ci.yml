@@ -12,36 +12,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: src/AudioBoarder.App/web/package-lock.json
       - name: Build SVG canvas
-        working-directory: src/AudioBoarder.App/web
-        run: |
-          npm ci
-          npm run build
-      - name: Verify SVG canvas in Edge
-        working-directory: src/AudioBoarder.App/web
         shell: pwsh
-        run: |
-          $preview = Start-Process node -ArgumentList @("node_modules\vite\bin\vite.js", "preview", "--host", "127.0.0.1", "--port", "5566", "--strictPort") -PassThru
-          try {
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              try {
-                Invoke-WebRequest "http://127.0.0.1:5566/" -UseBasicParsing -TimeoutSec 2 | Out-Null
-                break
-              } catch {
-                if ($attempt -eq 29) { throw }
-                Start-Sleep -Milliseconds 500
-              }
-            }
-            node verify.cjs "http://127.0.0.1:5566/" "" "${{ runner.temp }}\svg-verify.png"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } finally {
-            if (!$preview.HasExited) { Stop-Process -Id $preview.Id -Force }
-          }
+        run: .\src\AudioBoarder.App\web\build-bundle.ps1
+      - name: Verify SVG canvas in Edge
+        shell: pwsh
+        run: .\src\AudioBoarder.App\web\verify.ps1
       - name: Restore
         run: dotnet restore AudioBoarder.sln
       - name: Build
