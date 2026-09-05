@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using AudioBoarder.Core.Imaging;
 using AudioBoarder.Core.Patch;
@@ -7,6 +8,7 @@ using AudioBoarder.Core.Layout;
 using AudioBoarder.Core.Scene;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.Intent;
+using AudioBoarder.Services.LLM;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -245,7 +247,11 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
                     .ToArray();
                 var filtered = FilterGeneratedPatch(
                     response.Patch, Scene, snapshot, mode, stale);
-                var safePatch = filtered.Patch;
+                var safePatch = mode == GenerationMode.ManualRefine
+                    ? filtered.Patch
+                    : MeetingNotePatchNormalizer.Normalize(filtered.Patch, Scene);
+                if (mode == GenerationMode.ContinuousExtraction)
+                    safePatch = PreserveContinuousEdgeTargets(safePatch, Scene);
                 response = response with { Patch = safePatch };
 
                 var revisionBeforeApply = Scene.Revision;
@@ -369,6 +375,31 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
             EndInFlight(mode, succeeded);
             gate.Release();
         }
+    }
+
+    private static ScenePatch PreserveContinuousEdgeTargets(ScenePatch patch, SceneGraph scene)
+    {
+        var targets = scene.Edges.Values.ToDictionary(
+            edge => edge.Id, edge => (From: edge.FromNodeId, To: edge.ToNodeId), StringComparer.Ordinal);
+        var operations = new List<ScenePatchOperation>(patch.Operations.Count);
+        foreach (var operation in patch.Operations)
+        {
+            if (operation is not Connect connect)
+            {
+                operations.Add(operation);
+                continue;
+            }
+            if (targets.TryGetValue(connect.Id, out var previous) &&
+                (previous.From != connect.From || previous.To != connect.To))
+            {
+                // A live additive pass must not erase an earlier flow by recycling its ID.
+                var hash = SHA256.HashData(Encoding.UTF8.GetBytes(connect.Id + "\n" + connect.From + "\n" + connect.To));
+                connect = connect with { Id = "edge-" + Convert.ToHexString(hash)[..24].ToLowerInvariant() };
+            }
+            targets[connect.Id] = (connect.From, connect.To);
+            operations.Add(connect);
+        }
+        return new ScenePatch(operations);
     }
 
     private static PatchFilterResult FilterGeneratedPatch(

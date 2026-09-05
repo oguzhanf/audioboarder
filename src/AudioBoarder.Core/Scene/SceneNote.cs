@@ -7,6 +7,8 @@ public enum NoteKind
     Question,
     Risk,
     General,
+    Answer,
+    Concept,
 }
 
 public sealed class SceneNote

@@ -7,6 +7,7 @@ using AudioBoarder.App.Auth;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
 using AudioBoarder.App.Updates;
+using AudioBoarder.App.Setup;
 using AudioBoarder.Services.LLM;
 using Microsoft.Extensions.Options;
 using Wpf.Ui.Appearance;
@@ -31,6 +32,8 @@ public partial class MainWindow : FluentWindow
     private readonly IAzureCredentialProvider _credentials;
     private readonly IAzureProvisioningService _provisioning;
     private readonly GitHubUpdateService _updates;
+    private readonly AutomaticSetupController _automaticSetup;
+    private bool _configuringWorkspace;
     private bool _checkingUpdates;
     private string _themePreference = "System";
     private bool _isThemeWatcherActive;
@@ -46,7 +49,8 @@ public partial class MainWindow : FluentWindow
         IAzureModelInventory inventory,
         IAzureCredentialProvider credentials,
         IAzureProvisioningService provisioning,
-        GitHubUpdateService updates)
+        GitHubUpdateService updates,
+        AutomaticSetupController automaticSetup)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -57,6 +61,7 @@ public partial class MainWindow : FluentWindow
         _credentials = credentials;
         _provisioning = provisioning;
         _updates = updates;
+        _automaticSetup = automaticSetup;
         DataContext = viewModel;
         ApplyThemePreference(settings.Value.Theme);
         Loaded += OnLoaded;
@@ -78,6 +83,8 @@ public partial class MainWindow : FluentWindow
         {
             if (e.PropertyName == nameof(MainViewModel.TranscriptDisplay))
                 Dispatcher.BeginInvoke(() => TranscriptBox.ScrollToEnd());
+            if (e.PropertyName == nameof(MainViewModel.IsListening) && viewModel.IsListening)
+                Whiteboard.SetLibraryCollapsed(true);
         };
     }
 
@@ -154,6 +161,28 @@ public partial class MainWindow : FluentWindow
 
     private async void OnConfigureAzure(object sender, RoutedEventArgs e)
         => await ShowSettingsAsync(showAzure: true);
+
+    private async void OnConfigureWorkspace(object sender, RoutedEventArgs e)
+    {
+        if (_configuringWorkspace) return;
+        _configuringWorkspace = true;
+        try
+        {
+            if (_viewModel.IsListening) await _viewModel.ToggleListenAsync();
+            if (!_credentials.TryGetSignedInCredential(out _))
+            {
+                var result = await _credentials.SignInInteractiveAsync(CancellationToken.None);
+                if (!result.Success)
+                {
+                    System.Windows.MessageBox.Show(this, result.Message, "Azure connection");
+                    return;
+                }
+            }
+            await _automaticSetup.ShowAsync();
+            await _viewModel.RetryHealthAsync();
+        }
+        finally { _configuringWorkspace = false; }
+    }
 
     private async void OnCheckForUpdates(object sender, RoutedEventArgs e)
     {

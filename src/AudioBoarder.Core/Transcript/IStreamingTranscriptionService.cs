@@ -8,6 +8,9 @@ namespace AudioBoarder.Core.Transcript;
 /// </summary>
 public interface IStreamingTranscriptionService : ITranscriptionService
 {
+    Task PrepareStreamsAsync(IReadOnlyList<Audio.AudioStreamRole> roles, Audio.AudioFormat format, CancellationToken ct) =>
+        Task.CompletedTask;
+
     /// <summary>Raised when the service finalises an utterance (committed text).</summary>
     event EventHandler<TranscriptSegment>? SegmentReady;
 

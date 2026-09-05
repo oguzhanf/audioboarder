@@ -68,13 +68,15 @@ public static class UiRuntimeStatusMapper
                 IsWarning: true);
         }
 
-        var dropped = audio.DroppedBackendAudio;
+        var dropped = audio.DroppedBackendAudio + audio.DroppedCaptureAudio;
         if (audio.DroppedBackendBytes > 0 || audio.ChannelDrops > 0 || dropped > TimeSpan.Zero)
         {
             return new UiRuntimeStatus(
                 UiRuntimeState.AudioGap,
-                $"Audio gap {Math.Max(0, dropped.TotalSeconds):F0}s",
-                "Some captured audio could not be retained while the transcription backend caught up.",
+                dropped > TimeSpan.Zero ? $"Audio gap {dropped.TotalSeconds:F1}s" : "Audio interrupted",
+                audio.ChannelDrops > 0
+                    ? "Transcription could not keep up with capture. Stop and run Workspace setup to enable live streaming speech."
+                    : "Some audio was lost at the transcription service. Check the connection and retry.",
                 IsWarning: true);
         }
 
@@ -143,9 +145,9 @@ public static class UiRuntimeStatusMapper
         if (generation.PendingSegments == 0)
         {
             return new UiRuntimeStatus(
-                UiRuntimeState.CaptionsCurrent,
-                "Captions current",
-                "Listening for the next statement.");
+                latestCaptionTimestamp.HasValue ? UiRuntimeState.CaptionsCurrent : UiRuntimeState.Listening,
+                latestCaptionTimestamp.HasValue ? "Captions current" : "Listening",
+                latestCaptionTimestamp.HasValue ? "Listening for the next statement." : "Waiting for live speech. Check the microphone level.");
         }
 
         return new UiRuntimeStatus(

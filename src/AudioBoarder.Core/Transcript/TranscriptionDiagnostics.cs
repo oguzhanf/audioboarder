@@ -49,7 +49,9 @@ public sealed record AudioPipelineDiagnostics(
     long DroppedBackendBytes,
     DateTimeOffset? RetryAt = null,
     string? SafeErrorCode = null,
-    string? StatusMessage = null)
+    string? StatusMessage = null,
+    TimeSpan DroppedCaptureAudio = default,
+    long DroppedCaptureBytes = 0)
 {
     public static AudioPipelineDiagnostics Stopped { get; } =
         new(AudioPipelineRuntimeState.Stopped, 0, TimeSpan.Zero, TimeSpan.Zero, 0);

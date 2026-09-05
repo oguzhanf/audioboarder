@@ -55,6 +55,8 @@ public sealed class NoteKindBrushConverter : IValueConverter
             "ActionItem" => Color.FromRgb(0x4F, 0x46, 0xE5),
             "Risk" => Color.FromRgb(0xDC, 0x26, 0x26),
             "Question" => Color.FromRgb(0xD9, 0x77, 0x06),
+            "Answer" => Color.FromRgb(0x08, 0x91, 0xB2),
+            "Concept" => Color.FromRgb(0x7C, 0x3A, 0xED),
             _ => Color.FromRgb(0x6B, 0x72, 0x80),
         };
         return new SolidColorBrush(color);

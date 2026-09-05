@@ -26,6 +26,7 @@ public sealed class ExcalidrawCanvas : UserControl
     private string? _pendingJson;
     private string _theme = "light";
     private bool _initFailed;
+    private bool _libraryCollapsed;
 
     public SceneGraph? Scene { get; set; }
 
@@ -101,6 +102,8 @@ public sealed class ExcalidrawCanvas : UserControl
                     _web.CoreWebView2.PostWebMessageAsString(
                         $"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
                     _web.CoreWebView2.PostWebMessageAsString(MicrosoftComponentCatalog.ToCanvasJson(AzureIcons));
+                    _web.CoreWebView2.PostWebMessageAsString(
+                        JsonSerializer.Serialize(new { type = "library-visibility", collapsed = _libraryCollapsed }));
                     if (_pendingJson is not null)
                     {
                         _web.CoreWebView2.PostWebMessageAsString(_pendingJson);
@@ -193,8 +196,17 @@ public sealed class ExcalidrawCanvas : UserControl
             Dispatcher.BeginInvoke(() => SetTheme(isDark));
             return;
         }
+
         if (_ready && _web.CoreWebView2 is not null)
             _web.CoreWebView2.PostWebMessageAsString($"{{\"type\":\"theme\",\"theme\":\"{_theme}\"}}");
+    }
+
+    public void SetLibraryCollapsed(bool collapsed)
+    {
+        _libraryCollapsed = collapsed;
+        if (_ready && _web.CoreWebView2 is not null)
+            _web.CoreWebView2.PostWebMessageAsString(
+                JsonSerializer.Serialize(new { type = "library-visibility", collapsed }));
     }
 
     private void ShowFallback(string detail)

@@ -80,17 +80,17 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
+                <!-- Primary action: Listen / Stop -->
                 <ui:Button Grid.Column="0"
                            Command="{Binding ToggleListenCommand}"
                            Content="{Binding IsListening, Converter={StaticResource BoolToString}, ConverterParameter='Listen|Stop'}"
                            Appearance="Primary"
-                           MinWidth="84"
+                           MinWidth="100"
                            Height="40"
-                           Padding="14,0"
-                           Margin="0,0,8,0"
+                           Padding="16,0"
+                           Margin="0,0,12,0"
                            ToolTip="Start or stop listening. Ctrl+Shift+L."
                            AutomationProperties.Name="Start or stop listening">
                     <ui:Button.Icon>
@@ -98,17 +98,56 @@
                     </ui:Button.Icon>
                 </ui:Button>
 
-                <ComboBox Grid.Column="1"
-                          Width="120"
-                          Height="36"
-                          Margin="0,0,8,0"
-                          ItemsSource="{Binding IntentOptions}"
-                          SelectedItem="{Binding SelectedIntentOption, Mode=TwoWay}"
-                          DisplayMemberPath="Label"
-                          ToolTip="{Binding IntentModeDisplay, StringFormat='Diagram intent: {0}'}"
-                          AutomationProperties.Name="Diagram intent selector" />
+                <!-- Microphone info: device name above level bar -->
+                <StackPanel Grid.Column="1"
+                            Orientation="Vertical"
+                            VerticalAlignment="Center"
+                            Margin="0,0,4,0">
+                    <TextBlock Text="{Binding SelectedInputDevice.Name, TargetNullValue='No microphone'}"
+                               FontSize="11"
+                               Width="130"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               Margin="0,0,0,3"
+                               AutomationProperties.Name="Selected microphone name" />
+                    <ProgressBar Width="130"
+                                 Height="4"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Value="{Binding MicLevel}"
+                                 Foreground="{DynamicResource SystemAccentBrush}"
+                                 ToolTip="Microphone input level."
+                                 AutomationProperties.Name="Microphone input level" />
+                </StackPanel>
 
+                <!-- Microphone selector -->
                 <ui:Button Grid.Column="2"
+                           x:Name="AudioInputButton"
+                           Appearance="Transparent"
+                           Height="40"
+                           Width="40"
+                           Padding="0"
+                           Margin="0,0,10,0"
+                           Click="OnOpenAudioMenu"
+                           ToolTip="{Binding SelectedInputDevice.Name, StringFormat='Audio input: {0}'}"
+                           AutomationProperties.Name="Choose audio input">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="MicSettings24" />
+                    </ui:Button.Icon>
+                </ui:Button>
+
+                <!-- Refinement instruction (stretches to fill available space) -->
+                <ui:TextBox Grid.Column="3"
+                            Height="36"
+                            MinWidth="60"
+                            Margin="0,0,6,0"
+                            Text="{Binding RefinementInstruction, UpdateSourceTrigger=PropertyChanged}"
+                            PlaceholderText="Refine instruction…"
+                            ToolTip="Optional instruction for the deep refinement pass."
+                            AutomationProperties.Name="Deep refine instruction" />
+
+                <!-- Secondary: Refine -->
+                <ui:Button Grid.Column="4"
                            Command="{Binding RefineDiagramCommand}"
                            Content="Refine"
                            Height="40"
@@ -121,42 +160,18 @@
                     </ui:Button.Icon>
                 </ui:Button>
 
-                <ui:TextBox Grid.Column="3"
-                            Height="40"
-                            MinWidth="60"
-                            Margin="0,0,8,0"
-                            Text="{Binding RefinementInstruction, UpdateSourceTrigger=PropertyChanged}"
-                            PlaceholderText="Optional refine instruction…"
-                            ToolTip="Optional instruction for the deep refinement pass."
-                            AutomationProperties.Name="Deep refine instruction" />
+                <!-- Diagram intent selector -->
+                <ComboBox Grid.Column="5"
+                          Width="110"
+                          Height="36"
+                          Margin="0,0,8,0"
+                          ItemsSource="{Binding IntentOptions}"
+                          SelectedItem="{Binding SelectedIntentOption, Mode=TwoWay}"
+                          DisplayMemberPath="Label"
+                          ToolTip="{Binding IntentModeDisplay, StringFormat='Diagram intent: {0}'}"
+                          AutomationProperties.Name="Diagram intent selector" />
 
-                <ProgressBar Grid.Column="4"
-                             Width="28"
-                             Height="4"
-                             Margin="0,0,8,0"
-                             Minimum="0"
-                             Maximum="100"
-                             Value="{Binding MicLevel}"
-                             Foreground="{DynamicResource SystemAccentBrush}"
-                             VerticalAlignment="Center"
-                             ToolTip="Microphone input level."
-                             AutomationProperties.Name="Microphone input level" />
-
-                <ui:Button Grid.Column="5"
-                           x:Name="AudioInputButton"
-                           Appearance="Transparent"
-                           Height="40"
-                           Width="40"
-                           Padding="0"
-                           Margin="0,0,4,0"
-                           Click="OnOpenAudioMenu"
-                           ToolTip="{Binding SelectedInputDevice.Name, StringFormat='Audio input: {0}'}"
-                           AutomationProperties.Name="Choose audio input">
-                    <ui:Button.Icon>
-                        <ui:SymbolIcon Symbol="MicSettings24" />
-                    </ui:Button.Icon>
-                </ui:Button>
-
+                <!-- Settings -->
                 <ui:Button Grid.Column="6"
                            Command="{x:Static local:MainWindow.OpenSettingsCommand}"
                            Appearance="Transparent"
@@ -171,6 +186,7 @@
                     </ui:Button.Icon>
                 </ui:Button>
 
+                <!-- Overflow menu -->
                 <ui:Button Grid.Column="7"
                            x:Name="MoreButton"
                            Appearance="Transparent"
@@ -185,6 +201,10 @@
                     </ui:Button.Icon>
                     <ui:Button.ContextMenu>
                         <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                            <MenuItem Header="Workspace setup…"
+                                      Click="OnConfigureWorkspace"
+                                      AutomationProperties.Name="Open workspace setup" />
+                            <Separator />
                             <MenuItem Header="Import transcript…"
                                       Command="{Binding ImportTranscriptCommand}"
                                       AutomationProperties.Name="Import a meeting transcript" />
@@ -253,7 +273,18 @@
         </Border>
 
         <Grid Grid.Row="2" Margin="8">
-            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Border Grid.Row="1"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="12"
@@ -312,9 +343,60 @@
                 </Grid>
             </Border>
 
+            <!-- Native controls stay outside the WebView2 HWND's airspace. -->
+            <StackPanel Grid.Row="0">
             <Border VerticalAlignment="Top"
                     HorizontalAlignment="Center"
-                    Margin="16,64,16,0"
+                    MaxWidth="500"
+                    Margin="16,8"
+                    Padding="20,16"
+                    CornerRadius="10"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    Panel.ZIndex="20"
+                    Visibility="{Binding IsSetupNeeded, Converter={StaticResource BoolVis}}"
+                    AutomationProperties.Name="Workspace setup card">
+                <StackPanel>
+                    <TextBlock Text="Workspace setup"
+                               FontSize="15"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,8"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                    <TextBlock Text="{Binding SetupSummary}"
+                               TextWrapping="Wrap"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                               Margin="0,0,0,4" />
+                    <TextBlock Text="Connect your Azure account. AudioBoarder prepares compatible services and models for you."
+                               TextWrapping="Wrap"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               Margin="0,0,0,14" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                        <ui:Button Content="Set up for me"
+                                   Appearance="Primary"
+                                   Height="36"
+                                   Padding="16,0"
+                                   Margin="0,0,8,0"
+                                   Click="OnConfigureWorkspace"
+                                   AutomationProperties.Name="Run automatic workspace setup" />
+                        <ui:Button Content="Open Settings"
+                                   Height="36"
+                                   Padding="12,0"
+                                   Command="{x:Static local:MainWindow.OpenSettingsCommand}"
+                                   AutomationProperties.Name="Open Settings from setup card" />
+                    </StackPanel>
+                    <TextBlock Text="Provisioned services may incur Azure costs. Review in the setup dialog before confirming."
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </Border>
+
+            <Border VerticalAlignment="Top"
+                    HorizontalAlignment="Center"
+                    Margin="16,4"
                     Padding="12,8"
                     MaxWidth="720"
                     CornerRadius="8"
@@ -344,7 +426,7 @@
 
             <Border VerticalAlignment="Top"
                     HorizontalAlignment="Center"
-                    Margin="16,112,16,0"
+                    Margin="16,4"
                     Padding="12,8"
                     MaxWidth="760"
                     CornerRadius="8"
@@ -371,30 +453,33 @@
                                AutomationProperties.Name="Cancel reflow all nodes" />
                 </StackPanel>
             </Border>
+            </StackPanel>
 
-            <Border VerticalAlignment="Bottom"
+            <Border Grid.Row="2"
+                    VerticalAlignment="Bottom"
                     HorizontalAlignment="Center"
-                    Width="720"
-                    MaxWidth="720"
-                    Margin="16"
-                    Padding="12,8"
+                    MaxWidth="900"
+                    Margin="0,8,0,0"
+                    Padding="16,10"
                     CornerRadius="8"
                     Background="{DynamicResource ControlFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderBrush="{DynamicResource SystemAccentBrush}"
                     BorderThickness="1"
                     Visibility="{Binding IsListening, Converter={StaticResource BoolVis}}"
                     AutomationProperties.Name="Live caption strip">
                 <TextBlock Text="{Binding LiveCaptionDisplay}"
                            TextWrapping="Wrap"
-                           MaxHeight="58"
-                           FontSize="14"
-                           LineHeight="19"
+                           MaxHeight="84"
+                           FontSize="15"
+                           LineHeight="22"
                            Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                            AutomationProperties.LiveSetting="Polite" />
             </Border>
 
             <Border x:Name="TranscriptPane"
-                    Width="380"
+                    Grid.Column="2"
+                    Grid.RowSpan="3"
+                    Width="340"
                     HorizontalAlignment="Left"
                     Margin="8"
                     Padding="0"
@@ -449,7 +534,9 @@
             </Border>
 
             <Border x:Name="NotesPane"
-                    Width="380"
+                    Grid.Column="1"
+                    Grid.RowSpan="3"
+                    Width="320"
                     HorizontalAlignment="Right"
                     Margin="8"
                     CornerRadius="12"
@@ -470,9 +557,11 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Notes" FontWeight="SemiBold" />
-                                <TextBlock Text="{Binding NoteCount, StringFormat='Notes: {0} · decisions, actions, risks, and questions'}"
+                                <TextBlock Text="Notes &amp; Insights" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding NoteCount, StringFormat='Notes: {0} · decisions, actions, risks, questions, answers, and concepts'}"
                                            FontSize="11"
+                                           TextWrapping="Wrap"
+                                           Margin="0,3,8,0"
                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
                             <ui:Button Grid.Column="1"
@@ -499,10 +588,10 @@
                                 <GroupStyle.HeaderTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding Name}"
-                                                   Margin="2,8,2,4"
+                                                   Margin="2,10,2,4"
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                     </DataTemplate>
                                 </GroupStyle.HeaderTemplate>
                             </GroupStyle>
@@ -521,7 +610,7 @@
                                         Background="{DynamicResource ControlFillColorDefaultBrush}">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="3" />
+                                            <ColumnDefinition Width="14" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
                                         <Border Background="{Binding Kind, Converter={StaticResource NoteKindBrush}}"
@@ -552,14 +641,13 @@
                 BorderThickness="0,1,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="{Binding RuntimeStatus.Label}"
                                FontWeight="SemiBold"
-                               Margin="0,0,10,0"
+                               Margin="0,0,8,0"
                                AutomationProperties.Name="Runtime state" />
                     <TextBlock Text="{Binding RuntimeStatus.Details}"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
@@ -568,13 +656,13 @@
                                AutomationProperties.Name="Runtime state details" />
                     <ui:Button Command="{Binding DismissRuntimeFaultCommand}"
                                Content="Dismiss"
-                               Height="32"
+                               Height="28"
                                Padding="10,0"
                                Margin="8,0,0,0"
                                Visibility="{Binding IsRuntimeFaultVisible, Converter={StaticResource BoolVis}}"
                                AutomationProperties.Name="Dismiss runtime fault" />
                 </StackPanel>
-                <ItemsControl Grid.Column="2"
+                <ItemsControl Grid.Column="1"
                               ItemsSource="{Binding HealthStates}"
                               VerticalAlignment="Center"
                               AutomationProperties.Name="Component health">
@@ -604,34 +692,6 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center"
-                            Margin="8,0">
-                    <ui:Button Command="{Binding SignInToAzureCommand}"
-                               Content="Sign in to Azure"
-                               Appearance="Primary"
-                               Height="32"
-                               Padding="10,0"
-                               Margin="0,0,6,0"
-                               Visibility="{Binding IsAzureSignInRequired, Converter={StaticResource BoolVis}}"
-                               AutomationProperties.Name="Sign in to Azure" />
-                    <ui:Button Command="{Binding RetryHealthCommand}"
-                               Content="Retry"
-                               Height="32"
-                               Padding="10,0"
-                               Margin="0,0,6,0"
-                               Visibility="{Binding IsAzureRetryAvailable, Converter={StaticResource BoolVis}}"
-                               AutomationProperties.Name="Retry Azure health checks" />
-                    <ui:Button Click="OnConfigureAzure"
-                               Content="Configure"
-                               Height="32"
-                               Padding="10,0"
-                               Visibility="{Binding IsAzureConfigurationRequired, Converter={StaticResource BoolVis}}"
-                               AutomationProperties.Name="Open Azure configuration" />
-                </StackPanel>
             </Grid>
         </Border>
     </Grid>

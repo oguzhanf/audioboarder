@@ -47,7 +47,8 @@ public class AudioPipelineContinuityTests
         public bool IsRunning { get; private set; }
         public event EventHandler<AudioChunk>? ChunkCaptured;
         public event EventHandler<AudioCaptureError>? CaptureFailed;
-        public Task StartAsync(CancellationToken ct) { IsRunning = true; return Task.CompletedTask; }
+        public Action? Starting { get; init; }
+        public Task StartAsync(CancellationToken ct) { Starting?.Invoke(); IsRunning = true; return Task.CompletedTask; }
         public Task StopAsync(CancellationToken ct) { IsRunning = false; return Task.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public void Emit(AudioChunk c) => ChunkCaptured?.Invoke(this, c);
@@ -166,6 +167,89 @@ public class AudioPipelineContinuityTests
         sink.Count.Should().Be(20);
         sink.ForceFlushObservedCount.Should().Be(20,
             "the final flush must run only after all queued chunks reach the transcriber");
+    }
+
+    [Fact]
+    public async Task StreamingConnectionsArePreparedBeforeCaptureCanStart()
+    {
+        var order = new List<string>();
+        var speech = new PreparedStreaming(order);
+        var source = new FakeSource { Starting = () => order.Add("capture") };
+        var transcript = new TranscriptBuffer(TimeSpan.FromMinutes(1));
+        await using var pipeline = new AudioPipeline([source], speech, new PassThroughVoiceActivityDetector(), transcript);
+        await pipeline.StartAsync(default);
+        order.Should().Equal("prepare", "capture");
+        await pipeline.StopAsync(default);
+        transcript.Snapshot().Should().Contain(segment => segment.Text == "final tail");
+    }
+
+    [Fact]
+    public async Task FailedPreparationClosesConnectionsAndAllowsCleanRetry()
+    {
+        var order = new List<string>();
+        var speech = new PreparedStreaming(order) { FailPreparation = true };
+        var source = new FakeSource();
+        var transcript = new TranscriptBuffer(TimeSpan.FromMinutes(1));
+        await using var pipeline = new AudioPipeline([source], speech, new PassThroughVoiceActivityDetector(), transcript);
+
+        var start = () => pipeline.StartAsync(default);
+        await start.Should().ThrowAsync<InvalidOperationException>();
+        source.IsRunning.Should().BeFalse();
+        speech.ForcedFlushes.Should().Be(1);
+
+        speech.FailPreparation = false;
+        await pipeline.StartAsync(default);
+        source.IsRunning.Should().BeTrue();
+        await pipeline.StopAsync(default);
+        speech.ForcedFlushes.Should().Be(2);
+        transcript.Snapshot().Count(segment => segment.Text == "final tail").Should().Be(2,
+            "the retry must not retain duplicate streaming event handlers");
+    }
+
+    [Fact]
+    public async Task SpeechOnOneChannelDoesNotOpenAnotherChannelsSilence()
+    {
+        var (sink, source, pipeline) = await StartAsync(.05);
+        await using var cleanup = pipeline;
+        source.Emit(Chunk(.3));
+        for (var i = 0; i < 6; i++)
+        {
+            var chunk = Chunk(.001);
+            source.Emit(new AudioChunk { Role = AudioStreamRole.Loopback, Format = chunk.Format,
+                CapturedAt = chunk.CapturedAt, Samples = chunk.Samples });
+        }
+        await DrainAsync(sink, 1);
+        sink.Received.Should().OnlyContain(chunk => chunk.Role == AudioStreamRole.Microphone);
+    }
+
+    private sealed class PreparedStreaming(List<string> order) : IStreamingTranscriptionService
+    {
+        public bool FailPreparation { get; set; }
+        public int ForcedFlushes { get; private set; }
+        public string Name => "prepared streaming";
+        public bool IsReady => true;
+        public event EventHandler<TranscriptSegment>? SegmentReady;
+        public event EventHandler<TranscriptSegment>? InterimReady { add { } remove { } }
+        public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task PrepareStreamsAsync(IReadOnlyList<AudioStreamRole> roles, AudioFormat format, CancellationToken ct)
+        {
+            await Task.Delay(50, ct);
+            order.Add("prepare");
+            if (FailPreparation) throw new InvalidOperationException("Synthetic connection failure.");
+        }
+        public Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<TranscriptSegment>>([]);
+        public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
+        {
+            if (force)
+            {
+                ForcedFlushes++;
+                SegmentReady?.Invoke(this, new(Guid.NewGuid(), TranscriptSpeaker.Local,
+                    "final tail", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+            }
+            return Task.FromResult<IReadOnlyList<TranscriptSegment>>([]);
+        }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Fact]

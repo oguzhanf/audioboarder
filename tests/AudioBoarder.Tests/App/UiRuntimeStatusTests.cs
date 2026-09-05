@@ -85,7 +85,7 @@ public class UiRuntimeStatusTests
             Now);
 
         status.State.Should().Be(UiRuntimeState.AudioGap);
-        status.Label.Should().Be("Audio gap 4s");
+        status.Label.Should().Be("Audio gap 4.0s");
         status.IsWarning.Should().BeTrue();
     }
 
@@ -101,6 +101,27 @@ public class UiRuntimeStatusTests
 
         status.State.Should().Be(UiRuntimeState.Behind);
         status.Label.Should().Be("Behind 5 statements / 9s");
+    }
+
+    [Fact]
+    public void CaptureQueueLossReportsItsActualDurationInsteadOfZeroSeconds()
+    {
+        var status = UiRuntimeStatusMapper.Map(
+            new AudioPipelineDiagnostics(AudioPipelineRuntimeState.Degraded, 10, TimeSpan.Zero,
+                TimeSpan.Zero, 0, DroppedCaptureAudio: TimeSpan.FromSeconds(.3), DroppedCaptureBytes: 9600),
+            Snapshot(GenerationRuntimeStage.Current), true, Now);
+        status.Label.Should().Be("Audio gap 0.3s");
+        status.Details.Should().Contain("streaming");
+    }
+
+    [Fact]
+    public void ListeningWithoutAnyCaptionIsNotClaimedAsCaptionsCurrent()
+    {
+        var status = UiRuntimeStatusMapper.Map(
+            new AudioPipelineDiagnostics(AudioPipelineRuntimeState.Running, 0, TimeSpan.Zero, TimeSpan.Zero, 0),
+            Snapshot(GenerationRuntimeStage.Current), true, Now);
+        status.State.Should().Be(UiRuntimeState.Listening);
+        status.Details.Should().Contain("microphone");
     }
 
     [Fact]

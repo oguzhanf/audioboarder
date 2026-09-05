@@ -132,7 +132,7 @@ public sealed class AzureOpenAIScenePatchGenerator : IScenePatchGenerator
         if (!isReasoning && _options.MaxOutputTokens.HasValue) opts.MaxOutputTokenCount = _options.MaxOutputTokens.Value;
         if (useSchema)
         {
-            var schemaBinary = BinaryData.FromString(ScenePatchJsonSchema.Build());
+            var schemaBinary = BinaryData.FromString(ScenePatchJsonSchema.BuildForStructuredOutput());
             opts.ResponseFormat = ChatResponseFormat.CreateJsonSchemaFormat(
                 jsonSchemaFormatName: "scene_patch",
                 jsonSchema: schemaBinary,

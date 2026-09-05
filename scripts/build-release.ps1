@@ -5,6 +5,7 @@ param(
     [switch]$Unsigned,
     [switch]$StagingForSigning,
     [switch]$DryRun,
+    [switch]$NoRestore,
     [string]$AllowedSignerCertificateSha256 = $env:AUDIOBOARDER_ALLOWED_SIGNER_CERT_SHA256,
     [string]$TimestampUrl = "http://timestamp.digicert.com",
     [string]$OutputRoot = "artifacts"
@@ -152,7 +153,10 @@ try {
     Invoke-Checked {
         & "$root\scripts\scan-repository.ps1" -SelfTest
     } "Test repository secret scanner fixtures"
-    Invoke-Checked { dotnet restore AudioBoarder.sln } "Restore .NET dependencies"
+    if (!$NoRestore) {
+        Invoke-Checked { dotnet restore AudioBoarder.sln } "Restore .NET dependencies"
+    }
+    $restoreArguments = if ($NoRestore) { @("--no-restore") } else { @() }
     & (Join-Path $webDirectory "build-bundle.ps1")
     & (Join-Path $webDirectory "verify.ps1") `
         -ResultPath (Join-Path $stagingDirectory "canvas-verification.json")
@@ -191,11 +195,11 @@ try {
 
     Invoke-Checked {
         dotnet publish src\AudioBoarder.App\AudioBoarder.App.csproj -c Release -r win-x64 `
-            --self-contained true -o $msiPublish @commonProperties -p:PortableBuild=false
+            --self-contained true -o $msiPublish @commonProperties @restoreArguments -p:PortableBuild=false
     } "Publish MSI application payload"
     Invoke-Checked {
         dotnet publish src\AudioBoarder.App\AudioBoarder.App.csproj -c Release -r win-x64 `
-            --self-contained true -o $portablePublish @commonProperties -p:PortableBuild=true
+            --self-contained true -o $portablePublish @commonProperties @restoreArguments -p:PortableBuild=true
     } "Publish portable application payload"
 
     foreach ($publishDirectory in @($msiPublish, $portablePublish)) {
@@ -261,7 +265,7 @@ try {
     Invoke-Checked {
         dotnet build installer\AudioBoarder.Installer.wixproj -c Release `
             -p:Version=$Version -p:MsiVersion=$msiVersion -p:MsiOutputName=$msiOutputName `
-            -p:PublishDir=$msiPublish
+            -p:PublishDir=$msiPublish @restoreArguments
     } "Build WiX MSI"
     $builtMsiPath = Join-Path $installerReleaseDirectory "$msiOutputName.msi"
     if (!(Test-Path -LiteralPath $builtMsiPath -PathType Leaf)) {

@@ -102,6 +102,12 @@ public sealed class StartupHealthService : IHealthProbeRunner
     public async Task RunAudioAsync(CancellationToken ct = default)
     {
         var gen = NextGeneration(AudioKey);
+        if (_services.GetService<AudioBoarder.Services.Audio.AudioCaptureSourceSet>() is not null)
+        {
+            SetIfLatest(AudioKey, gen, new HealthState(ComponentStatus.Ready, "Audio source",
+                "Synthetic meeting streaming in real time", DateTimeOffset.UtcNow));
+            return;
+        }
         SetIfLatest(AudioKey, gen, Checking("Audio devices", "Enumerating WASAPI endpoints…"));
         try
         {
@@ -148,6 +154,15 @@ public sealed class StartupHealthService : IHealthProbeRunner
     public async Task RunTranscriptionAsync(CancellationToken ct = default)
     {
         var gen = NextGeneration(TranscriptionKey);
+        var backend = (_settings.CloudTranscription.Backend ?? "auto").ToLowerInvariant();
+        if (backend == "auto" && string.IsNullOrWhiteSpace(_settings.AzureSpeech.Region))
+        {
+            SetIfLatest(TranscriptionKey, gen, new HealthState(
+                ComponentStatus.ActionRequired, "Live speech",
+                "Live speech needs setup. Connect your workspace to prepare streaming audio.",
+                DateTimeOffset.UtcNow, Action: HealthAction.Configure, Condition: HealthCondition.ConfigurationRequired));
+            return;
+        }
         // Selection validates credentials and tries the ordered fallbacks without
         // sending a billed transcription request.
         var selector = _services.GetRequiredService<ITranscriptionServiceSelector>();

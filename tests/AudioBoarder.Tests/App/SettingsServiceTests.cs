@@ -220,6 +220,69 @@ public sealed class SettingsServiceTests : IDisposable
         restored.ImageGeneration.Enabled.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task SpeechConnectionPersistsWithItsModelAccount()
+    {
+        Directory.CreateDirectory(_root);
+        var service = new SettingsService(Path.Combine(_root, "defaults.json"), Path.Combine(_root, "settings.json"));
+        var settings = new AudioBoarderSettings();
+        settings.AzureOpenAI.TenantId = "tenant-a";
+        settings.CloudTranscription.Backend = "speech";
+        settings.AzureSpeech.ResourceId = "/accounts/speech-a";
+        settings.AzureSpeech.Region = "swedencentral";
+        var profile = new ModelAccountSettings();
+        profile.CaptureFrom(settings.AzureOpenAI, settings.CloudTranscription, settings.ImageGeneration, settings.AzureSpeech);
+        settings.ModelAccounts.Add(profile);
+        settings.ActiveModelAccountId = profile.Id;
+
+        await service.SaveAsync(settings, new SettingsSecrets(null, null));
+        var restored = service.Load();
+
+        restored.AzureSpeech.ResourceId.Should().Be("/accounts/speech-a");
+        restored.AzureSpeech.Region.Should().Be("swedencentral");
+        restored.ModelAccounts.Single().SpeechResourceId.Should().Be(restored.AzureSpeech.ResourceId);
+        restored.CloudTranscription.Backend.Should().Be("speech");
+    }
+
+    [Fact]
+    public void SwitchingTenantWithoutSpeechDoesNotReusePreviousConnectionOrKey()
+    {
+        var settings = new AudioBoarderSettings();
+        settings.AzureOpenAI.TenantId = "old-tenant";
+        settings.AzureSpeech.ResourceId = "/accounts/old-speech";
+        settings.AzureSpeech.Region = "eastus2";
+        settings.AzureSpeech.ApiKey = "test-key";
+        var next = new ModelAccountSettings { TenantId = "new-tenant", TranscriptionBackend = "auto" };
+
+        next.ApplyTo(settings.AzureOpenAI, settings.CloudTranscription, settings.ImageGeneration, settings.AzureSpeech);
+
+        settings.AzureSpeech.ResourceId.Should().BeNull();
+        settings.AzureSpeech.Region.Should().BeNull();
+        settings.AzureSpeech.ApiKey.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("tenant-a", true)]
+    [InlineData("tenant-b", false)]
+    public void LegacySpeechMigrationRequiresTheSameTenant(string profileTenant, bool preserved)
+    {
+        var settings = new AudioBoarderSettings();
+        settings.AzureOpenAI.TenantId = "tenant-a";
+        settings.AzureOpenAI.Endpoint = "https://chat.example/";
+        settings.AzureSpeech.ResourceId = "/accounts/existing-speech";
+        settings.AzureSpeech.Region = "eastus2";
+        settings.ModelAccounts.Add(new ModelAccountSettings
+        {
+            Id = "legacy", TenantId = profileTenant, Endpoint = settings.AzureOpenAI.Endpoint,
+        });
+        settings.ActiveModelAccountId = "legacy";
+
+        settings.ApplyActiveModelAccount();
+
+        settings.AzureSpeech.ResourceId.Should().Be(preserved ? "/accounts/existing-speech" : null);
+        settings.AzureSpeech.Region.Should().Be(preserved ? "eastus2" : null);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

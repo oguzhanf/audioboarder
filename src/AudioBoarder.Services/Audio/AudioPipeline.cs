@@ -37,6 +37,8 @@ public sealed class AudioPipeline : IAsyncDisposable
     private long _chunksForwarded;
     private long _segmentsEmitted;
     private long _chunksDropped;
+    private long _captureDroppedTicks;
+    private long _captureDroppedBytes;
     private DateTimeOffset _firstChunkAt;
     private IStreamingTranscriptionService? _streamingService;
     private ITranscriptionDiagnosticsSource? _diagnosticsSource;
@@ -131,6 +133,8 @@ public sealed class AudioPipeline : IAsyncDisposable
         Interlocked.Exchange(ref _chunksForwarded, 0);
         Interlocked.Exchange(ref _segmentsEmitted, 0);
         Interlocked.Exchange(ref _chunksDropped, 0);
+        Interlocked.Exchange(ref _captureDroppedTicks, 0);
+        Interlocked.Exchange(ref _captureDroppedBytes, 0);
         _captureFaulted = false;
         _usingFallback = false;
         _fallbackSafeErrorCode = null;
@@ -146,8 +150,11 @@ public sealed class AudioPipeline : IAsyncDisposable
                 SingleReader = true,
                 SingleWriter = false,
             },
-            _ =>
+            chunk =>
             {
+                Interlocked.Add(ref _captureDroppedBytes, chunk.Samples.Length);
+                Interlocked.Add(ref _captureDroppedTicks,
+                    TimeSpan.FromSeconds((double)chunk.Samples.Length / chunk.Format.BytesPerSecond).Ticks);
                 var dropped = Interlocked.Increment(ref _chunksDropped);
                 if (dropped == 1 || dropped % 100 == 0)
                     _logger.LogWarning(
@@ -194,6 +201,10 @@ public sealed class AudioPipeline : IAsyncDisposable
 
         try
         {
+            if (_streamingService is not null && _sources.Count > 0)
+                await _streamingService.PrepareStreamsAsync(
+                    _sources.Select(source => source.Role).Distinct().ToArray(),
+                    _sources[0].OutputFormat, _cts.Token).ConfigureAwait(false);
             foreach (var src in _sources)
             {
                 src.CaptureFailed += OnSourceFailed;
@@ -221,17 +232,27 @@ public sealed class AudioPipeline : IAsyncDisposable
             _channel.Writer.TryComplete();
             _flushCts.Cancel();
             _cts.Cancel();
+            try
+            {
+                await Task.WhenAll(_consumer, _flusher).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+            catch (Exception ex) { _logger.LogWarning(ex, "Cleanup of audio workers after start failure failed"); }
+            try
+            {
+                await transcription.FlushAsync(CancellationToken.None, force: true).ConfigureAwait(false);
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Cleanup of speech connections after start failure failed"); }
             if (_diagnosticsSource is not null)
             {
                 _diagnosticsSource.DiagnosticsChanged -= OnTranscriptionDiagnosticsChanged;
                 _diagnosticsSource = null;
             }
-            if (_streamingService is not null)
-            {
-                _streamingService.SegmentReady -= OnStreamingSegmentReady;
-                _streamingService.InterimReady -= OnStreamingInterim;
-                _streamingService = null;
-            }
+            DetachStreamingEvents();
+            _activeTranscription = null;
+            _consumer = null;
+            _flusher = null;
+            _channel = null;
             PublishDiagnostics(AudioPipelineRuntimeState.Faulted, "capture_start");
             throw;
         }
@@ -242,15 +263,10 @@ public sealed class AudioPipeline : IAsyncDisposable
         if (!_started) return;
         foreach (var src in _sources)
         {
-            try { await src.StopAsync(ct).ConfigureAwait(false); } catch { /* swallow */ }
+            try { await src.StopAsync(ct).ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Stopping capture source {Role} failed", src.Role); }
             src.ChunkCaptured -= OnChunkCaptured;
             src.CaptureFailed -= OnSourceFailed;
-        }
-        if (_streamingService is not null)
-        {
-            _streamingService.SegmentReady -= OnStreamingSegmentReady;
-            _streamingService.InterimReady -= OnStreamingInterim;
-            _streamingService = null;
         }
         if (_diagnosticsSource is not null)
         {
@@ -294,6 +310,7 @@ public sealed class AudioPipeline : IAsyncDisposable
         }
 
         _cts?.Cancel();
+        DetachStreamingEvents();
         _activeTranscription = null;
         _consumer = null;
         _flusher = null;
@@ -315,6 +332,14 @@ public sealed class AudioPipeline : IAsyncDisposable
     private void OnStreamingInterim(object? sender, TranscriptSegment interim)
         => InterimEmitted?.Invoke(this, interim);
 
+    private void DetachStreamingEvents()
+    {
+        if (_streamingService is null) return;
+        _streamingService.SegmentReady -= OnStreamingSegmentReady;
+        _streamingService.InterimReady -= OnStreamingInterim;
+        _streamingService = null;
+    }
+
     private void OnSourceFailed(object? sender, AudioCaptureError err)
     {
         _captureFaulted = true;
@@ -324,6 +349,7 @@ public sealed class AudioPipeline : IAsyncDisposable
 
     private void OnTranscriptionDiagnosticsChanged(object? sender, TranscriptionDiagnostics diagnostics)
     {
+        if (diagnostics.State == TranscriptionRuntimeState.Fatal) _captureFaulted = true;
         var state = _captureFaulted || diagnostics.State == TranscriptionRuntimeState.Fatal
             ? AudioPipelineRuntimeState.Faulted
             : diagnostics.State == TranscriptionRuntimeState.Healthy &&
@@ -394,13 +420,8 @@ public sealed class AudioPipeline : IAsyncDisposable
         // Speech detected this recently keeps the utterance open, so natural pauses
         // stay in the audio instead of being cut out of the middle of a sentence.
         var holdover = TimeSpan.FromMilliseconds(700);
-        var lastSpeechAt = DateTimeOffset.MinValue;
-
-        // Small pre-roll so the attack of the first word isn't clipped: the VAD only
-        // trips once a sound is already underway.
-        const int preRollChunks = 6; // ~180 ms at 30 ms/chunk
-        var preRoll = new Queue<AudioChunk>(preRollChunks + 1);
-        var inUtterance = false;
+        var utterances = new Dictionary<AudioStreamRole, UtteranceState>();
+        const int preRollChunks = 6;
 
         try
         {
@@ -409,8 +430,10 @@ public sealed class AudioPipeline : IAsyncDisposable
                 ct.ThrowIfCancellationRequested();
                 received++;
                 var now = DateTimeOffset.UtcNow;
+                if (!utterances.TryGetValue(chunk.Role, out var utterance))
+                    utterances[chunk.Role] = utterance = new UtteranceState();
                 var isSpeech = isStreaming || _vad.IsSpeech(chunk);
-                if (isSpeech) { lastSpeechAt = now; speechChunks++; }
+                if (isSpeech) { utterance.LastSpeechAt = chunk.CapturedAt; speechChunks++; }
 
                 if ((now - lastStat).TotalSeconds >= 2)
                 {
@@ -428,23 +451,24 @@ public sealed class AudioPipeline : IAsyncDisposable
                     continue;
                 }
 
-                var utteranceOpen = lastSpeechAt != DateTimeOffset.MinValue && (now - lastSpeechAt) <= holdover;
+                var utteranceOpen = utterance.LastSpeechAt != DateTimeOffset.MinValue &&
+                                    (chunk.CapturedAt - utterance.LastSpeechAt) <= holdover;
                 if (!utteranceOpen)
                 {
                     // Silence between utterances: hold the newest chunks as pre-roll
                     // rather than discarding them outright.
-                    inUtterance = false;
-                    preRoll.Enqueue(chunk);
-                    while (preRoll.Count > preRollChunks) preRoll.Dequeue();
+                    utterance.IsOpen = false;
+                    utterance.PreRoll.Enqueue(chunk);
+                    while (utterance.PreRoll.Count > preRollChunks) utterance.PreRoll.Dequeue();
                     continue;
                 }
 
-                if (!inUtterance)
+                if (!utterance.IsOpen)
                 {
-                    inUtterance = true;
-                    while (preRoll.Count > 0)
+                    utterance.IsOpen = true;
+                    while (utterance.PreRoll.Count > 0)
                     {
-                        await ForwardAsync(transcription, preRoll.Dequeue(), ct).ConfigureAwait(false);
+                        await ForwardAsync(transcription, utterance.PreRoll.Dequeue(), ct).ConfigureAwait(false);
                         buffered++;
                     }
                 }
@@ -544,12 +568,24 @@ public sealed class AudioPipeline : IAsyncDisposable
             backend?.RetryAt,
             safeErrorCode ?? backend?.SafeErrorCode,
             statusMessage ?? backend?.StatusMessage);
+        next = next with
+        {
+            DroppedCaptureAudio = TimeSpan.FromTicks(Interlocked.Read(ref _captureDroppedTicks)),
+            DroppedCaptureBytes = Interlocked.Read(ref _captureDroppedBytes),
+        };
         lock (_diagnosticsGate)
         {
             if (next == _diagnostics) return;
             _diagnostics = next;
         }
         DiagnosticsChanged?.Invoke(this, next);
+    }
+
+    private sealed class UtteranceState
+    {
+        public DateTimeOffset LastSpeechAt { get; set; } = DateTimeOffset.MinValue;
+        public bool IsOpen { get; set; }
+        public Queue<AudioChunk> PreRoll { get; } = new();
     }
 
     public async ValueTask DisposeAsync()

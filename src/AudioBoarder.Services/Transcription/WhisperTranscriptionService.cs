@@ -12,13 +12,18 @@ namespace AudioBoarder.Services.Transcription;
 /// Real Whisper.net-backed transcription. Lazily downloads the GGML model
 /// to <c>%LOCALAPPDATA%\AudioBoarder\models</c> if it's missing.
 /// </summary>
-public sealed class WhisperTranscriptionService : ITranscriptionService
+public sealed class WhisperTranscriptionService : ITranscriptionService, ITranscriptionDiagnosticsSource
 {
     private readonly ILogger<WhisperTranscriptionService> _logger;
     private readonly WhisperOptions _options;
     private WhisperFactory? _factory;
     private WhisperProcessor? _processor;
-    private readonly List<byte> _pcmBuffer = new();
+    private readonly Dictionary<AudioStreamRole, BufferedRole> _buffers = new();
+    private readonly object _bufferGate = new();
+    private readonly SemaphoreSlim _inferenceGate = new(1, 1);
+    private long _droppedBytes;
+    public event EventHandler<TranscriptionDiagnostics>? DiagnosticsChanged;
+    public TranscriptionDiagnostics Diagnostics { get; private set; } = TranscriptionDiagnostics.Healthy;
     private readonly TimeSpan _windowDuration;
 
     /// <summary>Test hook: override to bypass real Whisper model loading.</summary>
@@ -51,7 +56,6 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
         _factory = WhisperFactory.FromPath(modelPath);
         _processor = _factory.CreateBuilder()
             .WithLanguage(string.IsNullOrWhiteSpace(_options.Language) ? "auto" : _options.Language!)
-            .WithSegmentEventHandler(seg => _logger.LogTrace("whisper seg: {Text}", seg.Text))
             .Build();
         IsReady = true;
         _logger.LogInformation("Whisper.net ready: model={Model} lang={Lang}", _options.ModelSize, _options.Language);
@@ -63,71 +67,86 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
         if (Transcriber is not null) return await Transcriber(chunk, ct).ConfigureAwait(false);
         if (!IsReady || _processor is null) return Array.Empty<TranscriptSegment>();
 
-        lock (_pcmBuffer)
+        if (chunk.Format != AudioFormat.Mono16kPcm16)
+            throw new ArgumentException("Local transcription requires mono 16 kHz PCM-16 audio.");
+        lock (_bufferGate)
         {
-            var span = chunk.Samples.Span;
-            foreach (var b in span) _pcmBuffer.Add(b);
-        }
-
-        // Accumulate at least WindowSeconds of audio before invoking Whisper.
-        var bytesNeeded = (int)(chunk.Format.BytesPerSecond * _windowDuration.TotalSeconds);
-        byte[]? toProcess = null;
-        lock (_pcmBuffer)
-        {
-            if (_pcmBuffer.Count >= bytesNeeded)
+            if (!_buffers.TryGetValue(chunk.Role, out var buffer)) _buffers[chunk.Role] = buffer = new BufferedRole();
+            if (buffer.Audio.Length == 0) buffer.Start = chunk.CapturedAt;
+            buffer.Audio.Write(chunk.Samples.Span);
+            buffer.LastAppend = DateTimeOffset.UtcNow;
+            const int maximum = 180 * 32000;
+            if (buffer.Audio.Length > maximum)
             {
-                toProcess = _pcmBuffer.ToArray();
-                _pcmBuffer.Clear();
+                var audio = buffer.Audio.ToArray();
+                var discard = audio.Length - maximum;
+                buffer.Audio.SetLength(0);
+                buffer.Audio.Write(audio.AsSpan(discard));
+                buffer.Start += TimeSpan.FromSeconds(discard / 32000d);
+                _droppedBytes += discard;
             }
+            PublishDiagnostics();
         }
-        if (toProcess is null) return Array.Empty<TranscriptSegment>();
-
-        var role = chunk.Role;
-        var speaker = role == AudioStreamRole.Loopback ? TranscriptSpeaker.Remote : TranscriptSpeaker.Local;
-        var start = chunk.CapturedAt - _windowDuration;
-        var end = chunk.CapturedAt;
-
-        var floats = PcmToFloat(toProcess);
-        var segments = new List<TranscriptSegment>();
-        await foreach (var s in _processor.ProcessAsync(floats, ct).ConfigureAwait(false))
-        {
-            var cleaned = CleanWhisperOutput(s.Text);
-            if (string.IsNullOrWhiteSpace(cleaned)) continue;
-            segments.Add(new TranscriptSegment(Guid.NewGuid(), speaker, cleaned,
-                start + s.Start, start + s.End));
-        }
-        return segments;
+        return Array.Empty<TranscriptSegment>();
     }
 
     public async Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
     {
         if (!IsReady || _processor is null) return Array.Empty<TranscriptSegment>();
-        byte[] buffered;
-        lock (_pcmBuffer)
+        await _inferenceGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            // Only flush if we have enough audio to make Whisper happy.
-            // Whisper.net needs ~0.5s minimum; otherwise it produces nothing useful.
-            var minBytes = 16_000 * 2 / 2; // 0.5s at 16kHz mono PCM-16
-            if (_pcmBuffer.Count < minBytes) return Array.Empty<TranscriptSegment>();
-            buffered = _pcmBuffer.ToArray();
-            _pcmBuffer.Clear();
+            var batches = new List<(AudioStreamRole Role, byte[] Audio, DateTimeOffset Start)>();
+            lock (_bufferGate)
+            {
+                foreach (var (role, buffer) in _buffers)
+                {
+                    if (buffer.Audio.Length < 16000) continue;
+                    if (!force && buffer.Audio.Length < _windowDuration.TotalSeconds * 32000 &&
+                        DateTimeOffset.UtcNow - buffer.LastAppend < TimeSpan.FromMilliseconds(700)) continue;
+                    batches.Add((role, buffer.Audio.ToArray(), buffer.Start));
+                    buffer.Audio.SetLength(0);
+                }
+                PublishDiagnostics();
+            }
+            var segments = new List<TranscriptSegment>();
+            foreach (var batch in batches)
+            {
+                var speaker = batch.Role == AudioStreamRole.Microphone ? TranscriptSpeaker.Local : TranscriptSpeaker.Remote;
+                await foreach (var s in _processor.ProcessAsync(PcmToFloat(batch.Audio), ct).ConfigureAwait(false))
+                {
+                    var cleaned = CleanWhisperOutput(s.Text);
+                    if (!string.IsNullOrWhiteSpace(cleaned))
+                        segments.Add(new(Guid.NewGuid(), speaker, cleaned, batch.Start + s.Start, batch.Start + s.End));
+                }
+            }
+            return segments;
         }
-        var floats = PcmToFloat(buffered);
-        var now = DateTimeOffset.UtcNow;
-        var segments = new List<TranscriptSegment>();
-        await foreach (var s in _processor.ProcessAsync(floats, ct).ConfigureAwait(false))
-        {
-            var cleaned = CleanWhisperOutput(s.Text);
-            if (string.IsNullOrWhiteSpace(cleaned)) continue;
-            segments.Add(new TranscriptSegment(Guid.NewGuid(), TranscriptSpeaker.Local, cleaned, now, now));
-        }
-        return segments;
+        finally { _inferenceGate.Release(); }
     }
 
     public async ValueTask DisposeAsync()
     {
         if (_processor is not null) await _processor.DisposeAsync().ConfigureAwait(false);
         _factory?.Dispose();
+        _inferenceGate.Dispose();
+        foreach (var buffer in _buffers.Values) buffer.Audio.Dispose();
+    }
+
+    private void PublishDiagnostics()
+    {
+        var pending = TimeSpan.FromSeconds(_buffers.Values.Sum(b => b.Audio.Length) / 32000d);
+        Diagnostics = new(_droppedBytes > 0 ? TranscriptionRuntimeState.AudioDropped : TranscriptionRuntimeState.Healthy,
+            pending, DroppedDuration: TimeSpan.FromSeconds(_droppedBytes / 32000d), DroppedBytes: _droppedBytes,
+            StatusMessage: "Using explicitly selected local transcription.");
+        DiagnosticsChanged?.Invoke(this, Diagnostics);
+    }
+
+    private sealed class BufferedRole
+    {
+        public MemoryStream Audio { get; } = new();
+        public DateTimeOffset Start { get; set; }
+        public DateTimeOffset LastAppend { get; set; }
     }
 
     /// <summary>

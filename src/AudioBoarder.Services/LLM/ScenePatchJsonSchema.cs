@@ -1,9 +1,59 @@
+using System.Text.Json.Nodes;
+
 namespace AudioBoarder.Services.LLM;
 
 /// <summary>Strict operation-specific schema for the model-owned ScenePatch DSL.</summary>
 public static class ScenePatchJsonSchema
 {
     public static string Build() => Schema;
+    private static readonly string StructuredOutputSchema = MakeStructuredOutputSchema();
+    public static string BuildForStructuredOutput() => StructuredOutputSchema;
+
+    private static string MakeStructuredOutputSchema()
+    {
+        var schema = JsonNode.Parse(Schema)!;
+        Normalize(schema);
+        return schema.ToJsonString();
+    }
+
+    private static void Normalize(JsonNode node)
+    {
+        if (node is JsonArray array)
+        {
+            foreach (var child in array) if (child is not null) Normalize(child);
+            return;
+        }
+        if (node is not JsonObject obj) return;
+        var operation = obj["properties"]?["op"]?["const"]?.GetValue<string>();
+        if (obj.Remove("oneOf", out var union)) obj["anyOf"] = union;
+        if (obj.Remove("const", out var constant))
+        {
+            obj["type"] = "string";
+            obj["enum"] = new JsonArray(constant);
+        }
+        if (obj["properties"] is JsonObject properties)
+        {
+            var required = (obj["required"] as JsonArray)?.Select(n => n!.GetValue<string>()).ToHashSet() ?? [];
+            foreach (var property in properties.ToArray())
+            {
+                if (property.Value is null) continue;
+                Normalize(property.Value);
+                var nonNullableDefault = (operation == "connect" && property.Key == "kind") ||
+                                         (operation == "group" && property.Key == "boundary_kind");
+                if (!required.Contains(property.Key) && !nonNullableDefault)
+                {
+                    var original = property.Value.DeepClone();
+                    properties[property.Key] = new JsonObject
+                    {
+                        ["anyOf"] = new JsonArray(original, new JsonObject { ["type"] = "null" }),
+                    };
+                }
+            }
+            obj["required"] = new JsonArray(properties.Select(p => (JsonNode?)JsonValue.Create(p.Key)).ToArray());
+        }
+        foreach (var child in obj.Where(p => p.Key != "properties").Select(p => p.Value).ToArray())
+            if (child is not null) Normalize(child);
+    }
 
     private const string Schema = """
     {
@@ -167,7 +217,7 @@ public static class ScenePatchJsonSchema
         },
         "noteKind": {
           "type": "string",
-          "enum": ["action_item","decision","question","risk","general"]
+          "enum": ["action_item","decision","question","risk","general","answer","concept"]
         },
         "boundaryKind": {
           "type": "string",

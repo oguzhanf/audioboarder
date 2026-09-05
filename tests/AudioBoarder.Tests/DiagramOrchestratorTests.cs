@@ -11,6 +11,32 @@ namespace AudioBoarder.Tests;
 
 public class DiagramOrchestratorTests
 {
+    [Theory]
+    [InlineData(GenerationMode.ContinuousExtraction, 2)]
+    [InlineData(GenerationMode.DeepSynthesis, 1)]
+    public async Task LiveEdgeIdReuseDoesNotRetargetAnExistingFlow(GenerationMode mode, int expectedEdges)
+    {
+        var scene = new SceneGraph();
+        new ScenePatchApplier().Apply(scene, new ScenePatch([
+            new AddNode("app", NodeKind.Process, "App Service"),
+            new AddNode("database", NodeKind.DataStore, "SQL Database"),
+            new AddNode("identity", NodeKind.Identity, "Entra ID"),
+            new Connect("e1", "app", "database", Label: "Queries"),
+        ]), incomingLifecycle: ElementLifecycleState.Confirmed);
+        var generator = new ModeGenerator(_ =>
+            new ScenePatch([new Connect("e1", "app", "identity", Label: "Authenticates")]));
+        await using var orchestrator = new DiagramOrchestrator(generator, new NoOpLayout(),
+            new TranscriptBuffer(TimeSpan.FromMinutes(1)), scene);
+
+        await orchestrator.GenerateAsync(null, mode: mode);
+        await orchestrator.GenerateAsync(null, mode: mode);
+
+        scene.Edges.Count.Should().Be(expectedEdges);
+        scene.Edges.Values.Should().Contain(edge => edge.FromNodeId == "app" && edge.ToNodeId == "identity");
+        if (mode == GenerationMode.ContinuousExtraction)
+            scene.Edges["e1"].ToNodeId.Should().Be("database");
+    }
+
     [Fact]
     public async Task LayoutFailureRaisesTerminalFailureEvent()
     {

@@ -49,7 +49,12 @@ public interface IAzureProvisioningService
     Task<AzureDeploymentInfo> DeployModelAsync(TokenCredential credential, AzureDeploymentCreateRequest request, IProgress<string>? progress = null, CancellationToken ct = default);
 }
 
-public sealed class AzureProvisioningService : IAzureProvisioningService
+public interface IAzureSpeechResources
+{
+    Task<IReadOnlyList<AzureAccountInfo>> ListSpeechResourcesAsync(TokenCredential credential, string subscriptionId, CancellationToken ct = default);
+}
+
+public sealed class AzureProvisioningService : IAzureProvisioningService, IAzureSpeechResources
 {
     private readonly Func<TokenCredential, ArmClientOptions, ArmClient> _clientFactory;
     private static readonly HashSet<string> OnDemandSkus = new(StringComparer.OrdinalIgnoreCase)
@@ -59,6 +64,21 @@ public sealed class AzureProvisioningService : IAzureProvisioningService
 
     internal AzureProvisioningService(Func<TokenCredential, ArmClientOptions, ArmClient> clientFactory) =>
         _clientFactory = clientFactory;
+
+    public async Task<IReadOnlyList<AzureAccountInfo>> ListSpeechResourcesAsync(
+        TokenCredential credential, string subscriptionId, CancellationToken ct = default)
+    {
+        ValidateSubscription(subscriptionId);
+        var subscription = Client(credential).GetSubscriptionResource(new ResourceIdentifier($"/subscriptions/{subscriptionId}"));
+        var result = new List<AzureAccountInfo>();
+        await foreach (var account in subscription.GetCognitiveServicesAccountsAsync(cancellationToken: ct))
+        {
+            if (account.Data.Kind is not ("SpeechServices" or "AIServices")) continue;
+            result.Add(new(account.Id.ToString(), account.Data.Name, account.Data.Kind,
+                account.Data.Properties?.Endpoint ?? "", account.Data.Location.Name, []));
+        }
+        return result;
+    }
 
     public async Task<AzureCreationContext> GetCreationContextAsync(
         TokenCredential credential, string subscriptionId, CancellationToken ct = default)
@@ -136,8 +156,8 @@ public sealed class AzureProvisioningService : IAzureProvisioningService
             throw new ArgumentException("Use a valid resource group name (1-90 letters, numbers, hyphens, underscores, periods or parentheses).");
         if (!Regex.IsMatch(request.Name, @"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"))
             throw new ArgumentException("Use a globally unique resource name: 3-64 lowercase letters, numbers or hyphens.");
-        if (request.Kind is not ("OpenAI" or "AIServices"))
-            throw new ArgumentException("Choose Azure OpenAI or Foundry (AIServices).");
+        if (request.Kind is not ("OpenAI" or "AIServices" or "SpeechServices"))
+            throw new ArgumentException("Choose Azure OpenAI, Foundry (AIServices), or streaming Speech.");
         if (!Regex.IsMatch(request.Region, @"^[a-z0-9]+$"))
             throw new ArgumentException("Choose a valid Azure region.");
         ct.ThrowIfCancellationRequested();

@@ -8,6 +8,9 @@ using AudioBoarder.App.HealthCheck;
 using AudioBoarder.App.Logging;
 using AudioBoarder.App.Sessions;
 using AudioBoarder.App.Setup;
+using AudioBoarder.App.Demo;
+using AudioBoarder.Core.Audio;
+using AudioBoarder.Services.Audio;
 using AudioBoarder.App.Updates;
 using AudioBoarder.App.ViewModels;
 using AudioBoarder.Core.Rendering;
@@ -42,9 +45,49 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        if (e.Args.Contains("--demo", StringComparer.Ordinal))
+            System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
         ApplySystemTheme();
         ConfigureSerilog();
         WireCrashHandlers();
+
+        if (e.Args.Length >= 2 && e.Args[0] == "demo-audio")
+        {
+            using var demoHost = BuildHost([]);
+            await demoHost.StartAsync();
+            try
+            {
+                await MeetingDemo.GenerateAsync(demoHost.Services, Path.GetFullPath(e.Args[1]), CancellationToken.None);
+                await demoHost.StopAsync();
+                Shutdown(0);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
+            {
+                Console.WriteLine($"Demo audio generation failed: {ex.Message}");
+                await demoHost.StopAsync();
+                Shutdown(1);
+            }
+            return;
+        }
+
+        if (e.Args.Length > 0 && string.Equals(e.Args[0], "setup", StringComparison.OrdinalIgnoreCase))
+        {
+            using var setupHost = BuildHost(e.Args);
+            await setupHost.StartAsync();
+            try
+            {
+                var result = await WorkspaceSetupCommand.RunAsync(e.Args.Skip(1).ToArray(), setupHost.Services);
+                await setupHost.StopAsync();
+                Shutdown(result);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or Azure.RequestFailedException or OperationCanceledException or HttpRequestException or System.ClientModel.ClientResultException or System.Text.Json.JsonException)
+            {
+                Console.WriteLine($"Workspace setup did not complete: {ex.Message}");
+                await setupHost.StopAsync();
+                Shutdown(1);
+            }
+            return;
+        }
 
         if (e.Args.Length > 0 && string.Equals(e.Args[0], "healthcheck", StringComparison.OrdinalIgnoreCase))
         {
@@ -67,7 +110,28 @@ public partial class App : Application
         MainWindow = window;
         window.Show();
         HandleUpdateResult(e.Args, Host.Services);
-        _ = RunStartupSequenceAsync(window, Host.Services, e.Args);
+        if (Host.Services.GetService<DemoSession>() is { } demo)
+        {
+            window.Title = "AudioBoarder - Live meeting demo";
+            _ = RunMeetingDemoAsync(window, Host.Services, e.Args, demo);
+        }
+        else _ = RunStartupSequenceAsync(window, Host.Services, e.Args);
+    }
+
+    private static async Task RunMeetingDemoAsync(Window window, IServiceProvider services, string[] args, DemoSession demo)
+    {
+        await RunStartupTasksAsync(services, args);
+        var vm = services.GetRequiredService<MainViewModel>();
+        vm.IsNotesPaneOpen = true;
+        using var telemetry = new DemoTelemetry(demo, services.GetRequiredService<AudioPipeline>(), vm);
+        await vm.ToggleListenAsync();
+        if (!vm.IsListening) throw new InvalidOperationException("The live demo could not start streaming.");
+        telemetry.Save();
+        await Task.Delay(TimeSpan.FromSeconds(MeetingDemo.Load(demo.ManifestPath).DurationSeconds + 3));
+        await services.GetRequiredService<SessionStore>().SaveAsync(vm.Scene.Clone());
+        await vm.ToggleListenAsync();
+        await services.GetRequiredService<SessionStore>().SaveAsync(vm.Scene.Clone());
+        telemetry.Complete();
     }
 
     private static Task RunStartupSequenceAsync(
@@ -264,7 +328,7 @@ public partial class App : Application
             opts.TenantId = az.TenantId;
             opts.ApiKey = az.ApiKey;
             opts.UseManagedIdentity = az.UseManagedIdentity;
-            opts.Temperature = az.Temperature;
+            if (az.Temperature.HasValue) opts.Temperature = az.Temperature;
             if (az.MaxOutputTokens.HasValue) opts.MaxOutputTokens = az.MaxOutputTokens;
         });
 
@@ -372,7 +436,13 @@ public partial class App : Application
             sp => sp.GetRequiredService<StartupHealthService>());
         builder.Services.AddSingleton<Auth.AzureSignInCoordinator>();
         builder.Services.AddSingleton<IAzureModelInventory, AzureModelInventory>();
-        builder.Services.AddSingleton<IAzureProvisioningService, AzureProvisioningService>();
+        builder.Services.AddSingleton<AzureProvisioningService>();
+        builder.Services.AddSingleton<IAzureProvisioningService>(sp => sp.GetRequiredService<AzureProvisioningService>());
+        builder.Services.AddSingleton<IAzureSpeechResources>(sp => sp.GetRequiredService<AzureProvisioningService>());
+        builder.Services.AddSingleton<IAzureWorkspaceAccess, AzureWorkspaceAccess>();
+        builder.Services.AddSingleton<IWorkspaceConnectionProbe, WorkspaceConnectionProbe>();
+        builder.Services.AddSingleton<AutomaticWorkspaceSetup>();
+        builder.Services.AddSingleton<AutomaticSetupController>();
         builder.Services.AddSingleton<IAzureSetupPresenter, WpfAzureSetupPresenter>();
         builder.Services.AddSingleton<IAzureSetupCoordinator, AzureSetupCoordinator>();
         builder.Services.AddSingleton<Continuous.ContinuousDiagrammer>();
@@ -382,6 +452,29 @@ public partial class App : Application
 
         builder.Services.AddSingleton<MainViewModel>();
         builder.Services.AddSingleton<MainWindow>();
+
+        var demoIndex = Array.IndexOf(args, "--demo");
+        if (demoIndex >= 0 && demoIndex + 1 < args.Length)
+        {
+            var manifest = Path.GetFullPath(args[demoIndex + 1]);
+            var demoRoot = Path.Combine(Path.GetDirectoryName(manifest)!, "run-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss"));
+            var clock = new MeetingReplayClock();
+            builder.Services.AddSingleton(new DemoSession(manifest, demoRoot, clock));
+            builder.Services.AddSingleton(new AudioCaptureSourceSet([
+                new MeetingReplaySource(manifest, AudioStreamRole.Microphone, clock),
+                new MeetingReplaySource(manifest, AudioStreamRole.Loopback, clock),
+            ]));
+            builder.Services.AddSingleton<SessionStore>(_ => new SessionStore(Path.Combine(demoRoot, "session")));
+            builder.Services.AddSingleton<IUiStateStore>(sp =>
+                new JsonUiStateStore(Path.Combine(demoRoot, "ui-state.json"), sp.GetRequiredService<ILogger<JsonUiStateStore>>()));
+            builder.Services.PostConfigure<AudioBoarderSettings>(options =>
+            {
+                options.Sessions.AutoSave = false;
+                options.Sessions.OfferRestoreOnLaunch = false;
+                options.Realtime.MinIntervalSeconds = 2;
+                options.Realtime.MinNewSegments = 1;
+            });
+        }
 
         builder.Logging.ClearProviders();
         builder.Logging.AddSerilog(dispose: true);

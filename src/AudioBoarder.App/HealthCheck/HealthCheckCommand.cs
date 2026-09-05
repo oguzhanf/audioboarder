@@ -10,6 +10,8 @@ using AudioBoarder.Core.LLM;
 using AudioBoarder.Core.Scene;
 using AudioBoarder.Core.Transcript;
 using AudioBoarder.Services.LLM;
+using AudioBoarder.Core.Audio;
+using AudioBoarder.Services.Audio;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -39,6 +41,25 @@ public static class HealthCheckCommand
         var withImage = args.Any(a => string.Equals(a, "--image", StringComparison.OrdinalIgnoreCase));
         if (args.Any(a => string.Equals(a, "--package", StringComparison.OrdinalIgnoreCase)))
             return RunPackageCheck(output);
+        if (args.Any(a => string.Equals(a, "--microphone", StringComparison.OrdinalIgnoreCase)))
+        {
+            output.WriteLine("== Local microphone capture (3 seconds; no recording or cloud upload) ==");
+            var devices = services.GetRequiredService<AudioDeviceService>();
+            var state = devices.GetCaptureMuteState();
+            await using var source = new WasapiAudioCaptureSource(AudioStreamRole.Microphone, devices);
+            try
+            {
+                var result = await MicrophoneCaptureProbe.MeasureAsync(source, TimeSpan.FromSeconds(3), CancellationToken.None);
+                output.WriteLine($"  Device: {state.DeviceName}; Windows muted: {state.IsMuted}");
+                output.WriteLine($"  PCM chunks: {result.Chunks}; bytes: {result.Bytes}; peak: {result.Peak:F4}; capture error: {result.CaptureFailed}");
+                return state.IsMuted || result.Chunks == 0 || result.CaptureFailed ? ExitAudio : ExitOk;
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException or IOException or UnauthorizedAccessException)
+            {
+                output.WriteLine($"  FAIL: microphone capture could not start ({ex.GetType().Name}). Check Windows microphone access and device selection.");
+                return ExitAudio;
+            }
+        }
 
         var health = services.GetRequiredService<StartupHealthService>();
         var credentials = services.GetService<IAzureCredentialProvider>();
@@ -67,9 +88,9 @@ public static class HealthCheckCommand
         Print(output, llm);
 
         int code = ExitOk;
-        if (audio.Status == ComponentStatus.Failed) code = Math.Max(code, ExitAudio);
-        if (trans.Status == ComponentStatus.Failed) code = Math.Max(code, ExitTranscription);
-        if (llm.Status is ComponentStatus.Failed or ComponentStatus.ActionRequired or ComponentStatus.RateLimited)
+        if (NeedsAttention(audio.Status)) code = Math.Max(code, ExitAudio);
+        if (NeedsAttention(trans.Status)) code = Math.Max(code, ExitTranscription);
+        if (NeedsAttention(llm.Status))
             code = Math.Max(code, ExitAzure);
 
         if (withLlm && llm.Status == ComponentStatus.Ready)
@@ -138,6 +159,9 @@ public static class HealthCheckCommand
         output.WriteLine($"Exit code: {code}");
         return code;
     }
+
+    internal static bool NeedsAttention(ComponentStatus status) =>
+        status is not ComponentStatus.Ready and not ComponentStatus.Degraded;
 
     private static void Print(TextWriter w, HealthState s)
     {

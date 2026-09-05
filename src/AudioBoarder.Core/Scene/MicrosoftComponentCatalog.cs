@@ -163,6 +163,15 @@ public static class MicrosoftComponentCatalog
     public static string ToPromptVocabulary() =>
         string.Join("; ", All.Select(x => $"{x.Name} [{x.Category}]"));
 
+    public static string RelevantPromptVocabulary(IEnumerable<string> content)
+    {
+        var text = " " + Normalize(string.Join(" ", content)) + " ";
+        return string.Join("; ", All.Where(component =>
+                new[] { component.Name }.Concat(component.Aliases)
+                    .Any(name => name.Length >= 4 && text.Contains(" " + Normalize(name) + " ", StringComparison.Ordinal)))
+            .Take(18).Select(component => $"{component.Name} [{component.Category}]"));
+    }
+
     private static int Score(MicrosoftComponentDefinition item, string[] terms)
     {
         if (terms.Length == 0) return 1;

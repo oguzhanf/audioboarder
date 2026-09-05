@@ -23,20 +23,31 @@ public sealed class NativeAzureSetupTests
                 original.AzureOpenAI.TenantId = "tenant-a";
                 original.AzureOpenAI.Endpoint = "https://a.example/";
                 original.AzureOpenAI.UseManagedIdentity = false;
+                original.AzureSpeech.ResourceId = "/accounts/speech-a";
+                original.AzureSpeech.Region = "eastus2";
                 var a = new ModelAccountSettings { Id = "a", Name = "A" };
-                a.CaptureFrom(original.AzureOpenAI, original.CloudTranscription, original.ImageGeneration);
+                a.CaptureFrom(original.AzureOpenAI, original.CloudTranscription, original.ImageGeneration, original.AzureSpeech);
                 original.ModelAccounts.Add(a);
-                original.ModelAccounts.Add(new ModelAccountSettings { Id = "b", Name = "B", Endpoint = "https://b.example/", TenantId = "tenant-b" });
+                original.ModelAccounts.Add(new ModelAccountSettings
+                {
+                    Id = "b", Name = "B", Endpoint = "https://b.example/", TenantId = "tenant-b",
+                    SpeechResourceId = "/accounts/speech-b", SpeechRegion = "swedencentral",
+                });
                 original.ActiveModelAccountId = a.Id;
-                service.SaveAsync(original, new SettingsSecrets("test-api-key", null)).GetAwaiter().GetResult();
+                service.SaveAsync(original, new SettingsSecrets("test-api-key", "test-speech-key")).GetAwaiter().GetResult();
                 var settings = new SettingsWindow(service, new LocalDataService(root), new DeclineDeletion(),
                     new SetupInventory(), new SetupCredentials());
                 var profiles = (ComboBox)settings.FindName("ModelAccountCombo");
 
                 profiles.SelectedIndex = 1;
+                ((AudioBoarderSettings)settings.DataContext).AzureSpeech.ResourceId.Should().Be("/accounts/speech-b");
+                ((AudioBoarderSettings)settings.DataContext).AzureSpeech.ApiKey.Should().BeNull();
                 profiles.SelectedIndex = 0;
 
                 ((AudioBoarderSettings)settings.DataContext).AzureOpenAI.ApiKey.Should().Be("test-api-key");
+                ((AudioBoarderSettings)settings.DataContext).AzureSpeech.ResourceId.Should().Be("/accounts/speech-a");
+                ((AudioBoarderSettings)settings.DataContext).AzureSpeech.Region.Should().Be("eastus2");
+                ((AudioBoarderSettings)settings.DataContext).AzureSpeech.ApiKey.Should().Be("test-speech-key");
                 settings.Close();
             }
             finally

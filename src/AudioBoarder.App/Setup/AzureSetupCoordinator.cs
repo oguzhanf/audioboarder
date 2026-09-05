@@ -30,12 +30,18 @@ public sealed class AzureSetupCoordinator(
     IOptions<CloudTranscriptionOptions> transcription,
     IOptions<ImageGeneratorOptions> images,
     IAzureSetupPresenter presenter,
-    IAzureProvisioningService? provisioning = null) : IAzureSetupCoordinator
+    IAzureProvisioningService? provisioning = null,
+    AutomaticSetupController? automaticSetup = null) : IAzureSetupCoordinator
 {
     private int _inFlight;
 
     public async Task EnsureConfiguredAsync(CancellationToken ct = default)
     {
+        if (automaticSetup is not null)
+        {
+            await automaticSetup.EnsureConfiguredAsync(ct);
+            return;
+        }
         if (!credentials.TryGetSignedInCredential(out _) ||
             Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0)
             return;

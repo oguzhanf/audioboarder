@@ -144,6 +144,7 @@ try {
                 $relative -eq "AudioBoarder.sln" -or
                 $relative -eq "src/AudioBoarder.App/app.manifest" -or
                 $relative -eq "src/AudioBoarder.App/Updates/UpdateIntegrity.cs" -or
+                $relative -eq "src/AudioBoarder.Services/LLM/AzureWorkspaceAccess.cs" -or
                 $relative -eq "scripts/scan-repository.ps1"
             # Microsoft's unchanged SVGs use GUIDs as drawing element/gradient IDs.
             # Only byte-identical assets pinned in the architecture-icon manifest qualify.

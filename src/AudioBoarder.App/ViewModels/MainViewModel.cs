@@ -74,8 +74,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string? refinementInstruction;
     [ObservableProperty] private int sceneRevision;
     [ObservableProperty] private bool isAudioReady;
-    [ObservableProperty] private bool isTranscriptionReady;
-    [ObservableProperty] private bool isAzureReady;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsSetupNeeded), nameof(SetupSummary))]
+    private bool isTranscriptionReady;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsSetupNeeded), nameof(SetupSummary))]
+    private bool isAzureReady;
     [ObservableProperty] private HealthAction healthAction;
     [ObservableProperty] private bool isAzureSignInRequired;
     [ObservableProperty] private bool isAzureConfigurationRequired;
@@ -377,6 +381,8 @@ public partial class MainViewModel : ObservableObject
         ToggleListenCommand.NotifyCanExecuteChanged();
         RefineDiagramCommand.NotifyCanExecuteChanged();
         ImportTranscriptCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsSetupNeeded));
+        OnPropertyChanged(nameof(SetupSummary));
     }
 
     internal static AzureHealthActionVisibility MapHealthAction(HealthAction action) => action switch
@@ -387,7 +393,16 @@ public partial class MainViewModel : ObservableObject
         _ => new(false, false, false),
     };
 
-    public bool CanListen => IsListening || (!IsGenerating && IsAudioReady && IsTranscriptionReady);
+    public bool IsSetupNeeded => NeedsWorkspaceSetup(HealthStates);
+    internal static bool NeedsWorkspaceSetup(IEnumerable<HealthState> states) =>
+        states.Any(state => state.Key is StartupHealthService.LlmKey or StartupHealthService.TranscriptionKey &&
+            state.Status is ComponentStatus.ActionRequired or ComponentStatus.Failed);
+    public string SetupSummary => !IsAzureReady
+        ? "Connect Azure once. AudioBoarder prepares live speech and fast diagram models for you."
+        : !IsTranscriptionReady
+            ? "Live speech isn't ready yet. Set up your workspace before starting the meeting."
+            : "Your workspace is ready.";
+    public bool CanListen => IsListening || (!IsGenerating && IsAudioReady && IsTranscriptionReady && IsAzureReady);
     public bool CanRefine => !IsGenerating && IsAzureReady && Scene.Nodes.Count > 0;
     public bool CanExport => Scene.Nodes.Count > 0;
 
@@ -411,6 +426,7 @@ public partial class MainViewModel : ObservableObject
             else
             {
                 StatusMessage = "Starting capture…";
+                RuntimeStatus = UiRuntimeStatus.Initializing("Connecting live speech before opening the microphone...");
                 await _pipeline.StartAsync(CancellationToken.None);
                 IsListening = true;
                 _listenStartedAt = DateTimeOffset.UtcNow;
@@ -1104,6 +1120,8 @@ public sealed class NoteViewModel
         NoteKind.Decision => 1,
         NoteKind.Risk => 2,
         NoteKind.Question => 3,
+        NoteKind.Answer => 4,
+        NoteKind.Concept => 5,
         _ => 4,
     };
 
@@ -1113,6 +1131,8 @@ public sealed class NoteViewModel
         NoteKind.Decision => "Decisions",
         NoteKind.Risk => "Risks",
         NoteKind.Question => "Open questions",
+        NoteKind.Answer => "Answers",
+        NoteKind.Concept => "Concepts & requirements",
         _ => "Notes",
     };
 }

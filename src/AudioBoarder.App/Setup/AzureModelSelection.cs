@@ -56,7 +56,7 @@ public sealed record AzureModelSelection(
             profile = new ModelAccountSettings { Name = Account.Name };
             settings.ModelAccounts.Add(profile);
         }
-        profile.CaptureFrom(azure, settings.CloudTranscription, settings.ImageGeneration);
+        profile.CaptureFrom(azure, settings.CloudTranscription, settings.ImageGeneration, settings.AzureSpeech);
         settings.ActiveModelAccountId = profile.Id;
     }
 }
@@ -73,6 +73,10 @@ internal static class AzureRuntimeConfiguration
         runtime.AzureOpenAI = selected.AzureOpenAI;
         runtime.CloudTranscription = selected.CloudTranscription;
         runtime.ImageGeneration = selected.ImageGeneration;
+        runtime.AzureSpeech = selected.AzureSpeech;
+        runtime.Realtime.MinIntervalSeconds = selected.Realtime.MinIntervalSeconds;
+        runtime.Realtime.MinNewSegments = selected.Realtime.MinNewSegments;
+        runtime.Realtime.UseFastDeployment = selected.Realtime.UseFastDeployment;
         runtime.ModelAccounts = selected.ModelAccounts;
         runtime.ActiveModelAccountId = selected.ActiveModelAccountId;
 

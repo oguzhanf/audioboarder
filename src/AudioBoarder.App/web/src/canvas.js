@@ -182,11 +182,11 @@ function routePath(a, b) {
   const ay = a.centerY;
   const bx = b.centerX - b.width / 2;
   const by = b.centerY;
-  if (bx >= ax + 20) {
+  if (bx >= ax + 100) {
     const mid = (ax + bx) / 2;
     return { d: `M${ax} ${ay}H${mid}V${by}H${bx}`, mx: mid, my: (ay + by) / 2 };
   }
-  const drop = Math.max(a.centerY + a.height / 2, b.centerY + b.height / 2) + 28;
+  const drop = Math.max(a.centerY + a.height / 2, b.centerY + b.height / 2) + 44;
   return {
     d: `M${a.centerX} ${a.centerY + a.height / 2}V${drop}H${b.centerX}V${b.centerY + b.height / 2}`,
     mx: (a.centerX + b.centerX) / 2,
@@ -196,7 +196,7 @@ function routePath(a, b) {
 
 function createEdge(item) {
   const group = el("g", { "data-id": item.id });
-  group.append(el("path"), el("circle"), el("text"), el("rect"), el("text"), el("text"));
+  group.append(el("path"), el("circle"), el("text"), el("rect"), el("text"), el("text"), el("title"));
   return group;
 }
 
@@ -226,7 +226,7 @@ function updateEdge(group, item, byId, intent) {
         ? "boundary-crossing" : ""),
     "data-id": item.id,
   });
-  const [path, badge, step, plate, label, metadata] = group.children;
+  const [path, badge, step, plate, label, metadata, title] = group.children;
   const route = routePath(from, to);
   setAttrs(path, {
     class: `edge ${["dependency", "association"].includes(item.kind) ? "soft" : ""}`,
@@ -244,19 +244,28 @@ function updateEdge(group, item, byId, intent) {
   });
   step.textContent = hasStep ? String(item.step) : "";
 
-  const labelX = route.mx + (hasStep ? 18 : 0);
-  const labelY = route.my - 13;
   const labelText = item.label || "";
-  const plateWidth = Math.max(0, labelText.length * 6.5 + 12);
+  const gap = left(to) - (left(from) + from.width);
+  const textWidth = gap >= 100 ? Math.min(200, gap - 24) : 180;
+  setAttrs(label, { class: "edge-label" });
+  setAttrs(metadata, { class: "edge-metadata" });
+  const labelStyle = getComputedStyle(label);
+  const metadataStyle = getComputedStyle(metadata);
+  const labelFont = `${labelStyle.fontWeight} ${labelStyle.fontSize} ${labelStyle.fontFamily}`;
+  const lines = wrappedLines(labelText, textWidth, labelFont, 2);
+  const labelY = route.my - 16 - Math.max(0, lines.length - 1) * 14;
+  textMeasure.font = labelFont;
+  const plateWidth = Math.max(0, ...lines.map(line => textMeasure.measureText(line).width)) + 12;
   setAttrs(plate, {
-    class: "edge-label-bg", x: labelX - 5, y: labelY - 9,
-    width: plateWidth, height: 18, rx: 4,
+    class: "edge-label-bg", x: route.mx - plateWidth / 2, y: labelY - 9,
+    width: plateWidth, height: Math.max(18, lines.length * 14 + 4), rx: 4,
     display: labelText ? null : "none",
   });
-  setAttrs(label, { class: "edge-label", x: labelX, y: labelY });
-  label.textContent = labelText;
-  setAttrs(metadata, { class: "edge-metadata", x: labelX, y: route.my + 14 });
-  metadata.textContent = edgeMetadata(item);
+  setTextLines(label, lines, route.mx, labelY, 14);
+  setTextLines(metadata, wrappedLines(edgeMetadata(item), textWidth,
+    `${metadataStyle.fontWeight} ${metadataStyle.fontSize} ${metadataStyle.fontFamily}`, 1),
+    route.mx, route.my + 19, 12);
+  title.textContent = `${from.label} to ${to.label}: ${labelText}. ${edgeMetadata(item)}`;
 }
 
 function iconName(item) {

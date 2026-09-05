@@ -62,7 +62,16 @@ public sealed class AudioBoarderSettings
     {
         var profile = ModelAccounts.FirstOrDefault(x =>
             string.Equals(x.Id, ActiveModelAccountId, StringComparison.OrdinalIgnoreCase));
-        profile?.ApplyTo(AzureOpenAI, CloudTranscription, ImageGeneration);
+        if (profile is null) return;
+        // Migrate legacy profiles only from the same currently selected connection.
+        if (profile.SpeechResourceId is null && profile.SpeechRegion is null &&
+            string.Equals(profile.TenantId, AzureOpenAI.TenantId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(profile.Endpoint?.TrimEnd('/'), AzureOpenAI.Endpoint?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+        {
+            profile.SpeechResourceId = AzureSpeech.ResourceId;
+            profile.SpeechRegion = AzureSpeech.Region;
+        }
+        profile.ApplyTo(AzureOpenAI, CloudTranscription, ImageGeneration, AzureSpeech);
     }
 
     public sealed class DiagramIntentSettings
@@ -97,11 +106,14 @@ public sealed class ModelAccountSettings
     public DeployedModelIdentity? FallbackModel { get; set; }
     public DeployedModelIdentity? TranscriptionModel { get; set; }
     public DeployedModelIdentity? ImageModel { get; set; }
+    public string? SpeechResourceId { get; set; }
+    public string? SpeechRegion { get; set; }
 
     public void CaptureFrom(
         AzureOpenAISettings azure,
         CloudTranscriptionSettings transcription,
-        ImageGenerationSettings image)
+        ImageGenerationSettings image,
+        AzureSpeechAppSettings? speech = null)
     {
         TenantId = azure.TenantId;
         SubscriptionId = azure.SubscriptionId;
@@ -122,16 +134,32 @@ public sealed class ModelAccountSettings
         FallbackModel = azure.FallbackModel;
         TranscriptionModel = transcription.Model;
         ImageModel = image.Model;
+        if (speech is not null)
+        {
+            SpeechResourceId = speech.ResourceId;
+            SpeechRegion = speech.Region;
+        }
     }
 
     public void ApplyTo(
         AzureOpenAISettings azure,
         CloudTranscriptionSettings transcription,
-        ImageGenerationSettings image)
+        ImageGenerationSettings image,
+        AzureSpeechAppSettings? speech = null)
     {
-        if (!string.Equals(azure.TenantId?.Trim(), TenantId?.Trim(), StringComparison.OrdinalIgnoreCase) ||
+        var tenantChanged = !string.Equals(azure.TenantId?.Trim(), TenantId?.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (tenantChanged ||
             !string.Equals(azure.Endpoint?.TrimEnd('/'), Endpoint?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
             azure.ApiKey = null;
+        if (speech is not null)
+        {
+            if (tenantChanged ||
+                !string.Equals(speech.ResourceId, SpeechResourceId, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(speech.Region, SpeechRegion, StringComparison.OrdinalIgnoreCase))
+                speech.ApiKey = null;
+            speech.ResourceId = SpeechResourceId;
+            speech.Region = SpeechRegion;
+        }
         azure.TenantId = TenantId;
         azure.SubscriptionId = SubscriptionId;
         azure.AccountResourceId = AccountResourceId;

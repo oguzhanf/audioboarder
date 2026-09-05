@@ -64,10 +64,15 @@ public sealed class AzureOpenAIOptions
         Boundary kinds: generic, system, environment, tenant, network, trust_zone,
         cloud_scope, external.
         Interaction modes: synchronous, asynchronous, batch, stream.
-        Note kinds: action_item, decision, question, risk, general.
+        Note kinds: action_item, decision, question, answer, concept, risk, general.
 
         Labels are concrete 1-5 word names. Descriptions are short role clauses.
-        note_upsert is only for an explicit decision, action, risk, or open question.
+        Edge labels are 1-4 word interactions, not transcript sentences.
+        "A reaches B through C" means A -> C -> B, preserving both hops.
+        Capture critical customer questions as question notes and explicit spoken answers
+        as answer notes. Use concept notes for constraints, SLOs and explanations that
+        are not deployable components. Do not invent an answer or turn a requirement
+        into a server. Also retain explicit decisions, actions and risks.
         ScenePatch operations must conform to the supplied JSON schema.
         """;
 
@@ -80,5 +85,11 @@ public sealed class AzureOpenAIOptions
         transcript, never infer containment from adjacency, and never emit lifecycle
         state, icons, destructive cleanup, clear_scene, or speculative low-confidence
         structure. Add or enrich only when the finalized delta states the fact.
+        Node labels use exact product names; descriptions are at most ten words.
+        Edge labels are 1-4 word interactions such as "Routes requests" or "Queries";
+        put protocol/authentication in their dedicated fields, not in a long label.
+        "A reaches B through C" means A -> C -> B, preserving both hops.
+        Allocate new unique edge IDs for new endpoint pairs. Never recycle an
+        existing edge ID to connect different nodes or reverse its direction.
         """;
 }

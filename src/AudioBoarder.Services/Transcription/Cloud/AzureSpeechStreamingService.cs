@@ -17,9 +17,9 @@ namespace AudioBoarder.Services.Transcription.Cloud;
 /// <see cref="TranscriptSegment"/> on every Recognized event (full utterance,
 /// silence-segmented by the service's built-in VAD).
 ///
-/// Latency is roughly 200-400 ms after the speaker stops; no fixed window.
+/// Recognition is event-driven rather than waiting for a fixed recording window.
 /// </summary>
-public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
+public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService, ITranscriptionDiagnosticsSource
 {
     private readonly AzureSpeechSettings _settings;
     private readonly ILogger<AzureSpeechStreamingService> _logger;
@@ -29,7 +29,11 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     private readonly SemaphoreSlim _tokenGate = new(1, 1);
     private string? _cachedAadToken;
     private DateTimeOffset _cachedAadExpires;
+    private AuthorizationContext? _cachedAuthorizationContext;
     private bool _ready;
+    private TranscriptionDiagnostics _diagnostics = TranscriptionDiagnostics.Healthy;
+    public TranscriptionDiagnostics Diagnostics { get { lock (_gate) return _diagnostics; } }
+    public event EventHandler<TranscriptionDiagnostics>? DiagnosticsChanged;
 
     public AzureSpeechStreamingService(
         IOptions<AzureSpeechSettings> options,
@@ -43,12 +47,12 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     /// Resolve the credential lazily so a credential poked into <see cref="AzureSpeechSettings"/>
     /// AFTER service construction (e.g. by post-signin / post-provision wiring) is honored.
     /// </summary>
-    private TokenCredential ResolveCredential()
+    private static TokenCredential ResolveCredential(AuthorizationContext context)
     {
-        if (_settings.Credential is not null) return _settings.Credential;
+        if (context.Credential is not null) return context.Credential;
         return new DefaultAzureCredential(new DefaultAzureCredentialOptions
         {
-            TenantId = string.IsNullOrWhiteSpace(_settings.TenantId) ? null : _settings.TenantId,
+            TenantId = string.IsNullOrWhiteSpace(context.TenantId) ? null : context.TenantId,
             ExcludeInteractiveBrowserCredential = false,
             ExcludeAzurePowerShellCredential = true,
             AdditionallyAllowedTenants = { "*" },
@@ -91,14 +95,20 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
             }
         }
 
+        // A cached token alone does not prove the Speech endpoint accepts this identity.
+        var probe = await CreateRecognizerAsync(AudioStreamRole.Microphone, AudioFormat.Mono16kPcm16, ct, probeOnly: true)
+            .ConfigureAwait(false);
+        await StopRecognizerAsync(probe, ct).ConfigureAwait(false);
         _ready = true;
+        Publish(TranscriptionDiagnostics.Healthy);
         _logger.LogInformation("Azure Speech streaming ready: region={Region}", _settings.Region);
     }
 
     public async Task<IReadOnlyList<TranscriptSegment>> TranscribeAsync(AudioChunk chunk, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(chunk);
-        if (!_ready) return Array.Empty<TranscriptSegment>();
+        if (!_ready)
+            throw new TranscriptionInitializationException("Live speech is not connected.", "speech_not_connected");
 
         RoleRecognizer? rr;
         lock (_gate)
@@ -128,11 +138,36 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         return Array.Empty<TranscriptSegment>();
     }
 
-    public Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
-        => Task.FromResult<IReadOnlyList<TranscriptSegment>>(Array.Empty<TranscriptSegment>());
+    public async Task PrepareStreamsAsync(IReadOnlyList<AudioStreamRole> roles, AudioFormat format, CancellationToken ct)
+    {
+        await _recognizerGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            foreach (var role in roles.Distinct())
+            {
+                lock (_gate) if (_recognizers.ContainsKey(role)) continue;
+                var recognizer = await CreateRecognizerAsync(role, format, ct).ConfigureAwait(false);
+                lock (_gate) _recognizers[role] = recognizer;
+            }
+        }
+        finally { _recognizerGate.Release(); }
+    }
+
+    public async Task<IReadOnlyList<TranscriptSegment>> FlushAsync(CancellationToken ct, bool force = false)
+    {
+        if (!force) return Array.Empty<TranscriptSegment>();
+        List<RoleRecognizer> list;
+        lock (_gate)
+        {
+            list = _recognizers.Values.ToList();
+            _recognizers.Clear();
+        }
+        await Task.WhenAll(list.Select(recognizer => StopRecognizerAsync(recognizer, ct))).ConfigureAwait(false);
+        return Array.Empty<TranscriptSegment>();
+    }
 
     private async Task<RoleRecognizer> CreateRecognizerAsync(
-        AudioStreamRole role, AudioFormat format, CancellationToken ct)
+        AudioStreamRole role, AudioFormat format, CancellationToken ct, bool probeOnly = false)
     {
         // Build SpeechConfig: AAD bearer if key not set, otherwise subscription key.
         SpeechConfig speechConfig;
@@ -161,8 +196,12 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         var pushStream = AudioInputStream.CreatePushStream(audioFormat);
         var audioConfig = AudioConfig.FromStreamInput(pushStream);
         var recognizer = new SpeechRecognizer(speechConfig, audioConfig);
-
         var rr = new RoleRecognizer(role, recognizer, pushStream, audioConfig);
+        audioFormat.Dispose();
+        var connection = Connection.FromRecognizer(recognizer);
+        rr.Connection = connection;
+        var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Connected += (_, _) => connected.TrySetResult();
 
         var speaker = role == AudioStreamRole.Loopback ? TranscriptSpeaker.Remote : TranscriptSpeaker.Local;
         // Partial hypotheses stream in continuously as the person speaks — this
@@ -170,16 +209,15 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         recognizer.Recognizing += (_, e) =>
         {
             var partial = e.Result.Text?.Trim();
-            if (string.IsNullOrEmpty(partial)) return;
+            if (probeOnly || string.IsNullOrEmpty(partial)) return;
             var now = DateTimeOffset.UtcNow;
             InterimReady?.Invoke(this, new TranscriptSegment(Guid.Empty, speaker, partial!, now, now));
         };
         recognizer.Recognized += (_, e) =>
         {
-            if (e.Result.Reason != ResultReason.RecognizedSpeech) return;
+            if (probeOnly || e.Result.Reason != ResultReason.RecognizedSpeech) return;
             var text = e.Result.Text?.Trim();
             if (string.IsNullOrEmpty(text)) return;
-            var offset = TimeSpan.FromTicks(e.Result.OffsetInTicks);
             var duration = e.Result.Duration;
             var now = DateTimeOffset.UtcNow;
             var segment = new TranscriptSegment(Guid.NewGuid(), speaker, text!, now - duration, now);
@@ -190,14 +228,38 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         recognizer.Canceled += (_, e) =>
         {
             if (e.Reason == CancellationReason.Error)
+            {
                 _logger.LogWarning(
                     "Speech recognizer cancelled: code={Code} category={Category}",
                     e.ErrorCode, "speech_service_failure");
+                var category = e.ErrorCode is CancellationErrorCode.AuthenticationFailure or CancellationErrorCode.Forbidden
+                    ? "authentication_required" : "speech_connection";
+                connected.TrySetException(new TranscriptionInitializationException(
+                    "Azure Speech rejected the streaming connection. Run Workspace setup to repair access.", category));
+                if (!probeOnly)
+                {
+                    _ready = false;
+                    Publish(new TranscriptionDiagnostics(TranscriptionRuntimeState.Fatal, TimeSpan.Zero,
+                        SafeErrorCode: category, StatusMessage: "Live speech disconnected. Run Workspace setup or retry your connection."));
+                }
+            }
         };
         recognizer.SessionStopped += (_, _) => _logger.LogInformation("Speech session stopped for {Role}", role);
 
-        await recognizer.StartContinuousRecognitionAsync().ConfigureAwait(false);
-        return rr;
+        try
+        {
+            await recognizer.StartContinuousRecognitionAsync().WaitAsync(ct).ConfigureAwait(false);
+            await connected.Task.WaitAsync(TimeSpan.FromSeconds(12), ct).ConfigureAwait(false);
+            return rr;
+        }
+        catch
+        {
+            recognizer.Dispose();
+            connection.Dispose();
+            audioConfig.Dispose();
+            pushStream.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -208,21 +270,31 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     public event EventHandler<TranscriptSegment>? SegmentReady;
     public event EventHandler<TranscriptSegment>? InterimReady;
 
-    private async Task<string> AcquireAadTokenAsync(CancellationToken ct)
+    private AuthorizationContext CurrentAuthorization =>
+        new(_settings.Credential, _settings.TenantId, _settings.ResourceId, _settings.Region);
+
+    private bool HasCurrentToken(AuthorizationContext context) =>
+        _cachedAadToken is not null && _cachedAuthorizationContext == context &&
+        DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2);
+
+    internal async Task<string> AcquireAadTokenAsync(CancellationToken ct)
     {
-        if (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2))
-            return _cachedAadToken;
+        if (HasCurrentToken(CurrentAuthorization)) return _cachedAadToken!;
         await _tokenGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2))
-                return _cachedAadToken;
-            var credential = ResolveCredential();
+            var context = CurrentAuthorization;
+            if (HasCurrentToken(context)) return _cachedAadToken!;
+            var credential = ResolveCredential(context);
             var token = await credential.GetTokenAsync(
                 new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
                 ct).ConfigureAwait(false);
+            if (context != CurrentAuthorization)
+                throw new TranscriptionInitializationException(
+                    "The Azure Speech account changed. Reconnect live speech.", "configuration_changed");
             _cachedAadToken = token.Token;
             _cachedAadExpires = token.ExpiresOn;
+            _cachedAuthorizationContext = context;
             return _cachedAadToken;
         }
         finally
@@ -234,7 +306,7 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
     private async Task RefreshAuthorizationIfNeededAsync(CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(_settings.ApiKey) ||
-            (_cachedAadToken is not null && DateTimeOffset.UtcNow < _cachedAadExpires - TimeSpan.FromMinutes(2)))
+            HasCurrentToken(CurrentAuthorization))
             return;
 
         var token = await AcquireAadTokenAsync(ct).ConfigureAwait(false);
@@ -248,21 +320,31 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
 
     public async ValueTask DisposeAsync()
     {
-        List<RoleRecognizer> list;
-        lock (_gate)
+        await FlushAsync(CancellationToken.None, force: true).ConfigureAwait(false);
+        _recognizerGate.Dispose();
+        _tokenGate.Dispose();
+    }
+
+    private static async Task StopRecognizerAsync(RoleRecognizer rr, CancellationToken ct)
+    {
+        try
         {
-            list = _recognizers.Values.ToList();
-            _recognizers.Clear();
+            rr.PushStream.Close();
+            await rr.Recognizer.StopContinuousRecognitionAsync().WaitAsync(TimeSpan.FromSeconds(8), ct).ConfigureAwait(false);
         }
-        foreach (var rr in list)
+        finally
         {
-            try { await rr.Recognizer.StopContinuousRecognitionAsync().ConfigureAwait(false); } catch { }
             rr.Recognizer.Dispose();
+            rr.Connection?.Dispose();
             rr.AudioConfig.Dispose();
             rr.PushStream.Dispose();
         }
-        _recognizerGate.Dispose();
-        _tokenGate.Dispose();
+    }
+
+    private void Publish(TranscriptionDiagnostics diagnostics)
+    {
+        lock (_gate) _diagnostics = diagnostics;
+        DiagnosticsChanged?.Invoke(this, diagnostics);
     }
 
     private sealed class RoleRecognizer
@@ -271,7 +353,11 @@ public sealed class AzureSpeechStreamingService : IStreamingTranscriptionService
         public SpeechRecognizer Recognizer { get; }
         public PushAudioInputStream PushStream { get; }
         public AudioConfig AudioConfig { get; }
+        public Connection? Connection { get; set; }
         public RoleRecognizer(AudioStreamRole role, SpeechRecognizer rec, PushAudioInputStream ps, AudioConfig ac)
         { Role = role; Recognizer = rec; PushStream = ps; AudioConfig = ac; }
     }
+
+    private sealed record AuthorizationContext(
+        TokenCredential? Credential, string? TenantId, string? ResourceId, string? Region);
 }

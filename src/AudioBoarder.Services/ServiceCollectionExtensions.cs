@@ -119,19 +119,16 @@ public static class ServiceCollectionExtensions
                 }
                 else
                 {
-                    if (cloud.IsConfigured)
-                        candidates.Add(new(
-                            TranscriptionBackendKind.Cloud,
-                            ResolveCloud(sp, cloud)));
                     if (speech.IsConfigured)
                         candidates.Add(new(
                             TranscriptionBackendKind.AzureSpeech,
                             sp.GetRequiredService<AzureSpeechStreamingService>()));
+                    else if (cloud.IsConfigured)
+                        candidates.Add(new(TranscriptionBackendKind.Cloud, ResolveCloud(sp, cloud)));
+                    else
+                        throw new TranscriptionInitializationException(
+                            "Live speech is not configured. Run Workspace setup.", "configuration");
                 }
-
-                candidates.Add(new(
-                    TranscriptionBackendKind.LocalWhisper,
-                    sp.GetRequiredService<WhisperTranscriptionService>()));
                 return candidates;
             }
 
@@ -160,6 +157,10 @@ public static class ServiceCollectionExtensions
             var loggerFactory = sp.GetService<ILoggerFactory>();
             var capture = sp.GetService<IOptions<AudioCaptureOptions>>()?.Value ?? new AudioCaptureOptions();
             var devices = sp.GetRequiredService<AudioDeviceService>();
+
+            if (sp.GetService<AudioCaptureSourceSet>() is { } configuredSources)
+                return new AudioPipeline(configuredSources.Sources, selector, vad, buffer,
+                    loggerFactory?.CreateLogger<AudioPipeline>());
 
             var sources = new List<IAudioCaptureSource>();
             if (capture.CaptureMicrophone)

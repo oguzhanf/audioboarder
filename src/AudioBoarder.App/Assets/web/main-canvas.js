@@ -111,10 +111,10 @@ function autoFit(force = false) {
   // Never shrink below readable. A board you have to scroll beats one you cannot
   // read at all — which is what fitting a wide tree into the panel produces.
   const MIN_READABLE = 0.55;
-  const k = Math.min(1.15, Math.max(MIN_READABLE, raw));
+  const k = Math.min(1.15, Math.max(force ? 0.1 : MIN_READABLE, raw));
   view.k = k;
 
-  if (raw >= MIN_READABLE) {
+  if (force || raw >= MIN_READABLE) {
     // Fits: centre it.
     view.x = (svg.clientWidth - b.w * k) / 2 - b.x * k;
     view.y = (svg.clientHeight - b.h * k) / 2 - b.y * k;
@@ -158,6 +158,8 @@ if (window.chrome?.webview) {
         components = Array.isArray(data.components) ? data.components : [];
         if (componentSource) componentSource.href = data.source || "#";
         renderComponentLibrary();
+      } else if (data?.type === "library-visibility") {
+        setLibraryCollapsed(data.collapsed === true);
       } else {
         window.loadScene(data?.type === "scene" ? data.payload : data);
       }
@@ -310,12 +312,14 @@ document.getElementById("zoomOut").onclick = () => {
 // "Fit" also hands auto-framing back to the app.
 document.getElementById("zoomFit").onclick = () => { userTookControl = false; autoFit(true); };
 if (componentSearch) componentSearch.addEventListener("input", renderComponentLibrary);
-document.getElementById("libraryToggle").onclick = () => {
-  document.body.classList.toggle("library-collapsed");
-  const collapsed = document.body.classList.contains("library-collapsed");
+function setLibraryCollapsed(collapsed) {
+  document.body.classList.toggle("library-collapsed", collapsed);
   document.getElementById("libraryToggle").innerHTML = collapsed ? "&rsaquo;" : "&lsaquo;";
+  document.getElementById("libraryToggle").setAttribute("aria-label", collapsed ? "Expand component library" : "Collapse component library");
   setTimeout(() => { draw(); autoFit(); }, 0);
-};
+}
+document.getElementById("libraryToggle").onclick = () =>
+  setLibraryCollapsed(!document.body.classList.contains("library-collapsed"));
 
 window.addEventListener("resize", () => {
   // Redraw as well as refit: the empty-state hint is centred on the SVG at draw

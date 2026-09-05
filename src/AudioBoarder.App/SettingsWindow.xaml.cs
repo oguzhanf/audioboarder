@@ -20,6 +20,9 @@ public partial class SettingsWindow : FluentWindow
     private readonly string? _originalTenant;
     private readonly string? _originalEndpoint;
     private readonly string? _originalApiKey;
+    private readonly string? _originalSpeechResource;
+    private readonly string? _originalSpeechRegion;
+    private readonly string? _originalSpeechApiKey;
     private bool _refreshingProfiles;
     private readonly HashSet<(string Tenant, string Endpoint)> _entraConnections = [];
 
@@ -43,6 +46,10 @@ public partial class SettingsWindow : FluentWindow
         _originalTenant = azureSettings.TenantId;
         _originalEndpoint = azureSettings.Endpoint;
         _originalApiKey = azureSettings.ApiKey;
+        var speechSettings = _settings.AzureSpeech;
+        _originalSpeechResource = speechSettings.ResourceId;
+        _originalSpeechRegion = speechSettings.Region;
+        _originalSpeechApiKey = speechSettings.ApiKey;
 
         ThemeCombo.ItemsSource = new[] { "System", "Light", "Dark" };
         BackendCombo.ItemsSource = new[] { "auto", "cloud", "speech", "local" };
@@ -81,6 +88,9 @@ public partial class SettingsWindow : FluentWindow
             StatusText.Text = "Saving…";
             var connectionChanged = !string.Equals(_originalTenant, _settings.AzureOpenAI.TenantId, StringComparison.OrdinalIgnoreCase) ||
                                     !string.Equals(_originalEndpoint, _settings.AzureOpenAI.Endpoint, StringComparison.OrdinalIgnoreCase);
+            var speechConnectionChanged = !string.Equals(_originalTenant, _settings.AzureOpenAI.TenantId, StringComparison.OrdinalIgnoreCase) ||
+                                          !string.Equals(_originalSpeechResource, _settings.AzureSpeech.ResourceId, StringComparison.OrdinalIgnoreCase) ||
+                                          !string.Equals(_originalSpeechRegion, _settings.AzureSpeech.Region, StringComparison.OrdinalIgnoreCase);
             await _settingsService.SaveAsync(
                 _settings,
                 new SettingsSecrets(
@@ -90,7 +100,9 @@ public partial class SettingsWindow : FluentWindow
                         ((_entraConnections.Contains(CurrentConnection) || connectionChanged ||
                           string.IsNullOrWhiteSpace(_settings.AzureOpenAI.ApiKey)) &&
                          string.IsNullOrWhiteSpace(AzureOpenAIApiKeyBox.Password)),
-                    ClearAzureSpeechApiKeyBox.IsChecked == true));
+                    ClearAzureSpeechApiKeyBox.IsChecked == true ||
+                        ((speechConnectionChanged || string.IsNullOrWhiteSpace(_settings.AzureSpeech.ApiKey)) &&
+                         string.IsNullOrWhiteSpace(AzureSpeechApiKeyBox.Password))));
             RestartRequested = restart;
             DialogResult = true;
         }
@@ -137,13 +149,17 @@ public partial class SettingsWindow : FluentWindow
                 StatusText.Text = "Correct the highlighted values before switching profiles.";
                 return;
             }
-            previous.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration);
+            previous.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration, _settings.AzureSpeech);
         }
         _settings.ActiveModelAccountId = profile.Id;
-        profile.ApplyTo(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration);
+        profile.ApplyTo(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration, _settings.AzureSpeech);
         if (CurrentConnection == ConnectionKey(_originalTenant, _originalEndpoint) &&
             !_entraConnections.Contains(CurrentConnection))
             _settings.AzureOpenAI.ApiKey = _originalApiKey;
+        if (string.Equals(_originalTenant, _settings.AzureOpenAI.TenantId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(_originalSpeechResource, _settings.AzureSpeech.ResourceId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(_originalSpeechRegion, _settings.AzureSpeech.Region, StringComparison.OrdinalIgnoreCase))
+            _settings.AzureSpeech.ApiKey = _originalSpeechApiKey;
         ModelAccountNameBox.Text = profile.Name;
         DataContext = null;
         DataContext = _settings;
@@ -165,7 +181,7 @@ public partial class SettingsWindow : FluentWindow
         profile.Name = string.IsNullOrWhiteSpace(ModelAccountNameBox.Text)
             ? "Microsoft account"
             : ModelAccountNameBox.Text.Trim();
-        profile.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration);
+        profile.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration, _settings.AzureSpeech);
         _settings.ActiveModelAccountId = profile.Id;
         RefreshModelAccounts(profile);
         StatusText.Text = $"Saved model account profile “{profile.Name}”.";
@@ -189,7 +205,7 @@ public partial class SettingsWindow : FluentWindow
         };
         _settings.ModelAccounts.Add(profile);
         _settings.ActiveModelAccountId = profile.Id;
-        profile.ApplyTo(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration);
+        profile.ApplyTo(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration, _settings.AzureSpeech);
         RefreshModelAccounts(profile);
         DataContext = null;
         DataContext = _settings;
@@ -212,7 +228,7 @@ public partial class SettingsWindow : FluentWindow
         profile.Name = string.IsNullOrWhiteSpace(ModelAccountNameBox.Text)
             ? profile.Name
             : ModelAccountNameBox.Text.Trim();
-        profile.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration);
+        profile.CaptureFrom(_settings.AzureOpenAI, _settings.CloudTranscription, _settings.ImageGeneration, _settings.AzureSpeech);
         _settings.ActiveModelAccountId = profile.Id;
     }
 

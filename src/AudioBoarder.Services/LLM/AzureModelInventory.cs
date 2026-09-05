@@ -16,6 +16,17 @@ public interface IAzureModelInventory
 
     Task<AzureAccountInventory> ListAccountsAsync(
         TokenCredential credential, string subscriptionId, CancellationToken ct = default);
+
+    async Task<AzureAccountInfo?> GetAccountAsync(
+        TokenCredential credential, string resourceId, CancellationToken ct = default)
+    {
+        var id = new ResourceIdentifier(resourceId);
+        var inventory = await ListAccountsAsync(credential, id.SubscriptionId!, ct);
+        if (inventory.FailureKind != DiscoveryFailureKind.None)
+            throw new InvalidOperationException(inventory.Message ?? "Azure resource discovery failed.");
+        return inventory.Accounts.FirstOrDefault(account =>
+            string.Equals(account.Id, resourceId, StringComparison.OrdinalIgnoreCase));
+    }
 }
 
 /// <summary>
@@ -100,16 +111,11 @@ public sealed class AzureModelInventory : IAzureModelInventory
                         var properties = deployment.Data.Properties;
                         var modelName = properties?.Model?.Name ?? string.Empty;
                         var state = properties?.ProvisioningState?.ToString();
-                        deployments.Add(new AzureDeploymentInfo(
+                        deployments.Add(ToDeploymentInfo(
                             deployment.Data.Name,
                             modelName,
                             properties?.Model?.Version,
-                            FoundryDiscovery.IsChatModel(modelName),
-                            FoundryDiscovery.IsTranscribeModel(modelName),
-                            FoundryDiscovery.IsImageModel(modelName),
-                            // Older API responses may omit the provisioning state.
-                            IsReady: string.IsNullOrWhiteSpace(state) ||
-                                     string.Equals(state, "Succeeded", StringComparison.OrdinalIgnoreCase)));
+                            state));
                     }
                 }
                 catch (Exception ex) when (IsAzureFailure(ex))
@@ -138,6 +144,43 @@ public sealed class AzureModelInventory : IAzureModelInventory
             return new AzureAccountInventory(accounts.ToArray(), kind, message);
         }
     }
+
+    public async Task<AzureAccountInfo?> GetAccountAsync(
+        TokenCredential credential, string resourceId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        var id = new ResourceIdentifier(resourceId);
+        var arm = _armClientFactory(credential);
+        CognitiveServicesAccountResource account;
+        try
+        {
+            account = (await arm.GetCognitiveServicesAccountResource(id).GetAsync(ct).ConfigureAwait(false)).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+        var data = account.Data;
+        var deployments = new List<AzureDeploymentInfo>();
+        if (data.Kind is "OpenAI" or "AIServices")
+        {
+            await foreach (var deployment in account.GetCognitiveServicesAccountDeployments()
+                .GetAllAsync(cancellationToken: ct).ConfigureAwait(false))
+            {
+                var model = deployment.Data.Properties?.Model;
+                var name = model?.Name ?? string.Empty;
+                var state = deployment.Data.Properties?.ProvisioningState?.ToString();
+                deployments.Add(ToDeploymentInfo(deployment.Data.Name, name, model?.Version, state));
+            }
+        }
+        return new(account.Id.ToString(), data.Name, data.Kind,
+            data.Properties?.Endpoint?.ToString() ?? "", data.Location.Name ?? "", deployments);
+    }
+
+    private static AzureDeploymentInfo ToDeploymentInfo(string name, string model, string? version, string? state) =>
+        new(name, model, version, FoundryDiscovery.IsChatModel(model),
+            FoundryDiscovery.IsTranscribeModel(model), FoundryDiscovery.IsImageModel(model),
+            string.IsNullOrWhiteSpace(state) || string.Equals(state, "Succeeded", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsAzureFailure(Exception ex) =>
         ex is AuthenticationRequiredException or CredentialUnavailableException or AuthenticationFailedException

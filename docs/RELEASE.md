@@ -47,6 +47,9 @@ The script fails at the first unsuccessful gate:
 
 `-DryRun` is metadata only: the script never publishes. Unsigned mode is legal only with
 `-Prerelease` and a version containing a prerelease identifier.
+Use `-NoRestore` when the solution, win-x64 publish and installer dependencies are
+already restored. Missing dependency assets then fail explicitly instead of
+performing an implicit restore.
 
 ## Signed release inputs
 

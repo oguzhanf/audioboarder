@@ -26,7 +26,15 @@ public static class ScenePromptComposer
         return shared.Trim() + "\n\n" + modeRules + "\n\n" +
                DiagramIntentPromptProfiles.For(request.DiagramIntent, request.IsContinuous) +
                "\n\nMICROSOFT COMPONENT VOCABULARY (Azure Architecture Center taxonomy; use exact product names when grounded):\n" +
-               MicrosoftComponentCatalog.ToPromptVocabulary();
+               MicrosoftComponentCatalog.RelevantPromptVocabulary(
+                   request.TranscriptWindow.Select(segment => segment.Text)
+                       .Concat(new[] { request.UserInstruction ?? "" })
+                       .Concat(request.CurrentScene.Nodes.Values.Select(node => node.Label))) +
+               "\nCapture explicit questions, answers, decisions and nonvisual requirements as typed notes; never invent responses. " +
+               "Keep a question's text unchanged when an answer arrives: add a separate answer note instead of appending the answer to the question. " +
+               "Use concept notes for requirements, recovery targets and explanations; use decision only for an explicitly agreed choice. " +
+               "Reuse the original concept note ID when a requirement is restated or clarified; do not create a duplicate. " +
+               "Never change an existing question note into an answer note.";
     }
 
     public static string BuildUserPrompt(ScenePatchRequest request)
@@ -50,7 +58,7 @@ public static class ScenePromptComposer
             sb.AppendLine(request.UserInstruction);
         }
         sb.AppendLine(request.IsContinuous
-            ? "Return only the smallest grounded ScenePatch, maximum 6 operations."
+            ? "Return only valid ScenePatch JSON: {\"operations\":[...]}. Use at most 6 grounded operations."
             : $"Return only ScenePatch JSON; keep the total at or below {request.MaxNodes} nodes.");
         return sb.ToString();
     }

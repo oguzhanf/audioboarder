@@ -55,6 +55,12 @@ window.addEventListener("load", async () => {
     const edge = document.querySelector('[data-layer="edges"] > [data-id="request"]');
     check(edge.classList.contains("boundary-crossing"), "security intent preserved over bridge");
     check(["1", "Create order", "HTTPS", "OAuth", "Confidential"].every(s => edge.textContent.includes(s)), "edge semantics");
+    scene.edges[0].label = "Routes the complete incoming customer order request to the application";
+    host(scene);
+    const edgeLabel = edge.querySelector(".edge-label").getBBox();
+    check(edgeLabel.width <= 88 && edge.querySelector("title").textContent.includes(scene.edges[0].label),
+      "edge labels are bounded without losing full tooltip semantics");
+    scene.edges[0].label = "Create order";
     scene.nodes[1].label = "API v2";
     scene.sceneRevision++;
     host(scene);
@@ -95,6 +101,22 @@ window.addEventListener("load", async () => {
     }
     host({ type: "theme", theme: "light" });
     check(document.documentElement.dataset.theme === "light", "light theme");
+    host({ type: "library-visibility", collapsed: true });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    check(document.body.classList.contains("library-collapsed"), "native library collapse");
+    host({
+      nodes: [
+        { id: "left", label: "Start", kind: "process", centerX: 0, centerY: 0, width: 240, height: 100 },
+        { id: "right", label: "End", kind: "process", centerX: 4000, centerY: 2000, width: 240, height: 100 },
+      ], edges: [], groups: [],
+    });
+    document.getElementById("zoomFit").click();
+    const visibleStage = stage.getBoundingClientRect();
+    for (const card of document.querySelectorAll(".node-card")) {
+      const box = card.getBoundingClientRect();
+      check(box.left >= visibleStage.left && box.right <= visibleStage.right &&
+        box.top >= visibleStage.top && box.bottom <= visibleStage.bottom, "explicit Fit frames the complete diagram");
+    }
     check(window.__errors.length === 0, "no browser errors");
     document.documentElement.dataset.verification = "passed";
     report({ passed: true, checks });

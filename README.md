@@ -7,7 +7,7 @@ AudioBoarder captures your microphone and (optionally) system audio, transcribes
 conversation, and asks an Azure OpenAI model to turn what it hears into a diagram:
 technologies carrying icons, systems drawn as labelled boundaries, arrows that say what
 actually flows between things, and callouts explaining the subtle parts. Decisions,
-action items, risks and open questions are collected in a side panel. Everything can be
+action items, risks, questions, answers and nonvisual requirements are collected in a side panel. Everything can be
 exported as a `.excalidraw` file you can keep editing, or as a PNG.
 
 Built on WPF + SkiaSharp + WebView2. The live editor is a vendored offline SVG
@@ -25,14 +25,16 @@ updates retain certificate pinning. A branch build is not a published release.
 ## Requirements
 
 - Windows 10 build 22000+ or Windows 11
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- An Azure subscription with an **Azure AI Foundry / Azure OpenAI** resource containing
-  at least one chat-capable deployment
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) for source builds only
+- An Azure subscription with access to **Azure OpenAI / Microsoft Foundry** and
+  **Azure AI Speech**. The native workspace setup can create missing resources
+  and a compatible model deployment with your approval.
 - A microphone
 - WebView2 Runtime (ships with Windows 11 and with Edge)
 
-You do **not** need to hardcode any credentials. AudioBoarder signs in with
-`DefaultAzureCredential` and discovers your deployments automatically.
+You do **not** need to hardcode credentials, copy keys, or choose model SKUs.
+AudioBoarder reuses its cached Microsoft sign-in and saves tenant-specific
+model and Speech connections.
 
 ---
 
@@ -90,49 +92,43 @@ dotnet build
 dotnet run --project src\AudioBoarder.App
 ```
 
-`healthcheck` should print three `[OK]` lines and exit `0`. If it does, the UI will work.
+`healthcheck` should print three `[OK]` lines and exit `0`. This confirms startup
+readiness; a live listening session is still needed to assess device levels and latency.
+For an opt-in local device check, run `AudioBoarder.exe healthcheck --microphone`.
+It measures three seconds of microphone PCM and reports mute state, chunk count and
+peak level without saving audio, sending it to Azure, or unmuting the device.
 
 ### First launch
 
-Three health indicators fill in independently — **Audio devices**, **Transcription**,
-**Azure OpenAI** — shown as coloured dots in the status bar, and toolbar buttons enable
-as each subsystem becomes ready. If you have no cloud transcription deployment, Whisper
-downloads `ggml-base.bin` (~148 MB) once.
+Sign in to Azure, then choose **Set up for me**. The native dialog shows the
+subscription and proposed resource reuse/creation, explains Azure charges, and asks
+for one approval. It chooses a low-latency diagram model, connects continuous
+Azure Speech, exercises the actual structured diagram format, and saves the working
+account profile. Reopen it through **More commands > Workspace setup**.
 
-After Microsoft sign-in (including a restored login), a **native Azure setup wizard**
-opens if the selected subscription, resource, or required deployment is unavailable.
-It distinguishes missing subscriptions/resources/models from permission, network, and
-service failures. The wizard lists Azure OpenAI and Microsoft Foundry (`AIServices`)
-resources and their ready, supported model deployments.
+The recommended path pushes microphone and system PCM audio directly into connected
+Speech streams; it does not record a meeting and upload it afterward. Both streams
+connect before capture starts. The toolbar shows the microphone and live level,
+captions remain visible while the diagram updates, and **Notes & Insights** keeps
+questions, spoken answers, decisions and requirements beside the canvas.
 
-If services are missing, **Create Azure OpenAI** or **Create Foundry resource** opens
-a native creation dialog using the same verified Azure sign-in. Choose an existing
-resource group (or explicitly create one), region, resource name and public-network
-setting. New resources use Entra authentication with API keys disabled; configure
-private connectivity if public access is off.
+Azure enforces subscription access, regional availability, quota and policy. If
+inference access is missing and you approved setup, AudioBoarder can grant only your
+signed-in identity the resource-scoped Speech User or OpenAI User role, and only if
+your Azure permissions allow that assignment. It does not elevate itself, grant
+access to other identities, accept marketplace terms, or change existing resources.
+Unavailable subscriptions, quota or permissions are reported rather than hidden.
+Cancelling stops waiting; resources already created in Azure are retained.
 
-On **Models**, **Deploy chat model**, **Deploy transcription**, and **Deploy image model**
-list compatible model versions and on-demand SKUs available to the target resource.
-Choose a unique deployment name and capacity; quota is displayed where Azure allows
-it to be read. Capacity units depend on the model/SKU. Provisioned-throughput and
-batch-only SKUs are not offered. Every write requires explicit confirmation of the
-target configuration and potential Azure charges. Azure enforces permissions, quota,
-regional capacity, marketplace terms and policy; the app does not grant roles or
-accept marketplace terms on your behalf.
+**Settings > Azure > Choose models** remains the advanced path for changing accounts,
+deploying specific chat/transcription/image models, or choosing region, capacity and
+networking. Tenant profiles carry both diagram and Speech connections; changing
+tenants does not reuse the previous tenant's resource or API key. Use **Save & Restart**
+after advanced changes. Image generation is optional and disabled by default.
 
-Completed deployments are refreshed into the picker and selected for their role.
-Existing resource/deployment names are rejected rather than intentionally updated.
-**Stop waiting** stops monitoring, not the Azure operation; refresh before retrying.
-Cancelling setup does not delete a resource already created in Azure.
-A Microsoft login alone does not imply an Azure subscription or model inference access.
-Foundry hub connections and incompatible/realtime-only model APIs are not supported
-deployment targets.
-
-Choose a primary chat model, an optional fast model in the same resource, and optional
-cloud transcription and image models. Image generation is not required; **local Whisper**
-can be used without an Azure transcription deployment. **Not now** leaves configuration
-unchanged. A completed initial setup saves the selected account profile locally and
-applies it before service initialization.
+Local Whisper remains an explicit **Settings > Transcription > local** option.
+It downloads its selected local model on first use when automatic download is enabled.
+Unconfigured cloud workspaces no longer silently switch to local inference.
 
 Then **Listen** → talk, and the board grows on its own as the conversation develops.
 **Refine** runs a deeper pass (optionally with an instruction like "group the security
@@ -166,9 +162,9 @@ Intent changes affect semantic defaults and layout selection, not the source tra
 - The transcription backend produces interim captions where supported and commits only
   finalized segments. Streaming Speech is normally sub-second to a few seconds; windowed
   cloud/local transcription completes after an utterance pause and model processing.
-- The fast chat deployment performs safe incremental extraction. It is rate-limited by
-  `Realtime.MinIntervalSeconds` (10 seconds by default) and adapts upward when observed
-  inference takes longer.
+- The fast chat deployment performs safe incremental extraction. Automatic setup selects
+  a 2-second minimum interval and one new finalized segment; legacy/default configuration
+  retains 10 seconds. The scheduler adapts upward when inference takes longer.
 - The primary frontier deployment performs deep synthesis on Refine, stop, or the
   configured pause. Fast tiers are often several seconds; reasoning `pro`/`sol` tiers may
   take 30–120 seconds. Azure load and throttling can increase either figure.
@@ -182,6 +178,23 @@ its retry time and buffered duration; retries use bounded backoff. Audio queues 
 under sustained overload the oldest unprocessed audio is dropped rather than allowing
 unbounded memory growth, and the UI reports **Audio gap** plus dropped duration/count.
 Pending finalized statements are retained across diagram-generation retries.
+
+### Synthetic live-meeting demo
+
+With workspace setup complete, generate original synthetic voices and replay them
+through the same streaming pipeline:
+
+```powershell
+.\src\AudioBoarder.App\bin\Release\net10.0-windows\AudioBoarder.exe demo-audio artifacts\hackathon-demo\audio
+.\src\AudioBoarder.App\bin\Release\net10.0-windows\AudioBoarder.exe --demo artifacts\hackathon-demo\audio\meeting.json
+```
+
+The two-minute scenario uses a solution engineer, customer and security lead.
+Prerecorded synthetic test inputs are paced as live 30-ms PCM chunks; narration is
+excluded from recognition. Azure TTS, Speech and model requests incur normal usage
+charges. Each run writes caption/scene timing and audio-loss counters beneath its
+own `run-...` directory. Demo boards and UI state use explicit isolated storage and
+never replace the user's current session.
 
 ### Semantic contract and limits
 
