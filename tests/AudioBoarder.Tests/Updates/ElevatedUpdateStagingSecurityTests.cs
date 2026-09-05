@@ -51,6 +51,21 @@ public sealed class ElevatedUpdateStagingSecurityTests
         install.Should().BeGreaterThan(stagedSignature);
     }
 
+    [Fact]
+    public void UnsignedPathRequiresExplicitApprovalAndNeverUsesTheAutomaticCountdown()
+    {
+        var root = FindRepositoryRoot();
+        var service = File.ReadAllText(Path.Combine(root, "src", "AudioBoarder.App", "Updates", "GitHubUpdateService.cs"));
+        service.Should().Contain("ValidatePreviewApproval(release, approveUnsignedPreview)");
+        service.Should().Contain("UserApprovedUnsignedPreview = release.IsUnsignedPreview && approveUnsignedPreview");
+        service.Should().Contain("if ($payload.UserApprovedUnsignedPreview)");
+        service.Should().Contain("AudioBoarder-$($payload.TagName)-win-x64-unsigned.msi");
+        var window = File.ReadAllText(Path.Combine(root, "src", "AudioBoarder.App", "Updates", "UpdateWindow.xaml.cs"));
+        window.IndexOf("if (_release.IsUnsignedPreview || _release.RequiresManualInstaller)", StringComparison.Ordinal)
+            .Should().BeLessThan(window.IndexOf("for (var seconds", StringComparison.Ordinal));
+        window.Should().Contain("PreviewConsent.IsChecked != true");
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

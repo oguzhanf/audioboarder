@@ -17,7 +17,9 @@ public sealed record UpdateRelease(
     string ReleaseNotes,
     Uri MsiUrl,
     string Sha256,
-    long Size);
+    long Size,
+    bool IsUnsignedPreview = false,
+    bool RequiresManualInstaller = false);
 
 public sealed class GitHubUpdateService
 {
@@ -73,17 +75,12 @@ public sealed class GitHubUpdateService
         _isMsiInstallation = isMsiInstallation ?? IsMsiInstallation;
     }
 
-    public async Task<UpdateRelease?> CheckAsync(CancellationToken cancellationToken = default)
+    public async Task<UpdateRelease?> CheckAsync(CancellationToken cancellationToken = default, bool ignoreDeferrals = false)
     {
         if (_isPortableBuild || !_isMsiInstallation())
             return null;
-        if (!SignerIdentity.TryParseCertificateSha256Allowlist(
-                _allowedSignerCertificateSha256, out _))
-        {
-            _logger.LogError(
-                "Automatic update is disabled because no valid signer certificate SHA-256 allowlist is embedded.");
-            return null;
-        }
+        var hasTrustedSigner = SignerIdentity.TryParseCertificateSha256Allowlist(
+            _allowedSignerCertificateSha256, out _);
 
         // The check now gates startup, so it must never hang it. The shared HttpClient
         // has no timeout (the installer download needs that), so bound this call here.
@@ -108,16 +105,38 @@ public sealed class GitHubUpdateService
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         var release = document.RootElement.ValueKind == JsonValueKind.Array
-            ? ParseReleases(document.RootElement, currentVersion, includePrereleases: true)
+            ? ParseReleases(document.RootElement, currentVersion, includePrereleases: true,
+                allowUnsignedPreviews: currentVersion.IsPrerelease)
             : ParseRelease(document.RootElement, currentVersion);
-        return release is not null && ShouldOffer(release.TagName) ? release : null;
+        if (release is not null && !hasTrustedSigner && !release.IsUnsignedPreview)
+            release = release with { RequiresManualInstaller = true };
+        return release is not null && (ignoreDeferrals || ShouldOffer(release.TagName)) ? release : null;
     }
 
-    public async Task<string> DownloadAsync(
+    public Task<string> DownloadAsync(
         UpdateRelease release,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        DownloadCoreAsync(release, false, progress, cancellationToken);
+
+    public Task<string> DownloadApprovedPreviewAsync(
+        UpdateRelease release,
+        bool userApproved,
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        ValidatePreviewApproval(release, userApproved);
+        return DownloadCoreAsync(release, true, progress, cancellationToken);
+    }
+
+    private async Task<string> DownloadCoreAsync(
+        UpdateRelease release,
+        bool approvedUnsignedPreview,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (release.IsUnsignedPreview && !approvedUnsignedPreview)
+            throw new InvalidOperationException("Unsigned previews require explicit approval before downloading or installing.");
         var updateDirectory = Path.Combine(_updateRoot, release.TagName);
         Directory.CreateDirectory(updateDirectory);
 
@@ -131,7 +150,9 @@ public sealed class GitHubUpdateService
         var destination = Path.Combine(updateDirectory, fileName);
         var temporary = destination + ".download";
         if (File.Exists(destination) &&
-            await VerifyUpdateAsync(destination, release.Sha256, cancellationToken).ConfigureAwait(false))
+            (approvedUnsignedPreview
+                ? await _hashVerifier.VerifySha256Async(destination, release.Sha256, cancellationToken).ConfigureAwait(false)
+                : await VerifyUpdateAsync(destination, release.Sha256, cancellationToken).ConfigureAwait(false)))
         {
             progress?.Report(1d);
             return destination;
@@ -186,7 +207,7 @@ public sealed class GitHubUpdateService
                 throw new InvalidDataException("The downloaded update failed SHA-256 verification.");
             }
 
-            EnsureSignatureIsValid(temporary);
+            if (!approvedUnsignedPreview) EnsureSignatureIsValid(temporary);
             File.Move(temporary, destination, overwrite: true);
             progress?.Report(1d);
             return destination;
@@ -199,15 +220,17 @@ public sealed class GitHubUpdateService
         }
     }
 
-    public void BeginInstallAndRestart(string msiPath, UpdateRelease release)
+    public void BeginInstallAndRestart(string msiPath, UpdateRelease release, bool approveUnsignedPreview = false)
     {
+        if (release.IsUnsignedPreview || approveUnsignedPreview)
+            ValidatePreviewApproval(release, approveUnsignedPreview);
         if (!_hashVerifier.VerifySha256Async(msiPath, release.Sha256)
                 .GetAwaiter().GetResult())
         {
             throw new InvalidDataException(
                 "The update changed after download and failed SHA-256 verification.");
         }
-        EnsureSignatureIsValid(msiPath);
+        if (!release.IsUnsignedPreview) EnsureSignatureIsValid(msiPath);
 
         var executablePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("Could not determine the application path.");
@@ -221,6 +244,7 @@ public sealed class GitHubUpdateService
             MsiPath = msiPath,
             release.Sha256,
             release.TagName,
+            UserApprovedUnsignedPreview = release.IsUnsignedPreview && approveUnsignedPreview,
             AllowedSignerCertificateSha256 = _allowedSignerCertificateSha256,
             ExecutablePath = executablePath,
             LogPath = logPath,
@@ -278,6 +302,12 @@ public sealed class GitHubUpdateService
             Copy-Item -LiteralPath $payload.MsiPath -Destination $stagedMsi -Force
             $actualHash = (Get-FileHash -LiteralPath $stagedMsi -Algorithm SHA256).Hash
             if ($actualHash -ine $payload.Sha256) { exit 13 }
+            if ($payload.UserApprovedUnsignedPreview) {
+                if ($payload.TagName -notmatch '^v\d+\.\d+\.\d+-(alpha|beta|preview|rc)\.[1-9]\d*$' -or
+                    [IO.Path]::GetFileName($payload.MsiPath) -ne "AudioBoarder-$($payload.TagName)-win-x64-unsigned.msi") {
+                    exit 18
+                }
+            } else {
             if ([string]::IsNullOrWhiteSpace($payload.AllowedSignerCertificateSha256)) { exit 14 }
             $signature = Get-AuthenticodeSignature -LiteralPath $stagedMsi
             if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { exit 15 }
@@ -301,6 +331,7 @@ public sealed class GitHubUpdateService
                 $sha256.Dispose()
             }
             if ($allowedSignerHashes -inotcontains $signerHash) { exit 16 }
+            }
 
             $arguments = @('/i', "`"$stagedMsi`"", '/passive', '/norestart', '/L*v', "`"$stagedLog`"")
             if ($payload.InstallPath) {
@@ -527,7 +558,8 @@ public sealed class GitHubUpdateService
 
     internal static UpdateRelease? ParseRelease(
         JsonElement root,
-        SemanticVersion currentVersion)
+        SemanticVersion currentVersion,
+        bool allowUnsignedPreviews = false)
     {
         if (!root.TryGetProperty("tag_name", out var tagElement))
             return null;
@@ -551,7 +583,12 @@ public sealed class GitHubUpdateService
             if (!asset.TryGetProperty("name", out var nameElement))
                 continue;
             var name = nameElement.GetString() ?? string.Empty;
-            if (!name.EndsWith("-win-x64.msi", StringComparison.OrdinalIgnoreCase))
+            var unsignedPreview = allowUnsignedPreviews && currentVersion.IsPrerelease &&
+                releaseVersion.IsPrerelease &&
+                root.TryGetProperty("prerelease", out var previewFlag) && previewFlag.ValueKind == JsonValueKind.True &&
+                IsSupportedPreviewTag(tagName) &&
+                name == $"AudioBoarder-{tagName}-win-x64-unsigned.msi";
+            if (!unsignedPreview && !name.EndsWith("-win-x64.msi", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             var digest = asset.TryGetProperty("digest", out var digestElement)
@@ -575,6 +612,9 @@ public sealed class GitHubUpdateService
             {
                 continue;
             }
+            if (unsignedPreview && downloadUrl.AbsoluteUri !=
+                $"https://github.com/oguzhanf/audioboarder/releases/download/{tagName}/{name}")
+                continue;
 
             return new UpdateRelease(
                 releaseVersion,
@@ -585,7 +625,8 @@ public sealed class GitHubUpdateService
                 root.TryGetProperty("body", out var body) ? body.GetString() ?? string.Empty : string.Empty,
                 downloadUrl,
                 hash,
-                asset.TryGetProperty("size", out var size) ? size.GetInt64() : 0);
+                asset.TryGetProperty("size", out var size) ? size.GetInt64() : 0,
+                IsUnsignedPreview: unsignedPreview);
         }
 
         return null;
@@ -597,7 +638,8 @@ public sealed class GitHubUpdateService
     internal static UpdateRelease? ParseReleases(
         JsonElement root,
         SemanticVersion currentVersion,
-        bool includePrereleases)
+        bool includePrereleases,
+        bool allowUnsignedPreviews = false)
     {
         if (root.ValueKind != JsonValueKind.Array) return null;
 
@@ -608,11 +650,24 @@ public sealed class GitHubUpdateService
                 includePrereleases ||
                 !release.TryGetProperty("prerelease", out var prerelease) ||
                 !prerelease.GetBoolean())
-            .Select(release => ParseRelease(release, currentVersion))
+            .Select(release => ParseRelease(release, currentVersion, allowUnsignedPreviews))
             .Where(release => release is not null)
             .Cast<UpdateRelease>()
             .OrderByDescending(release => release.Version)
             .FirstOrDefault();
+    }
+
+    private static bool IsSupportedPreviewTag(string tag) =>
+        System.Text.RegularExpressions.Regex.IsMatch(tag, @"^v\d+\.\d+\.\d+-(alpha|beta|preview|rc)\.[1-9]\d*$");
+
+    internal void ValidatePreviewApproval(UpdateRelease release, bool approved)
+    {
+        var expectedUrl = $"https://github.com/oguzhanf/audioboarder/releases/download/{release.TagName}/AudioBoarder-{release.TagName}-win-x64-unsigned.msi";
+        if (!approved || !_currentVersion.IsPrerelease || !release.IsUnsignedPreview ||
+            !release.Version.IsPrerelease || !IsSupportedPreviewTag(release.TagName) ||
+            release.TagName != $"v{release.Version}" || release.MsiUrl.AbsoluteUri != expectedUrl ||
+            release.Sha256.Length != 64 || !release.Sha256.All(Uri.IsHexDigit))
+            throw new InvalidOperationException("Only an explicitly approved AudioBoarder preview from the official GitHub release can use the unsigned installer flow.");
     }
 
     private sealed record UpdateState(

@@ -6,6 +6,7 @@ using AudioBoarder.App.Configuration;
 using AudioBoarder.App.Auth;
 using AudioBoarder.App.Controls;
 using AudioBoarder.App.ViewModels;
+using AudioBoarder.App.Updates;
 using AudioBoarder.Services.LLM;
 using Microsoft.Extensions.Options;
 using Wpf.Ui.Appearance;
@@ -29,6 +30,8 @@ public partial class MainWindow : FluentWindow
     private readonly IAzureModelInventory _inventory;
     private readonly IAzureCredentialProvider _credentials;
     private readonly IAzureProvisioningService _provisioning;
+    private readonly GitHubUpdateService _updates;
+    private bool _checkingUpdates;
     private string _themePreference = "System";
     private bool _isThemeWatcherActive;
     private int? _activeWhiteboardRevision;
@@ -42,7 +45,8 @@ public partial class MainWindow : FluentWindow
         ILocalDataDeletionConfirmation deletionConfirmation,
         IAzureModelInventory inventory,
         IAzureCredentialProvider credentials,
-        IAzureProvisioningService provisioning)
+        IAzureProvisioningService provisioning,
+        GitHubUpdateService updates)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -52,6 +56,7 @@ public partial class MainWindow : FluentWindow
         _inventory = inventory;
         _credentials = credentials;
         _provisioning = provisioning;
+        _updates = updates;
         DataContext = viewModel;
         ApplyThemePreference(settings.Value.Theme);
         Loaded += OnLoaded;
@@ -149,6 +154,28 @@ public partial class MainWindow : FluentWindow
 
     private async void OnConfigureAzure(object sender, RoutedEventArgs e)
         => await ShowSettingsAsync(showAzure: true);
+
+    private async void OnCheckForUpdates(object sender, RoutedEventArgs e)
+    {
+        if (_checkingUpdates) return;
+        var existing = OwnedWindows.OfType<UpdateWindow>().FirstOrDefault();
+        if (existing is not null) { existing.Activate(); return; }
+        _checkingUpdates = true;
+        _viewModel.StatusMessage = $"Checking for updates. Installed: {GitHubUpdateService.CurrentVersion}.";
+        try
+        {
+            var release = await _updates.CheckAsync(ignoreDeferrals: true);
+            if (release is null)
+                _viewModel.StatusMessage = $"No newer eligible release found. Installed: {GitHubUpdateService.CurrentVersion}.";
+            else
+                new UpdateWindow(_updates, release, _viewModel) { Owner = this }.Show();
+        }
+        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or OperationCanceledException or System.Text.Json.JsonException)
+        {
+            _viewModel.StatusMessage = "Update check could not reach a valid GitHub release response. Check the connection and try again.";
+        }
+        finally { _checkingUpdates = false; }
+    }
 
     private async Task ShowSettingsAsync(bool showAzure = false)
     {

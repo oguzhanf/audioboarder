@@ -239,6 +239,9 @@
                                       InputGestureText="Ctrl+,"
                                       Click="OnOpenSettingsMenuItem"
                                       AutomationProperties.Name="Open Settings" />
+                            <MenuItem Header="Check for updates…"
+                                      Click="OnCheckForUpdates"
+                                      AutomationProperties.Name="Check for AudioBoarder updates" />
                             <Separator />
                             <MenuItem Header="Help"
                                       Click="OnShowWelcome"

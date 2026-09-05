@@ -15,8 +15,10 @@ surface; Excalidraw remains an editable export format.
 
 **Release status:** the 0.8.0 line is distributed as **unsigned previews** while
 production signing is being configured. Preview downloads are available on
-[GitHub Releases](https://github.com/oguzhanf/audioboarder/releases); they are not
-offered by the signed stable automatic updater. A branch build is not a published release.
+[GitHub Releases](https://github.com/oguzhanf/audioboarder/releases). Starting with
+preview.3, installed previews offer later unsigned previews with explicit approval
+and GitHub SHA-256 verification; they never install automatically. Stable signed
+updates retain certificate pinning. A branch build is not a published release.
 
 ---
 
@@ -54,6 +56,11 @@ unsigned prerelease builds carry `-unsigned` in their filenames. Every artifact 
 also includes SHA-256 checksums, SPDX SBOM, third-party notices, and source metadata.
 
 MSI installations check the repository's latest GitHub release when AudioBoarder starts.
+Use **More commands > Check for updates** to check again or override a reminder deferral.
+Unsigned preview offers require approval for each update and are restricted to this
+repository's exact preview installer URL. They are hash-checked again after copying
+to administrator-owned staging before installation. Preview.1 and preview.2 need a
+one-time manual MSI upgrade because their updater disables discovery without a signer.
 When a newer signed version is available, the app shows its release notes, downloads and
 verifies both the GitHub SHA-256 digest and the MSI's Authenticode chain, then requires an
 exact SHA-256 signer-certificate identity match before install and restart. Missing,

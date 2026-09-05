@@ -81,7 +81,11 @@ or exact signer identity validation fail. The PFX is written only under the runn
 The same certificate SHA-256 allowlist is embedded as assembly metadata. MSI auto-update
 downloads only the stable MSI naming contract, validates the chain/signature with
 WinVerifyTrust, and then requires an exact signer certificate hash match. The elevated
-staging step repeats hash, Authenticode, and exact identity checks. Portable builds embed
+staging step repeats hash, Authenticode, and exact identity checks. From preview.3, an unsigned-preview installation can instead
+offer a newer unsigned preview only through an explicitly approved UI flow: exact
+repository/tag/asset URL, GitHub SHA-256, and protected elevated staging are still
+required. There is no automatic countdown for unsigned previews, and stable builds
+cannot use this path. Portable builds embed
 `PortableBuild=true` and never auto-update.
 
 For planned certificate rotation, set the variable to comma- or semicolon-separated exact
