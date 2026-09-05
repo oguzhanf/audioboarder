@@ -20,12 +20,17 @@ on:
         required: true
         type: boolean
         default: true
+      artifact_run_id:
+        description: Optional successful build run to publish as an existing unsigned preview draft
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ inputs.artifact_run_id == '' }}
     runs-on: windows-latest
     outputs:
       source_commit: ${{ steps.source.outputs.commit }}
@@ -364,3 +369,92 @@ jobs:
           path: bundle/artifacts/release/v${{ inputs.version }}/
           if-no-files-found: error
           retention-days: 14
+
+  publish-existing-preview:
+    if: ${{ inputs.artifact_run_id != '' }}
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Verify and publish immutable preview artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          UNSIGNED: ${{ inputs.unsigned }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-(alpha|beta|preview|rc)\.[1-9]\d*$' -or
+              $env:SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$' -or
+              $env:ARTIFACT_RUN_ID -notmatch '^\d+$' -or
+              $env:PRERELEASE -ne 'true' -or $env:UNSIGNED -ne 'true') {
+            throw "This publishing job accepts only an exact-commit unsigned preview build."
+          }
+          $tag = "v$env:VERSION"
+          $run = gh api "repos/$env:GH_REPO/actions/runs/$env:ARTIFACT_RUN_ID" | ConvertFrom-Json
+          if ($run.conclusion -ne "success" -or
+              $run.head_sha -ine $env:SOURCE_COMMIT -or
+              $run.path -ne ".github/workflows/release-build.yml") {
+            throw "The source artifact run is not the expected successful release build."
+          }
+          $reference = gh api "repos/$env:GH_REPO/git/ref/tags/$tag" | ConvertFrom-Json
+          $target = $reference.object
+          if ($target.type -eq "tag") {
+            $annotation = gh api "repos/$env:GH_REPO/git/tags/$($target.sha)" | ConvertFrom-Json
+            $target = $annotation.object
+          }
+          if ($target.type -ne "commit" -or $target.sha -ine $env:SOURCE_COMMIT) {
+            throw "Release tag does not point to the verified build commit."
+          }
+          $release = gh release view $tag --json isDraft,isPrerelease | ConvertFrom-Json
+          if (-not $release.isDraft -or -not $release.isPrerelease) {
+            throw "Only an existing preview draft can be published; published releases are never overwritten."
+          }
+          gh run download $env:ARTIFACT_RUN_ID --name "AudioBoarder-v$env:VERSION-unsigned" --dir bundle
+          $metadata = Get-Content "bundle\RELEASE-METADATA.json" -Raw | ConvertFrom-Json
+          if ($metadata.sourceCommit -ine $env:SOURCE_COMMIT -or
+              $metadata.version -ne $env:VERSION -or $metadata.sourceTreeDirty -or
+              -not $metadata.prerelease -or $metadata.signed -or $metadata.signingPending -or
+              $metadata.runtime -ne "win-x64" -or -not $metadata.selfContained) {
+            throw "Artifact provenance or preview/signature state is invalid."
+          }
+          $names = @(
+            "AudioBoarder-v$env:VERSION-win-x64-unsigned.msi",
+            "AudioBoarder-v$env:VERSION-win-x64-portable-unsigned.zip",
+            "AudioBoarder-v$env:VERSION.spdx.json",
+            "RELEASE-METADATA.json", "THIRD-PARTY-NOTICES.txt", "SHA256SUMS.txt"
+          )
+          $manifest = Get-Content "bundle\SHA256SUMS.txt"
+          $hashes = @{}
+          $files = foreach ($name in $names) {
+            $path = Join-Path bundle $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item $path).Length -eq 0) {
+              throw "Missing or empty artifact: $name"
+            }
+            $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hashes[$name] = "sha256:$hash"
+            if ($name -ne "SHA256SUMS.txt") {
+              $entry = @($manifest | Where-Object { $_ -match "\s+\*$([Regex]::Escape($name))$" })
+              if ($entry.Count -ne 1 -or ($entry[0] -split '\s+')[0] -ine $hash) {
+                throw "Artifact checksum mismatch: $name"
+              }
+            }
+            $path
+          }
+          gh release upload $tag @files
+          $uploaded = gh release view $tag --json assets | ConvertFrom-Json
+          foreach ($name in $names) {
+            $asset = @($uploaded.assets | Where-Object name -eq $name)
+            if ($asset.Count -ne 1 -or $asset[0].state -ne "uploaded" -or
+                $asset[0].digest -ine $hashes[$name]) {
+              throw "Uploaded asset digest mismatch: $name"
+            }
+          }
+          gh release edit $tag --draft=false --prerelease --latest=false
+          "Published [$tag](https://github.com/$env:GH_REPO/releases/tag/$tag) from $env:SOURCE_COMMIT." >> $env:GITHUB_STEP_SUMMARY

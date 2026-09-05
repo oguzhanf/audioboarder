@@ -115,6 +115,13 @@ unsigned flag. It builds and uploads a 14-day workflow artifact only. Review
 `RELEASE-METADATA.json`, checksums, SBOM, notices, test results and the clean-VM checklist
 before separately creating any tag or release.
 
+For an unsigned preview draft whose tag already points at a successfully built commit,
+the optional `artifact_run_id` input publishes that run's artifacts directly from the
+runner. This path skips rebuilding, checks the build/tag/source metadata and checksums,
+uploads the six expected files without overwriting existing assets, verifies GitHub's
+asset digests, and only then publishes the draft. It cannot publish stable or signed
+releases and does not check out or execute repository code with its publishing token.
+
 The workflow also runs `AudioBoarder.exe healthcheck --package` against the portable
 payload on `windows-2022` and `windows-2025`. This check is offline and validates version
 metadata plus required settings/WebView/license/notices/SBOM files; it does not contact

@@ -61,6 +61,20 @@ public sealed class ReleaseWorkflowSecurityTests
     }
 
     [Fact]
+    public void DirectPreviewPublicationChecksProvenanceAndUploadsBeforePublishing()
+    {
+        var workflow = WorkflowText();
+        var publishing = workflow[(workflow.IndexOf("\n  publish-existing-preview:", StringComparison.Ordinal))..];
+        publishing.Should().Contain("contents: write").And.Contain("actions: read");
+        publishing.Should().Contain("$run.head_sha").And.Contain("$target.sha").And.Contain("$metadata.sourceCommit");
+        publishing.Should().Contain("$release.isDraft").And.Contain("$release.isPrerelease");
+        publishing.Should().Contain("$asset[0].digest").And.Contain("--latest=false");
+        publishing.Should().NotContain("actions/checkout").And.NotContain("--clobber");
+        publishing.IndexOf("gh release upload", StringComparison.Ordinal).Should()
+            .BeLessThan(publishing.IndexOf("gh release edit", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void SigningCertificateIsDeletedInEverySecretBearingStep()
     {
         var workflow = WorkflowText();
