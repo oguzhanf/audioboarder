@@ -49,7 +49,7 @@ public class XamlSymbolTests
         var content = File.ReadAllText(path);
 
         XDocument.Load(path).Root.Should().NotBeNull();
-        content.Should().Contain("Live architecture canvas");
+        content.Should().Contain("Live meeting whiteboard");
         content.Should().Contain("Export to Excalidraw");
         content.Should().Contain("AutomationProperties.Name=\"Diagram intent selector\"");
         content.Should().Contain("AutomationProperties.Name=\"Reflow unpinned nodes\"");

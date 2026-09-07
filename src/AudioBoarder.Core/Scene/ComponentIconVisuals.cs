@@ -20,25 +20,18 @@ public static class ComponentIconVisuals
 
     public static ComponentIconVisual ForNode(SceneNode node, AzureIconLibrary? custom = null)
     {
-        var customPath = custom?.FindPath(node.Label);
+        if (node.Kind == NodeKind.Concept)
+            return new(IconRegistry.RenderSvg(node.EffectiveIconName, "#0078d4", 32), false);
+        var definition = MicrosoftComponentCatalog.FindMentionedProduct(node.Label);
+        var customPath = definition is not null
+            ? custom?.FindPath(definition.Name)
+            : node.Label.StartsWith("Azure ", StringComparison.OrdinalIgnoreCase)
+                ? custom?.FindPath(node.Label) : null;
         if (customPath is not null && custom!.ReadSvg(customPath) is { } customSvg)
             return new(customSvg, true);
-        var definition = MicrosoftComponentCatalog.All
-            .Where(c => Matches(node.Label, c.Name) || c.Aliases.Any(a => a.Length >= 4 && Matches(node.Label, a)))
-            .OrderByDescending(c => c.Name.Length)
-            .FirstOrDefault();
         return definition is not null && Bundled.TryGetValue(definition.Id, out var svg)
             ? new(svg, true)
             : new(IconRegistry.RenderSvg(node.EffectiveIconName, "#0078d4", 32), false);
-    }
-
-    private static bool Matches(string label, string name)
-    {
-        var index = label.IndexOf(name, StringComparison.OrdinalIgnoreCase);
-        if (index < 0) return false;
-        var end = index + name.Length;
-        return (index == 0 || !char.IsLetterOrDigit(label[index - 1])) &&
-               (end == label.Length || !char.IsLetterOrDigit(label[end]));
     }
 
     private static IReadOnlyDictionary<string, string> LoadBundled()

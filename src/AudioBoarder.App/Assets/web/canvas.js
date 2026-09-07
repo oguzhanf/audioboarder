@@ -230,7 +230,7 @@ function updateEdge(group, item, byId, intent) {
   const route = routePath(from, to);
   setAttrs(path, {
     class: `edge ${["dependency", "association"].includes(item.kind) ? "soft" : ""}`,
-    d: route.d, "marker-end": "url(#arrow)",
+    d: route.d, "marker-end": item.kind === "association" ? null : "url(#arrow)",
   });
 
   const hasStep = Number.isInteger(item.step) && item.step > 0;
@@ -288,6 +288,7 @@ function updateNode(group, item) {
   setAttrs(group, {
     class: lifecycleClass("node", item, item.locked ? "pinned" : ""),
     "data-id": item.id,
+    "data-kind": item.kind,
     tabindex: 0,
     role: "button",
     "aria-label": `${item.label || "Node"}. ${item.locked ? "Pinned" : "Unpinned"}. Press Enter to toggle.`,
@@ -320,7 +321,7 @@ function updateNode(group, item) {
     Math.min(2, Math.floor(availableHeight / 16)));
   const descLines = wrappedLines(item.desc, textWidth,
     `${descStyle.fontWeight} ${descStyle.fontSize} ${descStyle.fontFamily}`,
-    Math.min(3, Math.floor((availableHeight - labelLines.length * 16 - 4) / 14)));
+    Math.min(item.kind === "concept" ? 6 : 3, Math.floor((availableHeight - labelLines.length * 16 - 4) / 14)));
   const textHeight = labelLines.length * 16 + (descLines.length ? 4 + descLines.length * 14 : 0);
   const textTop = item.centerY - textHeight / 2;
   setTextLines(label, labelLines, textX, textTop + 8, 16);

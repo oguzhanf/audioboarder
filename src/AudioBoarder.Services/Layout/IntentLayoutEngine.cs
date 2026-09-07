@@ -7,12 +7,13 @@ namespace AudioBoarder.Services.Layout;
 public sealed class IntentLayoutEngine : ILayoutEngine
 {
     private readonly MindMapLayoutEngine _discussion = new();
+    private readonly MeetingWhiteboardLayoutEngine _meeting = new();
     private readonly IReadOnlyDictionary<DiagramIntent, ILayoutEngine> _architecture;
 
     public IntentLayoutEngine()
     {
         _architecture = Enum.GetValues<DiagramIntent>()
-            .Where(intent => intent != DiagramIntent.DiscussionSummary)
+            .Where(intent => intent is not DiagramIntent.DiscussionSummary and not DiagramIntent.MeetingWhiteboard)
             .ToDictionary(
                 intent => intent,
                 intent => (ILayoutEngine)new ArchitectureIntentLayoutEngine(intent));
@@ -20,10 +21,12 @@ public sealed class IntentLayoutEngine : ILayoutEngine
 
     public string Name => "IntentLayoutEngine";
 
-    public ILayoutEngine ResolveEngine(DiagramIntent intent) =>
-        intent == DiagramIntent.DiscussionSummary
-            ? _discussion
-            : _architecture[intent];
+    public ILayoutEngine ResolveEngine(DiagramIntent intent) => intent switch
+    {
+        DiagramIntent.DiscussionSummary => _discussion,
+        DiagramIntent.MeetingWhiteboard => _meeting,
+        _ => _architecture[intent],
+    };
 
     public LayoutResult Apply(SceneGraph graph, LayoutOptions options) =>
         ResolveEngine(graph.IntentState.AppliedIntent).Apply(graph, options);

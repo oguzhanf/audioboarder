@@ -226,7 +226,7 @@
                             <MenuItem Header="Clear canvas"
                                       InputGestureText="Ctrl+Shift+Delete"
                                       Command="{Binding ClearSceneCommand}"
-                                      AutomationProperties.Name="Clear live architecture canvas" />
+                                      AutomationProperties.Name="Clear meeting whiteboard" />
                             <Separator />
                             <MenuItem Command="{Binding ToggleTranscriptPaneCommand}"
                                       InputGestureText="Ctrl+Shift+I"
@@ -288,7 +288,7 @@
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
                     CornerRadius="12"
-                    AutomationProperties.Name="Live architecture canvas">
+                    AutomationProperties.Name="Live meeting whiteboard">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -305,7 +305,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="Live architecture canvas"
+                                <TextBlock Text="Live meeting whiteboard"
                                            FontSize="14"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
@@ -338,7 +338,7 @@
                     </Border>
                     <ctrl:ExcalidrawCanvas x:Name="Whiteboard"
                                            Grid.Row="1"
-                                           AutomationProperties.Name="Interactive live architecture canvas"
+                                           AutomationProperties.Name="Interactive meeting whiteboard"
                                            AutomationProperties.HelpText="Drag nodes to pin them. Double-click a node to toggle its pinned state." />
                 </Grid>
             </Border>

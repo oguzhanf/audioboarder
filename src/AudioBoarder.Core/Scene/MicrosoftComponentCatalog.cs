@@ -163,12 +163,53 @@ public static class MicrosoftComponentCatalog
     public static string ToPromptVocabulary() =>
         string.Join("; ", All.Select(x => $"{x.Name} [{x.Category}]"));
 
+    // Search aliases aid discovery; they are not evidence that a generic term
+    // names a Microsoft product. Keep model grounding and artwork more specific.
+    private static readonly IReadOnlyDictionary<string, string[]> ProductAliases =
+        new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["expressroute"] = ["expressroute", "express route"],
+            ["app-service"] = ["app service"],
+            ["function-app"] = ["function app"],
+            ["aks"] = ["aks"],
+            ["api-management"] = ["apim"],
+            ["service-bus"] = ["service bus"],
+            ["event-grid"] = ["event grid"],
+            ["event-hubs"] = ["event hubs"],
+            ["logic-apps"] = ["logic apps"],
+            ["cosmos-db"] = ["cosmos db", "cosmos"],
+            ["data-factory"] = ["data factory"],
+            ["synapse"] = ["synapse"],
+            ["microsoft-fabric"] = ["onelake"],
+            ["ai-foundry"] = ["azure ai foundry"],
+            ["azure-openai"] = ["azure openai"],
+            ["entra-id"] = ["entra id", "azure ad"],
+            ["key-vault"] = ["key vault"],
+            ["active-directory-ds"] = ["active directory", "ad ds", "domain controller"],
+            ["sql-server"] = ["mssql"],
+            ["system-center"] = ["system center", "scom", "sccm", "scvmm"],
+            ["azure-stack-hci"] = ["azure stack hci"],
+            ["hyper-v"] = ["hyper v"],
+        };
+
+    private static bool Mentions(string normalizedText, MicrosoftComponentDefinition component) =>
+        new[] { component.Name }.Concat(ProductAliases.GetValueOrDefault(component.Id) ?? [])
+            .Any(name => normalizedText.Contains(" " + Normalize(name) + " ", StringComparison.Ordinal));
+
+    public static MicrosoftComponentDefinition? FindMentionedProduct(string? label)
+    {
+        var text = " " + Normalize(label) + " ";
+        return All.Where(component => Mentions(text, component))
+            .OrderByDescending(component => Normalize(component.Name).Length)
+            .FirstOrDefault();
+    }
+
     public static string RelevantPromptVocabulary(IEnumerable<string> content)
     {
         var text = " " + Normalize(string.Join(" ", content)) + " ";
-        return string.Join("; ", All.Where(component =>
-                new[] { component.Name }.Concat(component.Aliases)
-                    .Any(name => name.Length >= 4 && text.Contains(" " + Normalize(name) + " ", StringComparison.Ordinal)))
+        return string.Join("; ", All.Where(component => Mentions(text, component))
+            .Where(component => component.Id is not ("subnet" or "private-endpoint" or
+                "managed-identity" or "network-security-group" or "on-prem-network"))
             .Take(18).Select(component => $"{component.Name} [{component.Category}]"));
     }
 

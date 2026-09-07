@@ -8,6 +8,7 @@ public enum DiagramIntent
     CloudNetworkArchitecture,
     IntegrationDataFlowArchitecture,
     DiscussionSummary,
+    MeetingWhiteboard,
 }
 
 public enum DiagramIntentSelectionMode
@@ -24,9 +25,9 @@ public sealed record DiagramIntentState(
     int AppliedRevision)
 {
     public static DiagramIntentState Default { get; } = new(
-        DiagramIntent.SoftwareSystemArchitecture,
+        DiagramIntent.MeetingWhiteboard,
         DiagramIntentSelectionMode.Auto,
         0,
-        "Default auto intent",
+        "Adaptive meeting whiteboard",
         0);
 }

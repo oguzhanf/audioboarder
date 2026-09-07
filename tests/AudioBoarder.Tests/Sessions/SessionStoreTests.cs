@@ -249,9 +249,31 @@ public class SessionStoreTests : IDisposable
 
         payload!.SchemaVersion.Should().Be(SessionPayload.CurrentSchemaVersion);
         payload.WasMigratedFromV0.Should().BeFalse();
-        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.SoftwareSystemArchitecture);
+        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
         scene.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.Auto);
         scene.Nodes["a"].LifecycleState.Should().Be(ElementLifecycleState.Confirmed);
+    }
+
+    [Fact]
+    public async Task ConceptCardsAndExplicitIntentRoundTrip()
+    {
+        var store = new SessionStore(_tempLocalAppData);
+        var scene = new SceneGraph();
+        new ScenePatchApplier().Apply(scene, new ScenePatch([
+            new AddNode("idea", NodeKind.Concept, "Curiosity", Icon: "brain",
+                Description: "Making room for questions helps people learn."),
+        ]));
+        scene.SetIntentState(new DiagramIntentState(DiagramIntent.DiscussionSummary,
+            DiagramIntentSelectionMode.PinnedByUser, 1, "User selected", scene.Revision));
+        await store.SaveAsync(scene);
+
+        var restored = new SceneGraph();
+        store.Apply(restored, (await store.LoadLatestAsync())!);
+
+        restored.Nodes["idea"].Kind.Should().Be(NodeKind.Concept);
+        restored.Nodes["idea"].EffectiveIconName.Should().Be("brain");
+        restored.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.PinnedByUser);
+        restored.IntentState.AppliedIntent.Should().Be(DiagramIntent.DiscussionSummary);
     }
 
     [Fact]

@@ -85,8 +85,10 @@ public static class NodeSizer
     public static (double Width, double Height) Measure(
         string? label, string? description, bool hasIcon, NodeKind kind = NodeKind.Process)
     {
-        var iconRoom = hasIcon ? IconBand : 0;
+        var iconRoom = hasIcon ? kind == NodeKind.Concept ? 64 : IconBand : 0;
         var ratio = InteriorRatio(kind);
+        var minWidth = kind == NodeKind.Concept ? 260 : MinWidth;
+        var maxWidth = kind == NodeKind.Concept ? 320 : MaxWidth;
 
         // Choose a width first: wide enough for the longest word, then grown toward
         // a pleasing aspect ratio, then clamped so one long label cannot dominate.
@@ -97,14 +99,14 @@ public static class NodeSizer
             TextWidth(description, LabelFontSize));
 
         // Wrapping a long line to roughly two rows reads better than one long strip.
-        var target = naturalWidth > MaxWidth - HorizontalPadding - iconRoom
+        var target = naturalWidth > maxWidth - HorizontalPadding - iconRoom
             ? Math.Sqrt(naturalWidth * LabelFontSize * LineHeight * 2.2)
             : naturalWidth;
 
         var contentWidth = Math.Max(Math.Max(labelWidth, descWidth), target);
         // Inflate so the TEXT fits the shape's usable interior, not just its bounds.
         var width = Math.Clamp(
-            (contentWidth + HorizontalPadding + iconRoom) / ratio, MinWidth, MaxWidth / ratio);
+            (contentWidth + HorizontalPadding + iconRoom) / ratio, minWidth, maxWidth / ratio);
 
         var textWidth = Math.Max(20, width * ratio - HorizontalPadding - iconRoom);
         // The renderer wraps label and description as ONE bound text block at

@@ -29,7 +29,6 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddAudioBoarder(this IServiceCollection services)
     {
         services.AddSingleton<SceneGraph>();
-        services.AddSingleton<DiagramIntentDetector>();
         services.AddSingleton<DiagramIntentCoordinator>();
         services.AddSingleton<TranscriptBuffer>(_ => new TranscriptBuffer(TimeSpan.FromMinutes(5)));
         services.AddSingleton<DiagramTheme>(_ => DiagramTheme.Light);

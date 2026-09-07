@@ -46,4 +46,19 @@ public sealed class MeetingNotePatchNormalizerTests
         scene.Notes.Should().ContainSingle();
         scene.Notes["requirement"].Text.Should().Contain("confirmed with operations");
     }
+
+    [Fact]
+    public void ModelTimestampCannotReplaceTheHostRecordedTime()
+    {
+        var scene = new SceneGraph();
+        var recorded = DateTimeOffset.UtcNow.AddSeconds(-10);
+        scene.AddNote(new SceneNote { Id = "question", Kind = NoteKind.Question,
+            Text = "Where is this documented?", SourceTimestamp = recorded });
+        var patch = new ScenePatch([new NoteUpsert("question", NoteKind.Question,
+            "Where is this documented?", SourceTimestamp: DateTimeOffset.MinValue)]);
+
+        new ScenePatchApplier().Apply(scene, MeetingNotePatchNormalizer.Normalize(patch, scene));
+
+        scene.Notes["question"].SourceTimestamp.Should().Be(recorded);
+    }
 }

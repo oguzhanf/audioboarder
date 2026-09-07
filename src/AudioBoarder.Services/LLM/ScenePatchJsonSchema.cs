@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AudioBoarder.Core.Scene;
 
 namespace AudioBoarder.Services.LLM;
 
@@ -12,6 +13,16 @@ public static class ScenePatchJsonSchema
     private static string MakeStructuredOutputSchema()
     {
         var schema = JsonNode.Parse(Schema)!;
+        schema["$defs"]!["iconName"] = new JsonObject
+        {
+            ["type"] = "string",
+            ["enum"] = new JsonArray(IconRegistry.Names.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
+        };
+        foreach (var operation in schema["properties"]!["operations"]!["items"]!["oneOf"]!.AsArray())
+        {
+            if (operation?["properties"] is JsonObject properties && properties.ContainsKey("icon"))
+                properties["icon"] = new JsonObject { ["$ref"] = "#/$defs/iconName" };
+        }
         Normalize(schema);
         return schema.ToJsonString();
     }
@@ -209,7 +220,7 @@ public static class ScenePatchJsonSchema
           "type": "string",
           "enum": ["process","entity","decision","data_store","actor","note","system",
                    "technology","security","identity","cloud","document","milestone",
-                   "risk","metric","external","callout"]
+                   "risk","metric","external","callout","concept"]
         },
         "edgeKind": {
           "type": "string",

@@ -1,55 +1,24 @@
 using AudioBoarder.Core.Scene;
-using AudioBoarder.Core.Transcript;
 
 namespace AudioBoarder.Services.Intent;
 
 /// <summary>
-/// Owns the host-side intent state machine. Detection may update an empty scene,
-/// but a populated scene receives an explicit suggestion that UI code can accept
-/// or reject.
+/// Auto leaves visual modeling to the language model; explicit user selections
+/// are the only way to constrain the whole board to a specialized diagram type.
 /// </summary>
 public sealed class DiagramIntentCoordinator
 {
-    private readonly DiagramIntentDetector _detector;
-
-    public DiagramIntentCoordinator(DiagramIntentDetector detector)
-    {
-        _detector = detector ?? throw new ArgumentNullException(nameof(detector));
-    }
-
-    public DiagramIntentDetection? Evaluate(
-        SceneGraph scene,
-        IReadOnlyList<TranscriptSegment> finalizedTranscript)
+    public void EnsureAutomaticIntent(SceneGraph scene)
     {
         ArgumentNullException.ThrowIfNull(scene);
-        if (scene.IntentState.SelectionMode == DiagramIntentSelectionMode.PinnedByUser)
-            return null;
-
-        var detection = _detector.Detect(finalizedTranscript);
-        if (detection is null) return null;
-
         lock (scene.SyncRoot)
         {
-            var state = new DiagramIntentState(
-                detection.Intent,
-                DiagramIntentSelectionMode.Auto,
-                detection.Confidence,
-                detection.Evidence,
-                scene.Revision);
-            var hasGraphContent = scene.Nodes.Count > 0 || scene.Edges.Count > 0 ||
-                                  scene.Groups.Count > 0 || scene.Notes.Count > 0 ||
-                                  scene.Images.Count > 0;
-            if (!hasGraphContent || detection.Intent == scene.IntentState.AppliedIntent)
-            {
-                scene.SetIntentState(state);
-                scene.SetSuggestedIntentState(null);
-            }
-            else
-            {
-                scene.SetSuggestedIntentState(state);
-            }
+            if (scene.IntentState.SelectionMode == DiagramIntentSelectionMode.PinnedByUser) return;
+            // Older sessions may contain an automatically chosen architecture intent.
+            if (scene.IntentState.AppliedIntent != DiagramIntent.MeetingWhiteboard)
+                UseAuto(scene);
+            scene.SetSuggestedIntentState(null);
         }
-        return detection;
     }
 
     public void Pin(SceneGraph scene, DiagramIntent intent, string reason = "Pinned by user")
@@ -64,11 +33,12 @@ public sealed class DiagramIntentCoordinator
         scene.SetSuggestedIntentState(null);
     }
 
-    public void UseAuto(SceneGraph scene, string reason = "Automatic intent detection")
+    public void UseAuto(SceneGraph scene, string reason = "Adapt to the meeting without constraining its subject")
     {
         ArgumentNullException.ThrowIfNull(scene);
         scene.SetIntentState(scene.IntentState with
         {
+            AppliedIntent = DiagramIntent.MeetingWhiteboard,
             SelectionMode = DiagramIntentSelectionMode.Auto,
             Confidence = 0,
             Reason = SafeReason(reason),
@@ -85,7 +55,7 @@ public sealed class DiagramIntentCoordinator
             if (scene.SuggestedIntentState is not { } suggestion) return false;
             scene.SetIntentState(suggestion with
             {
-                SelectionMode = DiagramIntentSelectionMode.Auto,
+                SelectionMode = DiagramIntentSelectionMode.PinnedByUser,
                 AppliedRevision = scene.Revision,
             });
             scene.SetSuggestedIntentState(null);

@@ -52,9 +52,19 @@ window.addEventListener("load", async () => {
     const node = document.querySelector('.node[data-id="api"]');
     const card = node.querySelector(".node-card");
     check(card.getAttribute("x") === "370" && card.getAttribute("y") === "144", "authoritative center geometry");
+    check(node.dataset.kind === "process", "node kind exposed for styling");
     const edge = document.querySelector('[data-layer="edges"] > [data-id="request"]');
     check(edge.classList.contains("boundary-crossing"), "security intent preserved over bridge");
     check(["1", "Create order", "HTTPS", "OAuth", "Confidential"].every(s => edge.textContent.includes(s)), "edge semantics");
+    check(edge.querySelector(".edge").getAttribute("marker-end") === "url(#arrow)", "flow remains directional");
+    scene.edges[0].kind = "association";
+    host(scene);
+    check(!edge.querySelector(".edge").hasAttribute("marker-end"), "association has no arrowhead on keyed update");
+    for (const kind of ["dependency", "inheritance", "flow"]) {
+      scene.edges[0].kind = kind;
+      host(scene);
+      check(edge.querySelector(".edge").getAttribute("marker-end") === "url(#arrow)", `${kind} restores its arrowhead`);
+    }
     scene.edges[0].label = "Routes the complete incoming customer order request to the application";
     host(scene);
     const edgeLabel = edge.querySelector(".edge-label").getBBox();
@@ -62,9 +72,11 @@ window.addEventListener("load", async () => {
       "edge labels are bounded without losing full tooltip semantics");
     scene.edges[0].label = "Create order";
     scene.nodes[1].label = "API v2";
+    scene.nodes[1].kind = "concept";
     scene.sceneRevision++;
     host(scene);
     check(node === document.querySelector('.node[data-id="api"]'), "keyed node identity");
+    check(node.dataset.kind === "concept", "keyed node kind updates to concept");
     node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     const pin = window.__messages.filter(m => m.type === "scene-change").at(-1);
     check(pin.elements[0].id === "api" && pin.elements[0].locked === true, "keyboard pin bridge");
@@ -98,6 +110,38 @@ window.addEventListener("load", async () => {
       check(text.x >= manualCard.x && text.x + text.width <= manualCard.x + manualCard.width &&
         text.y >= manualCard.y && text.y + text.height <= manualCard.y + manualCard.height,
         `${selector} contained in node card`);
+    }
+    const explanation = "Meaningful context ".repeat(14).slice(0, 240);
+    host({
+      intent: "meeting_whiteboard",
+      nodes: [
+        { id: "concept-detail", label: "Idea explained", kind: "concept", centerX: 180, centerY: 220,
+          width: 260, height: 180, desc: explanation },
+        { id: "process-detail", label: "Existing process", kind: "process", centerX: 500, centerY: 220,
+          width: 260, height: 180, desc: explanation },
+        { id: "short-concept", label: "Compact idea", kind: "concept", centerX: 180, centerY: 440,
+          width: 260, height: 80, desc: explanation },
+      ], edges: [], groups: [],
+    });
+    check(document.querySelectorAll('[data-id="concept-detail"] .node-desc tspan').length === 6,
+      "concept descriptions allow six wrapped lines");
+    check(document.querySelectorAll('[data-id="process-detail"] .node-desc tspan').length === 3,
+      "other node descriptions retain their three-line limit");
+    check(document.querySelectorAll('[data-id="short-concept"] .node-desc tspan').length <= 2,
+      "short concept cards still honor available height");
+    const geometryTolerance = .01;
+    for (const id of ["concept-detail", "process-detail", "short-concept"]) {
+      const item = document.querySelector(`.node[data-id="${id}"]`);
+      const bounds = item.querySelector(".node-card").getBBox();
+      const description = item.querySelector(".node-desc").getBBox();
+      const contained = description.x + geometryTolerance >= bounds.x + 64 &&
+        description.x + description.width <= bounds.x + bounds.width + geometryTolerance &&
+        description.y + geometryTolerance >= bounds.y &&
+        description.y + description.height <= bounds.y + bounds.height + geometryTolerance;
+      check(contained, `${id} description respects card bounds and icon space` +
+        (contained ? "" : `: text=${[description.x, description.y, description.width, description.height]}; ` +
+          `card=${[bounds.x, bounds.y, bounds.width, bounds.height]}`));
+      check(item.querySelector("title").textContent.includes(explanation), `${id} retains full explanation in tooltip`);
     }
     host({ type: "theme", theme: "light" });
     check(document.documentElement.dataset.theme === "light", "light theme");

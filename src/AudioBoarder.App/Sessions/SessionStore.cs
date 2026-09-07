@@ -319,7 +319,7 @@ public sealed class SessionStore
     private static DiagramIntentState? ParseIntentState(IntentStateRecord? record, int revision)
     {
         if (record is null) return null;
-        var intent = ParseEnum(record.AppliedIntent, DiagramIntent.SoftwareSystemArchitecture);
+        var intent = ParseEnum(record.AppliedIntent, DiagramIntent.MeetingWhiteboard);
         var mode = ParseEnum(record.SelectionMode, DiagramIntentSelectionMode.Auto);
         var confidence = double.IsFinite(record.Confidence)
             ? Math.Clamp(record.Confidence, 0, 1)

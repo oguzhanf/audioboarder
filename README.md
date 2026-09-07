@@ -1,14 +1,15 @@
 # AudioBoarder
 
 > Listens to a meeting on Windows and draws it live on an interactive SVG
-> architecture canvas, with structured notes and on-demand illustrations.
+> meeting whiteboard, with structured notes and on-demand illustrations.
 
 AudioBoarder captures your microphone and (optionally) system audio, transcribes the
-conversation, and asks an Azure OpenAI model to turn what it hears into a diagram:
-technologies carrying icons, systems drawn as labelled boundaries, arrows that say what
-actually flows between things, and callouts explaining the subtle parts. Decisions,
-action items, risks, questions, answers and nonvisual requirements are collected in a side panel. Everything can be
-exported as a `.excalidraw` file you can keep editing, or as a PNG.
+conversation, and asks an Azure OpenAI model to whiteboard what people mean: systems,
+processes, IT concepts, abstract ideas, alternatives and questions. Important thoughts
+become canvas cards; unrelated thoughts stay separate. Stated relationships become
+connections, without invented hubs or forced Azure products. Decisions, action items,
+risks, questions and answers remain in the insights panel. Export an editable
+`.excalidraw` file or a PNG.
 
 Built on WPF + SkiaSharp + WebView2. The live editor is a vendored offline SVG
 surface; Excalidraw remains an editable export format.
@@ -135,14 +136,29 @@ Then **Listen** → talk, and the board grows on its own as the conversation dev
 controls"), the export buttons save a PNG or an editable `.excalidraw` file, and dragging
 a node pins it so later passes leave it where you put it.
 
-Live extraction reads only finalized captions after the committed transcript cursor.
+Live extraction applies finalized captions after the committed transcript cursor.
+It also carries up to eight earlier finalized segments (300 characters each) as
+separate context so follow-up questions and references are understood without
+re-extracting the whole transcript.
 Deep synthesis is event-driven rather than periodic: it runs on **Refine**, after a
 flushed meeting stop, or after the configured speech pause (25 seconds by default) when
 provisional diagram changes exist. Fixed timed deep passes are disabled.
 
-### Diagram intents and switching
+### An adaptive whiteboard, with optional focused views
 
-The six supported intents are:
+**Auto** is the default **Meeting Whiteboard** mode. The model chooses useful cards,
+processes, concept maps or architecture according to the discussion, and can keep
+different topic types on the same board. Layout uses the actual relationships:
+independent thoughts form compact islands, directed interactions form flows, and
+nondirectional associations have no arrowheads. A topic change does not ask the user
+to switch diagram modes or connect unrelated ideas.
+
+Microsoft's bundled architecture artwork is used for specifically named products
+and components; other subjects use the offline Lucide symbol library. Search aliases
+remain broad for manual discovery, but generic words such as queue, cache, web app
+and Kubernetes do not cause the model to select Microsoft products.
+
+Optional focused views are:
 
 1. **Software system architecture** — services, components, dependencies and boundaries.
 2. **SaaS multi-tenant architecture** — tenants, control/data planes and isolation.
@@ -151,11 +167,10 @@ The six supported intents are:
 5. **Integration / data-flow architecture** — producers, consumers, stores and payload paths.
 6. **Discussion summary** — topics, decisions, actions, risks and questions.
 
-In **Auto**, the intent coordinator can suggest and apply an intent as evidence accumulates.
-The status shows the applied and suggested intent. Choosing an intent pins
-`PinnedByUser`; automatic classification may continue to make a suggestion but cannot
-replace the pinned choice. Returning to Auto allows later evidence to switch the intent.
-Intent changes affect semantic defaults and layout selection, not the source transcript.
+Choosing a view explicitly pins it; the model cannot replace that choice. Returning
+to **Auto** removes the subject constraint while retaining the scene and pinned node
+positions. Older automatically selected architecture modes become adaptive when
+restored; explicitly pinned modes remain unchanged.
 
 ### Model roles, latency, and runtime states
 
@@ -195,6 +210,17 @@ excluded from recognition. Azure TTS, Speech and model requests incur normal usa
 charges. Each run writes caption/scene timing and audio-loss counters beneath its
 own `run-...` directory. Demo boards and UI state use explicit isolated storage and
 never replace the user's current session.
+
+For synthetic model-only coverage of independent ideas, conceptual Q&A, vendor-neutral
+systems, business processes and mixed-topic evolution:
+
+```powershell
+.\src\AudioBoarder.App\bin\Release\net10.0-windows\AudioBoarder.exe setup --check-whiteboard artifacts\whiteboard-scenarios
+```
+
+This opt-in command uses the signed-in account and incurs model usage. It neither
+captures audio nor changes settings. Scenes and results are saved only in the supplied
+output folder, separate from the user's saved meeting.
 
 ### Semantic contract and limits
 

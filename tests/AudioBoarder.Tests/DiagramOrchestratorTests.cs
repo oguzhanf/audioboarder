@@ -83,6 +83,67 @@ public class DiagramOrchestratorTests
     }
 
     [Fact]
+    public async Task LiveDeltaCarriesBoundedPriorContextButNotFutureOrRepeatedSpeech()
+    {
+        var buffer = new TranscriptBuffer(TimeSpan.FromMinutes(5));
+        var start = DateTimeOffset.UtcNow.AddSeconds(-30);
+        var previous = Enumerable.Range(0, 12).Select(index => new TranscriptSegment(
+            Guid.NewGuid(), TranscriptSpeaker.Remote, $"Earlier idea {index}",
+            start.AddSeconds(index), start.AddSeconds(index + 1))).ToArray();
+        foreach (var segment in previous) buffer.Append(segment);
+        var delta = new TranscriptSegment(Guid.NewGuid(), TranscriptSpeaker.Local,
+            "That would help.", start.AddSeconds(13), start.AddSeconds(14));
+        buffer.Append(delta);
+        buffer.Append(new(Guid.NewGuid(), TranscriptSpeaker.Remote, "Later speech",
+            start.AddSeconds(15), start.AddSeconds(16)));
+        var generator = new CapturingGenerator();
+        await using var orchestrator = new DiagramOrchestrator(generator, new NoOpLayout(), buffer);
+
+        await orchestrator.GenerateAsync(null, mode: GenerationMode.ContinuousExtraction, transcriptWindow: [delta]);
+
+        generator.Request!.TranscriptWindow.Should().Equal(delta);
+        generator.Request.ConversationContext.Should().Equal(previous.TakeLast(8));
+    }
+
+    [Fact]
+    public async Task LiveContextUsesAppendOrderEvenWhenFinalizationTimestampsOverlapOrArriveLate()
+    {
+        var buffer = new TranscriptBuffer(TimeSpan.FromMinutes(5));
+        var start = DateTimeOffset.UtcNow.AddSeconds(-30);
+        var previous = new TranscriptSegment(Guid.NewGuid(), TranscriptSpeaker.Local,
+            "A long antecedent.", start, start.AddSeconds(4));
+        var delta = new TranscriptSegment(Guid.NewGuid(), TranscriptSpeaker.Remote,
+            "Does that help?", start.AddSeconds(3), start.AddSeconds(5));
+        buffer.Append(previous);
+        buffer.Append(delta);
+        var capturedDelta = buffer.ReadAfter(new TranscriptCursor(1)).Segments;
+        buffer.Append(new(Guid.NewGuid(), TranscriptSpeaker.Local, "Late finalized pending speech",
+            start.AddSeconds(-2), start.AddSeconds(-1)));
+        var generator = new CapturingGenerator();
+        await using var orchestrator = new DiagramOrchestrator(generator, new NoOpLayout(), buffer);
+
+        await orchestrator.GenerateAsync(null, mode: GenerationMode.ContinuousExtraction, transcriptWindow: capturedDelta);
+
+        generator.Request!.ConversationContext.Should().Equal(previous);
+        generator.Request.TranscriptWindow.Should().Equal(delta);
+    }
+
+    [Fact]
+    public async Task UnbufferedTranscriptDoesNotAcquireUnrelatedContext()
+    {
+        var buffer = new TranscriptBuffer(TimeSpan.FromMinutes(1));
+        var now = DateTimeOffset.UtcNow;
+        buffer.Append(new(Guid.NewGuid(), TranscriptSpeaker.Local, "Different conversation", now, now));
+        var generator = new CapturingGenerator();
+        await using var orchestrator = new DiagramOrchestrator(generator, new NoOpLayout(), buffer);
+
+        await orchestrator.GenerateAsync(null, mode: GenerationMode.ContinuousExtraction,
+            transcriptWindow: [new(Guid.NewGuid(), TranscriptSpeaker.Remote, "Imported statement", now, now)]);
+
+        generator.Request!.ConversationContext.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task RestoredFloorDoesNotTurnNegativeNodeCapBackOn()
     {
         var scene = new SceneGraph();
@@ -105,7 +166,7 @@ public class DiagramOrchestratorTests
     }
 
     [Fact]
-    public async Task AutoDetectedIntentIsIncludedInGeneratorRequest()
+    public async Task AutoRemainsGeneralEvenWhenTheConversationContainsArchitectureTerms()
     {
         var buffer = new TranscriptBuffer(TimeSpan.FromMinutes(1));
         var start = DateTimeOffset.UtcNow;
@@ -125,14 +186,14 @@ public class DiagramOrchestratorTests
             generator,
             new NoOpLayout(),
             buffer,
-            intentCoordinator: new DiagramIntentCoordinator(new DiagramIntentDetector()));
+            intentCoordinator: new DiagramIntentCoordinator());
 
         await orchestrator.GenerateAsync(null);
 
-        generator.Request!.DiagramIntent.Should().Be(DiagramIntent.SaaSMultiTenantArchitecture);
+        generator.Request!.DiagramIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
         generator.Request.Mode.Should().Be(GenerationMode.DeepSynthesis);
-        generator.Request.IntentState!.AppliedIntent.Should().Be(DiagramIntent.SaaSMultiTenantArchitecture);
-        generator.Request.IntentState.Confidence.Should().BeGreaterThan(0);
+        generator.Request.IntentState!.AppliedIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
+        generator.Request.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.Auto);
     }
 
     [Fact]
@@ -451,7 +512,7 @@ public class DiagramOrchestratorTests
             new NoOpLayout(),
             new TranscriptBuffer(TimeSpan.FromMinutes(1)),
             scene);
-        var coordinator = new DiagramIntentCoordinator(new DiagramIntentDetector());
+        var coordinator = new DiagramIntentCoordinator();
 
         var generation = orchestrator.GenerateAsync(null);
         await generator.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));

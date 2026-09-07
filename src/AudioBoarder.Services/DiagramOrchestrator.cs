@@ -82,7 +82,7 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
         _logger = logger ?? NullLogger<DiagramOrchestrator>.Instance;
         _budget = budget ?? SceneBudget.Default;
         _intentCoordinator = intentCoordinator ??
-            new DiagramIntentCoordinator(new DiagramIntentDetector());
+            new DiagramIntentCoordinator();
         Scene = scene ?? new SceneGraph();
     }
 
@@ -160,28 +160,36 @@ public sealed class DiagramOrchestrator : IAsyncDisposable
             BeginInFlight(mode);
 
             var effectiveBudget = EffectiveBudget();
-            // Intent detection always considers finalized transcript accumulated so
-            // far, even when the model receives only a small continuous delta.
-            _intentCoordinator.Evaluate(Scene, _buffer.Snapshot());
+            _intentCoordinator.EnsureAutomaticIntent(Scene);
             var snapshot = Scene.Clone();
             var baseRevision = snapshot.Revision;
             var baseGenerationEpoch = snapshot.GenerationEpoch;
             var intentState = snapshot.IntentState;
+            var window = transcriptWindow ?? (mode == GenerationMode.ContinuousExtraction
+                ? _buffer.SnapshotRecent(ContinuousTranscriptWindow)
+                : _buffer.Snapshot());
+            IReadOnlyList<TranscriptSegment>? context = null;
+            if (mode == GenerationMode.ContinuousExtraction && window.Count > 0)
+            {
+                var retained = _buffer.Snapshot();
+                var delta = window.ToHashSet();
+                var boundary = Enumerable.Range(0, retained.Count)
+                    .FirstOrDefault(index => delta.Contains(retained[index]), -1);
+                // ReadAfter slices preserve append order; recognizer timestamps can
+                // overlap or arrive late, and must not admit later pending speech.
+                context = boundary < 0 ? [] : retained.Take(boundary)
+                    .TakeLast(ScenePromptComposer.MaximumContextSegments).ToArray();
+            }
             var request = new ScenePatchRequest(
                 CurrentScene: snapshot,
-                // Continuous passes get only what was just said. The scene already
-                // encodes everything earlier, so re-sending the whole rolling window
-                // every few seconds only inflates the prompt (and the latency) as the
-                // meeting goes on. Deep passes still see the full window.
-                TranscriptWindow: transcriptWindow ?? (mode == GenerationMode.ContinuousExtraction
-                    ? _buffer.SnapshotRecent(ContinuousTranscriptWindow)
-                    : _buffer.Snapshot()),
+                TranscriptWindow: window,
                 UserInstruction: userInstruction,
                 MaxNodes: effectiveBudget.MaxNodes,
                 Mode: mode,
                 DiagramIntent: intentState.AppliedIntent,
                 IntentState: intentState,
-                GenerationEpoch: baseGenerationEpoch);
+                GenerationEpoch: baseGenerationEpoch,
+                ConversationContext: context);
 
             PublishRuntime(
                 mode == GenerationMode.ContinuousExtraction

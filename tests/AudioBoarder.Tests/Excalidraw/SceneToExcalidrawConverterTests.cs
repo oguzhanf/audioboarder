@@ -246,7 +246,34 @@ public class SceneToExcalidrawConverterTests
     {
         var doc = _converter.Convert(BuildScene());
         Find(doc, "e2")!.StrokeStyle.Should().Be("dashed");
+        Find(doc, "e2")!.EndArrowhead.Should().Be("arrow");
         Find(doc, "e1")!.StrokeStyle.Should().Be("solid");
+    }
+
+    [Fact]
+    public void AssociationHasNoArrowheadsButRetainsBindingsAndLabel()
+    {
+        var graph = BuildScene();
+        _applier.Apply(graph, new ScenePatch(new ScenePatchOperation[]
+        {
+            new Connect("relationship", "a", "d", EdgeKind.Association, "related idea"),
+        }));
+
+        var doc = _converter.Convert(graph);
+        var association = Find(doc, "relationship")!;
+        association.StartArrowhead.Should().BeNull();
+        association.EndArrowhead.Should().BeNull();
+        association.StrokeStyle.Should().Be("dashed");
+        association.StartBinding!.ElementId.Should().Be("a");
+        association.EndBinding!.ElementId.Should().Be("d");
+        Find(doc, "relationship_label")!.OriginalText.Should().Be("related idea");
+        Find(doc, "a")!.BoundElements.Should().Contain(b => b.Id == "relationship");
+        Find(doc, "d")!.BoundElements.Should().Contain(b => b.Id == "relationship");
+
+        using var json = System.Text.Json.JsonDocument.Parse(_converter.ConvertToJson(graph));
+        var exported = json.RootElement.GetProperty("elements").EnumerateArray()
+            .Single(element => element.GetProperty("id").GetString() == "relationship");
+        exported.GetProperty("endArrowhead").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
     }
 
     [Fact]

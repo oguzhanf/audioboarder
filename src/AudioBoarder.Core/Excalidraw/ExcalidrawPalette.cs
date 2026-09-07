@@ -50,6 +50,7 @@ public static class ExcalidrawPalette
         NodeKind.Metric => Pink,
         NodeKind.External => Gray,
         NodeKind.Callout => Yellow,
+        NodeKind.Concept => Yellow,
         _ => Blue,
     };
 

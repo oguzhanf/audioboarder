@@ -21,7 +21,7 @@ public class DiagramIntentDetectorTests
             return (expected, actual);
         }).ToArray();
 
-        var perClassF1 = Enum.GetValues<DiagramIntent>().Select(intent =>
+        var perClassF1 = results.Select(result => result.expected).Distinct().Select(intent =>
         {
             var tp = results.Count(x => x.expected == intent && x.actual == intent);
             var fp = results.Count(x => x.expected != intent && x.actual == intent);
@@ -98,84 +98,80 @@ public class DiagramIntentDetectorTests
     }
 
     [Fact]
-    public void ManualPinWins_AndPopulatedSceneUsesSuggestionContract()
+    public void AutoKeepsPopulatedBoardGeneralAndPreservesManualPin()
     {
-        var coordinator = new DiagramIntentCoordinator(_detector);
+        var coordinator = new DiagramIntentCoordinator();
         var scene = new SceneGraph();
         new ScenePatchApplier().Apply(scene, new ScenePatch(
         [
             new AddNode("existing", NodeKind.Process, "Existing component"),
         ]));
-        var tenantTranscript = Segments(
-            "Tenant context flows through the tenant portal to the tenant API and shared tenant database with row level security.",
-            3);
-
-        coordinator.Evaluate(scene, tenantTranscript);
-        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.SoftwareSystemArchitecture);
-        scene.SuggestedIntentState!.AppliedIntent.Should().Be(DiagramIntent.SaaSMultiTenantArchitecture);
-
-        coordinator.RejectSuggestion(scene).Should().BeTrue();
+        coordinator.EnsureAutomaticIntent(scene);
+        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
         scene.SuggestedIntentState.Should().BeNull();
-
-        coordinator.Evaluate(scene, tenantTranscript);
-        coordinator.ApplySuggestion(scene).Should().BeTrue();
-        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.SaaSMultiTenantArchitecture);
+        scene.Nodes.Should().ContainKey("existing");
 
         coordinator.Pin(scene, DiagramIntent.DiscussionSummary);
-        coordinator.Evaluate(scene, tenantTranscript).Should().BeNull();
+        coordinator.EnsureAutomaticIntent(scene);
         scene.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.PinnedByUser);
         scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.DiscussionSummary);
         scene.SuggestedIntentState.Should().BeNull();
     }
 
     [Fact]
-    public void ReturningToAutoClearsPinAndSuggestionWithoutInvisibleSwitch()
+    public void ReturningToAutoRemovesArchitectureConstraint()
     {
-        var coordinator = new DiagramIntentCoordinator(_detector);
+        var coordinator = new DiagramIntentCoordinator();
         var scene = new SceneGraph();
         coordinator.Pin(scene, DiagramIntent.SecurityZeroTrustArchitecture);
 
         coordinator.UseAuto(scene);
 
         scene.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.Auto);
-        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.SecurityZeroTrustArchitecture);
+        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
         scene.IntentState.Confidence.Should().Be(0);
         scene.SuggestedIntentState.Should().BeNull();
     }
 
     [Fact]
-    public void GenerationEpochChangesOnlyWhenAppliedIntentChanges()
+    public void LegacyAutoArchitectureMigratesOnceWithoutRepeatedEpochChanges()
     {
-        var coordinator = new DiagramIntentCoordinator(_detector);
+        var coordinator = new DiagramIntentCoordinator();
         var scene = new SceneGraph();
+        scene.SetIntentState(new DiagramIntentState(DiagramIntent.SoftwareSystemArchitecture,
+            DiagramIntentSelectionMode.Auto, .8, "Legacy auto", scene.Revision));
         var initialEpoch = scene.GenerationEpoch;
-        var tenantTranscript = Segments(
-            "Tenant context flows through the tenant portal to the tenant API and shared tenant database with row level security.",
-            3);
 
-        coordinator.Evaluate(scene, tenantTranscript);
+        coordinator.EnsureAutomaticIntent(scene);
         scene.GenerationEpoch.Should().Be(initialEpoch + 1);
+        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.MeetingWhiteboard);
 
         new ScenePatchApplier().Apply(scene, new ScenePatch(
         [
             new AddNode("existing", NodeKind.Process, "Existing"),
         ]));
-        var beforeSuggestion = scene.GenerationEpoch;
-        var networkTranscript = Segments(
-            "The application gateway enters a virtual network through a private endpoint in the subnet.",
-            3);
-        coordinator.Evaluate(scene, networkTranscript);
-        scene.GenerationEpoch.Should().Be(beforeSuggestion,
-            "recording a suggestion does not change the applied intent");
+        var stableEpoch = scene.GenerationEpoch;
+        coordinator.EnsureAutomaticIntent(scene);
+        scene.GenerationEpoch.Should().Be(stableEpoch);
+        coordinator.Pin(scene, DiagramIntent.MeetingWhiteboard);
+        coordinator.UseAuto(scene);
+        scene.GenerationEpoch.Should().Be(stableEpoch,
+            "pin/auto mode changes do not invalidate generation when the applied intent is unchanged");
+    }
+
+    [Fact]
+    public void AcceptingALegacySuggestionMakesItAnExplicitSelection()
+    {
+        var scene = new SceneGraph();
+        scene.SetSuggestedIntentState(new DiagramIntentState(DiagramIntent.CloudNetworkArchitecture,
+            DiagramIntentSelectionMode.Auto, .8, "Legacy suggestion", scene.Revision));
+        var coordinator = new DiagramIntentCoordinator();
 
         coordinator.ApplySuggestion(scene).Should().BeTrue();
-        scene.GenerationEpoch.Should().Be(beforeSuggestion + 1);
+        coordinator.EnsureAutomaticIntent(scene);
 
-        var beforeModeOnlyChange = scene.GenerationEpoch;
-        coordinator.Pin(scene, DiagramIntent.CloudNetworkArchitecture);
-        coordinator.UseAuto(scene);
-        scene.GenerationEpoch.Should().Be(beforeModeOnlyChange,
-            "pin/auto mode changes do not invalidate generation when the applied intent is unchanged");
+        scene.IntentState.AppliedIntent.Should().Be(DiagramIntent.CloudNetworkArchitecture);
+        scene.IntentState.SelectionMode.Should().Be(DiagramIntentSelectionMode.PinnedByUser);
     }
 
     private static IReadOnlyList<TranscriptSegment> Segments(

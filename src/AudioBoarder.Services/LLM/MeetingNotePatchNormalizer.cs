@@ -50,7 +50,7 @@ internal static class MeetingNotePatchNormalizer
                 if (prior is not null) note = note with { Id = prior.Id };
             }
 
-            operations.Add(note with { Text = text });
+            operations.Add(note with { Text = text, SourceTimestamp = null });
             notes.RemoveAll(existing => existing.Id == note.Id);
             notes.Add(new SceneNote { Id = note.Id, Kind = note.Kind, Text = text });
         }

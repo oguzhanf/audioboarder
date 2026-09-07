@@ -193,7 +193,8 @@ public sealed class SceneRenderer
             path.MoveTo(sx, sy);
             path.CubicTo(c1x, c1y, c2x, c2y, ex, ey);
             canvas.DrawPath(path, stroke);
-            DrawArrowhead(canvas, c2x, c2y, ex, ey, stroke.Color);
+            if (edge.Kind != EdgeKind.Association)
+                DrawArrowhead(canvas, c2x, c2y, ex, ey, stroke.Color);
 
             if (!string.IsNullOrEmpty(edge.Label))
             {

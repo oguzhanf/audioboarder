@@ -97,6 +97,8 @@ public sealed class ExcalidrawElement
     public ExcalidrawBinding? StartBinding { get; set; }
     public ExcalidrawBinding? EndBinding { get; set; }
     public string? StartArrowhead { get; set; }
+    // An omitted endArrowhead defaults to an arrow when Excalidraw restores a file.
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public string? EndArrowhead { get; set; }
     public bool? Elbowed { get; set; }
 

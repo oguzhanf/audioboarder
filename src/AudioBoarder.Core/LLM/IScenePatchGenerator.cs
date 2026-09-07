@@ -17,9 +17,10 @@ public sealed record ScenePatchRequest(
     string? UserInstruction = null,
     int MaxNodes = 60,
     GenerationMode Mode = GenerationMode.DeepSynthesis,
-    DiagramIntent DiagramIntent = DiagramIntent.SoftwareSystemArchitecture,
+    DiagramIntent DiagramIntent = DiagramIntent.MeetingWhiteboard,
     DiagramIntentState? IntentState = null,
-    long GenerationEpoch = 0)
+    long GenerationEpoch = 0,
+    IReadOnlyList<TranscriptSegment>? ConversationContext = null)
 {
     public bool IsContinuous => Mode == GenerationMode.ContinuousExtraction;
 }

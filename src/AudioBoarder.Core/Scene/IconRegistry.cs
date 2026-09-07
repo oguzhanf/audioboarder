@@ -299,14 +299,28 @@ public static class IconRegistry
         [NodeKind.Metric] = "trending-up",
         [NodeKind.External] = "globe",
         [NodeKind.Callout] = "lightbulb",
+        [NodeKind.Concept] = "lightbulb",
     };
+
+    public const string PromptVocabulary =
+        "lightbulb (idea), brain (thinking), sticky-note (thought card), help-circle (question), " +
+        "users (people), user (person), scale (tradeoff), workflow (process), git-branch (choice), " +
+        "clock (time), calendar (schedule), flag (goal), trending-up (measure), " +
+        "file-text (document), graduation-cap (learning), " +
+        "shield (protection), lock (privacy), network (connections), database (data), " +
+        "server (system), cloud (cloud), container (container), plug (interface), " +
+        "search (exploration), check-circle (agreement), alert-triangle (risk), " +
+        "dollar-sign (cost), map (direction)";
 
     private static readonly string[] PhrasesByLength =
         ProductIcons.Keys.OrderByDescending(k => k.Length).ToArray();
 
+    public static IReadOnlyList<string> Names { get; } = Array.AsReadOnly(Paths.Keys.Order(StringComparer.Ordinal).ToArray());
+
     /// <summary>Resolves the icon name for a label/kind. Never returns null.</summary>
     public static string Resolve(string? label, NodeKind kind)
     {
+        if (kind == NodeKind.Concept) return KindIcons[kind];
         if (!string.IsNullOrWhiteSpace(label))
         {
             foreach (var phrase in PhrasesByLength)

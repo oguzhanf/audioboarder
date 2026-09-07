@@ -39,7 +39,7 @@ public class SceneSummariserTests
         summary.Should().Contain("owner=alice");
         summary.Should().Contain("West Europe");
         summary.Should().Contain("writes data");
-        summary.Should().Contain("intent=SoftwareSystemArchitecture");
+        summary.Should().Contain("intent=MeetingWhiteboard");
         summary.Should().NotContain("lifecycle=");
         summary.Should().Contain("boundary=Network");
         summary.Should().Contain("protocol=\"HTTPS\"");

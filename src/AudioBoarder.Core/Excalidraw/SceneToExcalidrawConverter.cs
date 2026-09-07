@@ -399,7 +399,12 @@ public sealed class SceneToExcalidrawConverter
             StartBinding = new ExcalidrawBinding { ElementId = edge.FromNodeId, Focus = 0, Gap = BindingGap },
             EndBinding = new ExcalidrawBinding { ElementId = edge.ToNodeId, Focus = 0, Gap = BindingGap },
             StartArrowhead = null,
-            EndArrowhead = edge.Kind == EdgeKind.Inheritance ? "triangle" : "arrow",
+            EndArrowhead = edge.Kind switch
+            {
+                EdgeKind.Association => null,
+                EdgeKind.Inheritance => "triangle",
+                _ => "arrow",
+            },
             // Deliberately NOT Excalidraw's `elbowed` mode: with bound endpoints it
             // never regenerates the intermediate points, so the arrow still draws as a
             // straight diagonal while disabling its transform handles. We emit the

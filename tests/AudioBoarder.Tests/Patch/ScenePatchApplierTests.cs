@@ -8,6 +8,23 @@ public class ScenePatchApplierTests
     private readonly ScenePatchApplier _applier = new();
 
     [Fact]
+    public void ConceptDescriptionsKeepTheCompleteThoughtBeyondTheLabelLimit()
+    {
+        const string description = "A feeling of belonging makes it easier to contribute tentative ideas without needing to know the final answer.";
+        var graph = new SceneGraph();
+        _applier.Apply(graph, new ScenePatch([
+            new AddNode("thought", NodeKind.Concept, "Belonging", Description: description),
+        ]));
+        graph.Nodes["thought"].Description.Should().Be(description);
+
+        var revised = description + " This is a proposed explanation, not a claim about every team.";
+        _applier.Apply(graph, new ScenePatch([new UpdateNode("thought", Description: revised)]));
+        graph.Nodes["thought"].Description.Should().Be(revised);
+        NodeSizer.ApplyTo(graph);
+        graph.Nodes["thought"].Width.Should().BeInRange(260, 320);
+    }
+
+    [Fact]
     public void ContinuousReassertionNeverDowngradesConfirmedLifecycle()
     {
         var graph = new SceneGraph();

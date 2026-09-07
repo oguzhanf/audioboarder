@@ -59,6 +59,44 @@ public sealed class ComponentIconVisualsTests
         visual.Svg.Should().Be(IconRegistry.RenderSvg("bar-chart", "#0078d4", 32));
     }
 
+    [Theory]
+    [InlineData("Kubernetes")]
+    [InlineData("PostgreSQL")]
+    [InlineData("Redis cache")]
+    [InlineData("Message queue")]
+    [InlineData("Web app")]
+    [InlineData("SQL database")]
+    [InlineData("Vector search")]
+    [InlineData("NGINX application gateway")]
+    [InlineData("Cloudflare front door")]
+    public void GenericOrThirdPartySystemsNeverAcquireAnAzureLogo(string label)
+    {
+        var node = new SceneNode { Id = "example", Kind = NodeKind.Technology, Label = label };
+        ComponentIconVisuals.ForNode(node).IsOfficial.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ConceptsUseTheSafeSelectedSymbolRatherThanProductArtwork()
+    {
+        var node = new SceneNode
+        {
+            Id = "thought", Label = "Functions of curiosity", Kind = NodeKind.Concept, Icon = "brain",
+        };
+        var visual = ComponentIconVisuals.ForNode(node);
+
+        visual.IsOfficial.Should().BeFalse();
+        visual.Svg.Should().Be(IconRegistry.RenderSvg("brain", "#0078d4", 32));
+        node.Icon = "not-an-icon";
+        node.EffectiveIconName.Should().Be("lightbulb");
+    }
+
+    [Fact]
+    public void EveryAdvertisedSymbolIsBundled()
+    {
+        foreach (var description in IconRegistry.PromptVocabulary.Split(", "))
+            IconRegistry.Has(description.Split(' ')[0]).Should().BeTrue(description);
+    }
+
     [Fact]
     public void PreviouslyDroppedUndersizedCardsAreRepairedWithoutMovingThem()
     {

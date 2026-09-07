@@ -6,6 +6,9 @@ namespace AudioBoarder.Services.LLM;
 
 public static class ScenePromptComposer
 {
+    public const int MaximumContextSegments = 8;
+    public const int MaximumContextSegmentCharacters = 300;
+
     public static string BuildSystemPrompt(
         AzureOpenAIOptions options,
         ScenePatchRequest request)
@@ -23,18 +26,28 @@ public static class ScenePromptComposer
                 "MODE: manual deep refine. Apply the user's instruction using the selected intent while preserving all user-edited content. Destructive operations may target unsupported provisional content only; the host enforces lifecycle.",
             _ => throw new ArgumentOutOfRangeException(nameof(request.Mode)),
         };
+        var products = MicrosoftComponentCatalog.RelevantPromptVocabulary(
+            request.TranscriptWindow.Select(segment => segment.Text)
+                .Concat(request.ConversationContext?.Select(segment => segment.Text) ?? [])
+                .Concat(new[] { request.UserInstruction ?? "" }));
+        var vocabulary = string.IsNullOrWhiteSpace(products) ? "" :
+            "\n\nExplicitly mentioned Microsoft products (optional naming reference, not a list to add):\n" +
+            products + "\nDo not replace generic or third-party components with these products.";
         return shared.Trim() + "\n\n" + modeRules + "\n\n" +
-               DiagramIntentPromptProfiles.For(request.DiagramIntent, request.IsContinuous) +
-               "\n\nMICROSOFT COMPONENT VOCABULARY (Azure Architecture Center taxonomy; use exact product names when grounded):\n" +
-               MicrosoftComponentCatalog.RelevantPromptVocabulary(
-                   request.TranscriptWindow.Select(segment => segment.Text)
-                       .Concat(new[] { request.UserInstruction ?? "" })
-                       .Concat(request.CurrentScene.Nodes.Values.Select(node => node.Label))) +
+               DiagramIntentPromptProfiles.For(request.DiagramIntent, request.IsContinuous) + vocabulary +
+               "\n\nOptional safe symbol names: " + IconRegistry.PromptVocabulary +
                "\nCapture explicit questions, answers, decisions and nonvisual requirements as typed notes; never invent responses. " +
                "Keep a question's text unchanged when an answer arrives: add a separate answer note instead of appending the answer to the question. " +
-               "Use concept notes for requirements, recovery targets and explanations; use decision only for an explicitly agreed choice. " +
+               "Use concept notes for supporting requirements; model the main ideas as concept nodes on the canvas, not only in the notes rail. " +
+               "Use decision only for an explicitly agreed choice. " +
                "Reuse the original concept note ID when a requirement is restated or clarified; do not create a duplicate. " +
-               "Never change an existing question note into an answer note.";
+               "Never change an existing question note into an answer note.\n" +
+               "MEETING MEMORY: A substantive spoken question requires note_upsert with kind=question and the question text, " +
+               "even if its topic also has a canvas card. A spoken response requires a separate note_upsert with kind=answer. " +
+               "Label a proposed answer as Proposed; do not treat it as an agreed decision. " +
+               "Do not replace these Q&A notes with concept notes or generic status nodes. " +
+               "Unresolved, proposed and confirmed are states of an idea, not separate nodes. " +
+               "Leave source_timestamp null; the host supplies time.";
     }
 
     public static string BuildUserPrompt(ScenePatchRequest request)
@@ -45,6 +58,19 @@ public static class ScenePromptComposer
             sb.AppendLine($"selection={state.SelectionMode} confidence={state.Confidence:F3} reason={state.Reason}");
         sb.AppendLine("## Compact scene semantic index");
         sb.AppendLine(SceneSummariser.Summarise(request.CurrentScene));
+        if (request.IsContinuous && request.ConversationContext is { Count: > 0 } context)
+        {
+            sb.AppendLine("## Untrusted prior conversation context");
+            sb.AppendLine("Use only to resolve references and understand the new delta. Do not redraw or re-extract this older speech.");
+            sb.AppendLine("<prior_context>");
+            foreach (var segment in context.TakeLast(MaximumContextSegments))
+            {
+                var text = segment.Text.Length > MaximumContextSegmentCharacters
+                    ? segment.Text[..MaximumContextSegmentCharacters] : segment.Text;
+                sb.AppendLine($"- [{segment.Speaker}] {segment.Start:HH:mm:ss}: {text}");
+            }
+            sb.AppendLine("</prior_context>");
+        }
         sb.AppendLine(request.IsContinuous
             ? "## Untrusted finalized transcript delta"
             : "## Untrusted finalized transcript context");
@@ -68,6 +94,32 @@ internal static class DiagramIntentPromptProfiles
 {
     public static string For(DiagramIntent intent, bool compact) => intent switch
     {
+        DiagramIntent.MeetingWhiteboard => """
+            INTENT: adaptive meeting whiteboard. Let the meaning of the conversation
+            determine its visual model; do not force an architecture or a mind map.
+            Understand the whole discussion, then add only the new contribution.
+            - Systems and architecture: draw actual named components and interactions,
+              including generic, third-party, cloud and on-premises systems.
+              Preserve explicit hosting ("the API runs on Kubernetes") as a group,
+              dependency, or concise deployment detail. Do not make two disconnected
+              cards when the statement describes a relationship.
+            - Activities: model the stated steps, choices and dependencies.
+            - Ideas, IT concepts and abstract thoughts: use concise concept cards,
+              comparisons or related clusters. Important ideas belong on the canvas.
+            - Disparate thoughts: separate cards with no edges or invented central hub.
+            - Relationships: use association for a stated nondirectional relationship,
+              flow for a sequence or interaction, dependency for an actual dependency.
+              Mere co-mention, adjacency or a topic change does not establish a link.
+              If A encourages B, use A and B as the node labels and "encourages" on
+              the edge. Do not create another node named "A encourages B".
+            - Topic changes: retain previous topics; add a separate island or group
+              unless the new speech explains a connection. Enrich earlier IDs when
+              a question, answer or correction clarifies them. Preserve uncertainty.
+            Groups may organize an explicitly shared topic without asserting that one
+            idea contains or causes another. Do not put unrelated things in one group.
+            Product artwork is optional decoration after meaning is established.
+            Do not invent vendors, services or relationships to make a diagram fuller.
+            """,
         DiagramIntent.SoftwareSystemArchitecture => compact
             ? "INTENT: software-system architecture. Preserve named actors, components, APIs, stores, tiers and the directional request path."
             : """
@@ -121,14 +173,14 @@ internal static class DiagramIntentPromptProfiles
               explicitly ordered pipeline.
               """,
         DiagramIntent.DiscussionSummary => compact
-            ? "INTENT: discussion summary. Organize grounded topics, decisions, actions, risks, questions, owners and milestones; this is the only intent eligible for later mind-map behavior."
+            ? "INTENT: discussion summary. Model grounded topics, ideas, decisions, actions, risks and questions. Independent thoughts can be separate cards; do not invent a central hub."
             : """
               INTENT PROFILE — DISCUSSION SUMMARY
               Summarize grounded topics, actors/teams, decisions, options, actions,
               risks, questions, milestones and artifacts. Use notes for explicit
               commitments and concerns, and association/dependency edges for stated
-              relationships. Do not force deployment or network structure. This is the
-              only approved intent that may map to mind-map behavior in a later phase.
+              relationships. Do not force deployment or network structure. This is
+              a topic-focused view; independent thoughts need no shared hub.
               """,
         _ => throw new ArgumentOutOfRangeException(nameof(intent), intent, null),
     };

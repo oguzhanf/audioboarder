@@ -215,7 +215,7 @@ public partial class MainViewModel : ObservableObject
                 : new UiRuntimeStatus(
                     UiRuntimeState.DeepRefining,
                     "Deep refining",
-                    "Consolidating the current architecture."));
+                    "Consolidating the meeting whiteboard."));
             StatusMessage = e.Mode == GenerationMode.ContinuousExtraction
                 ? $"Extracting diagram changes via {e.GeneratorName}…"
                 : $"Deeply synthesizing diagram via {e.GeneratorName}…";
@@ -759,6 +759,7 @@ public partial class MainViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(payload);
         _sessions.Apply(Scene, payload);
+        _intentCoordinator.EnsureAutomaticIntent(Scene);
         // Repair only the exact undersized defaults produced by the first library
         // release; keep positions and every other saved/user-defined size unchanged.
         var repairedDrops = MicrosoftComponentCatalog.RepairLegacyDropSizes(Scene);
@@ -1060,6 +1061,7 @@ public sealed record IntentOption(string Label, DiagramIntent? Intent)
     public static IReadOnlyList<IntentOption> All { get; } =
     [
         new("Auto", null),
+        new(DisplayName(DiagramIntent.MeetingWhiteboard), DiagramIntent.MeetingWhiteboard),
         new(DisplayName(DiagramIntent.SoftwareSystemArchitecture), DiagramIntent.SoftwareSystemArchitecture),
         new(DisplayName(DiagramIntent.SaaSMultiTenantArchitecture), DiagramIntent.SaaSMultiTenantArchitecture),
         new(DisplayName(DiagramIntent.SecurityZeroTrustArchitecture), DiagramIntent.SecurityZeroTrustArchitecture),
@@ -1070,6 +1072,7 @@ public sealed record IntentOption(string Label, DiagramIntent? Intent)
 
     public static string DisplayName(DiagramIntent intent) => intent switch
     {
+        DiagramIntent.MeetingWhiteboard => "Meeting Whiteboard",
         DiagramIntent.SoftwareSystemArchitecture => "Software Architecture",
         DiagramIntent.SaaSMultiTenantArchitecture => "SaaS Multi-tenant",
         DiagramIntent.SecurityZeroTrustArchitecture => "Security Architecture",

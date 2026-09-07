@@ -105,7 +105,7 @@ public static class UiRuntimeStatusMapper
             return new UiRuntimeStatus(
                 UiRuntimeState.DeepRefining,
                 "Deep refining",
-                "Consolidating the current architecture.");
+                "Consolidating the meeting whiteboard.");
         }
 
         if (generation.Stage == GenerationRuntimeStage.Extracting)
@@ -139,7 +139,7 @@ public static class UiRuntimeStatusMapper
             return new UiRuntimeStatus(
                 UiRuntimeState.Current,
                 $"Current through {latestCaptionTimestamp.Value.ToLocalTime():HH:mm:ss}",
-                "The live architecture canvas reflects processed captions.");
+                "The whiteboard reflects the conversation processed so far.");
         }
 
         if (generation.PendingSegments == 0)

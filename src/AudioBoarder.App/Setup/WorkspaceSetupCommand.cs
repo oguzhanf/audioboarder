@@ -18,6 +18,19 @@ public static class WorkspaceSetupCommand
         }
         if (!credentials.TryGetSignedInCredential(out var credential) || credential is null) return 2;
         var settings = services.GetRequiredService<IOptions<AudioBoarderSettings>>().Value;
+        var whiteboardCheck = Array.FindIndex(args, argument =>
+            string.Equals(argument, "--check-whiteboard", StringComparison.OrdinalIgnoreCase));
+        if (whiteboardCheck >= 0)
+        {
+            if (whiteboardCheck + 1 >= args.Length || args[whiteboardCheck + 1].StartsWith("--", StringComparison.Ordinal))
+                throw new InvalidOperationException("Supply an output folder after --check-whiteboard. Synthetic model probes incur Azure usage.");
+            services.GetRequiredService<IOptions<AudioBoarder.Services.LLM.AzureOpenAIOptions>>().Value.Credential = credential;
+            await AudioBoarder.App.Demo.WhiteboardScenarioProbe.RunAsync(
+                services.GetRequiredService<AudioBoarder.Core.LLM.IScenePatchGenerator>(),
+                services.GetRequiredService<AudioBoarder.Core.Layout.ILayoutEngine>(),
+                System.IO.Path.GetFullPath(args[whiteboardCheck + 1]), timeout.Token);
+            return 0;
+        }
         if (args.Contains("--check-resources", StringComparer.OrdinalIgnoreCase))
         {
             var elapsed = System.Diagnostics.Stopwatch.StartNew();

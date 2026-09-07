@@ -8,12 +8,20 @@ namespace AudioBoarder.Tests.Layout;
 public class IntentLayoutEngineTests
 {
     [Fact]
-    public void ArchitectureIntentsNeverResolveToMindMap()
+    public void ExplicitArchitectureIntentsKeepTheirArchitectureEngine()
     {
         var resolver = new IntentLayoutEngine();
         foreach (var intent in Enum.GetValues<DiagramIntent>()
-                     .Where(x => x != DiagramIntent.DiscussionSummary))
-            resolver.ResolveEngine(intent).Should().NotBeOfType<MindMapLayoutEngine>();
+                     .Where(x => x is not DiagramIntent.DiscussionSummary and not DiagramIntent.MeetingWhiteboard))
+            resolver.ResolveEngine(intent).Should().BeOfType<ArchitectureIntentLayoutEngine>()
+                .Which.Intent.Should().Be(intent);
+    }
+
+    [Fact]
+    public void MeetingWhiteboardUsesAdaptiveLayout()
+    {
+        new IntentLayoutEngine().ResolveEngine(DiagramIntent.MeetingWhiteboard)
+            .Should().BeOfType<MeetingWhiteboardLayoutEngine>();
     }
 
     [Fact]
@@ -41,6 +49,23 @@ public class IntentLayoutEngineTests
         first.Nodes.Keys.OrderBy(x => x).Select(id => (id, first.Nodes[id].X, first.Nodes[id].Y))
             .Should().Equal(second.Nodes.Keys.OrderBy(x => x)
                 .Select(id => (id, second.Nodes[id].X, second.Nodes[id].Y)));
+    }
+
+    [Theory]
+    [InlineData(DiagramIntent.SoftwareSystemArchitecture)]
+    [InlineData(DiagramIntent.SaaSMultiTenantArchitecture)]
+    [InlineData(DiagramIntent.SecurityZeroTrustArchitecture)]
+    [InlineData(DiagramIntent.CloudNetworkArchitecture)]
+    [InlineData(DiagramIntent.IntegrationDataFlowArchitecture)]
+    public void ExplicitArchitectureGeometryStillMatchesSpecializedEngine(DiagramIntent intent)
+    {
+        var resolved = Build(intent);
+        var direct = resolved.Clone();
+
+        new IntentLayoutEngine().Apply(resolved, new LayoutOptions());
+        new ArchitectureIntentLayoutEngine(intent).Apply(direct, new LayoutOptions());
+
+        LayoutSnapshot.Capture(resolved).Should().BeEquivalentTo(LayoutSnapshot.Capture(direct));
     }
 
     [Fact]

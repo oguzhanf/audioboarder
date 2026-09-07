@@ -46,4 +46,7 @@ public enum NodeKind
 
     /// <summary>An on-canvas explanation attached beside the thing it explains.</summary>
     Callout,
+
+    /// <summary>An idea, topic, principle, or explanation, whether connected or independent.</summary>
+    Concept,
 }

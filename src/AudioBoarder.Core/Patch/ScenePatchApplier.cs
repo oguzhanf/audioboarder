@@ -160,7 +160,7 @@ public sealed class ScenePatchApplier
                     if (label.Length > 0) existingById.Label = label;
                     existingById.Kind = add.Kind;
                     if (!string.IsNullOrWhiteSpace(add.Icon)) existingById.Icon = add.Icon;
-                    if (!string.IsNullOrWhiteSpace(add.Description)) existingById.Description = CleanLabel(add.Description);
+                    if (!string.IsNullOrWhiteSpace(add.Description)) existingById.Description = CleanLabel(add.Description, 240);
                     if (!string.IsNullOrWhiteSpace(add.GroupId) && graph.ContainsGroup(add.GroupId))
                         existingById.GroupId = add.GroupId;
                     existingById.LifecycleState = MergeLifecycle(
@@ -179,7 +179,7 @@ public sealed class ScenePatchApplier
                     {
                         existingByLabel.Kind = add.Kind;
                         if (!string.IsNullOrWhiteSpace(add.Icon)) existingByLabel.Icon = add.Icon;
-                        if (!string.IsNullOrWhiteSpace(add.Description)) existingByLabel.Description = CleanLabel(add.Description);
+                        if (!string.IsNullOrWhiteSpace(add.Description)) existingByLabel.Description = CleanLabel(add.Description, 240);
                         if (!string.IsNullOrWhiteSpace(add.GroupId) && graph.ContainsGroup(add.GroupId))
                             existingByLabel.GroupId = add.GroupId;
                         existingByLabel.LifecycleState = MergeLifecycle(
@@ -200,7 +200,7 @@ public sealed class ScenePatchApplier
                     Label = label,
                     GroupId = addGroupId,
                     Icon = string.IsNullOrWhiteSpace(add.Icon) ? null : add.Icon,
-                    Description = string.IsNullOrWhiteSpace(add.Description) ? null : CleanLabel(add.Description),
+                    Description = string.IsNullOrWhiteSpace(add.Description) ? null : CleanLabel(add.Description, 240),
                     LifecycleState = incomingLifecycle,
                 });
                 ctx.MapAlias(add.Id, add.Id);
@@ -220,7 +220,7 @@ public sealed class ScenePatchApplier
                 if (upd.Icon is not null)
                     nodeToUpdate.Icon = upd.Icon.Length == 0 ? null : upd.Icon;
                 if (upd.Description is not null)
-                    nodeToUpdate.Description = upd.Description.Length == 0 ? null : CleanLabel(upd.Description);
+                    nodeToUpdate.Description = upd.Description.Length == 0 ? null : CleanLabel(upd.Description, 240);
                 if (upd.GroupId is not null)
                 {
                     if (upd.GroupId.Length == 0) nodeToUpdate.GroupId = null;
@@ -642,7 +642,7 @@ public sealed class ScenePatchApplier
     /// chars) and collapses whitespace so a malformed model token like
     /// "Mashreq Users},{" can't render as a garbage node label. Caps length.
     /// </summary>
-    internal static string CleanLabel(string? raw)
+    internal static string CleanLabel(string? raw, int maximumLength = 80)
     {
         if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
         var sb = new StringBuilder(raw.Length);
@@ -653,7 +653,7 @@ public sealed class ScenePatchApplier
         }
         var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
         cleaned = cleaned.Trim(',', ';', ':', ' ').Trim();
-        if (cleaned.Length > 80) cleaned = cleaned[..80].TrimEnd();
+        if (cleaned.Length > maximumLength) cleaned = cleaned[..maximumLength].TrimEnd();
         return cleaned;
     }
 
