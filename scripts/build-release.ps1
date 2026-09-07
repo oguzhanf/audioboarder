@@ -186,7 +186,7 @@ try {
     } "Scan repository and history for secrets and private resource identifiers"
 
     Invoke-Checked {
-        dotnet list AudioBoarder.sln package --include-transitive --format json |
+        dotnet list AudioBoarder.sln package --include-transitive --format json @restoreArguments |
             Set-Content -LiteralPath $dotnetPackages -Encoding utf8NoBOM
     } "Resolve dependency inventory"
     & "$root\scripts\New-Sbom.ps1" `
