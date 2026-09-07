@@ -156,7 +156,7 @@ try {
     if (!$NoRestore) {
         Invoke-Checked { dotnet restore AudioBoarder.sln } "Restore .NET dependencies"
     }
-    $restoreArguments = if ($NoRestore) { @("--no-restore") } else { @() }
+    $restoreArguments = @(if ($NoRestore) { "--no-restore" })
     & (Join-Path $webDirectory "build-bundle.ps1")
     & (Join-Path $webDirectory "verify.ps1") `
         -ResultPath (Join-Path $stagingDirectory "canvas-verification.json")
